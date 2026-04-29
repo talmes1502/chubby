@@ -78,3 +78,24 @@ class RenameSessionParams(_Strict):
 class RecolorSessionParams(_Strict):
     id: str
     color: str
+
+
+# --- wrapper output + injection (Phase 6) -------------------------------------
+
+
+class PushOutputParams(_Strict):
+    session_id: str
+    seq: int
+    data_b64: str  # base64-encoded raw bytes
+    role: str = "raw"  # raw | user | assistant | tool
+
+
+class InjectParams(_Strict):
+    session_id: str
+    payload_b64: str
+
+
+class SpawnSessionParams(_Strict):
+    name: str
+    cwd: str
+    tags: list[str] = []
