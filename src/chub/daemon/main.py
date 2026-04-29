@@ -16,9 +16,9 @@ from chub.daemon.clock import now_ms
 from chub.daemon.handlers import CallContext, HandlerRegistry
 from chub.daemon.logs import LogWriter
 from chub.daemon.persistence import Database
-from chub.daemon.pidlock import PidLockBusy, acquire
+from chub.daemon.pidlock import PidLockBusy, _alive, acquire
 from chub.daemon.registry import Registry
-from chub.daemon.runs import HubRun, end_run, start_run
+from chub.daemon.runs import HubRun, end_run, resolve_resume, start_run
 from chub.daemon.server import Server
 from chub.daemon.session import SessionKind, SessionStatus
 from chub.proto.errors import ChubError, ErrorCode
@@ -215,9 +215,29 @@ async def serve(*, stop_event: asyncio.Event | None = None) -> None:
 
     with acquire(pid_path):
         db = await Database.open(paths.state_db_path())
-        run = await start_run(db)
+        resume_target = os.environ.get("CHUB_RESUME")
+        resumed_from: str | None = None
+        if resume_target:
+            resumed_from = await resolve_resume(db, resume_target)
+        run = await start_run(db, resumed_from=resumed_from)
         try:
             registry = Registry(hub_run_id=run.id, db=db, event_log=run.event_log)
+            if resumed_from:
+                for prev in await db.list_sessions(hub_run_id=resumed_from):
+                    if prev.kind is SessionKind.READONLY:
+                        continue
+                    pid_alive = prev.pid is not None and _alive(prev.pid)
+                    await registry.register(
+                        name=prev.name,
+                        kind=prev.kind,
+                        cwd=prev.cwd,
+                        pid=prev.pid if pid_alive else None,
+                        tags=prev.tags,
+                        color=prev.color,
+                    )
+                    if not pid_alive:
+                        s = await registry.get_by_name(prev.name)
+                        await registry.update_status(s.id, SessionStatus.DEAD)
             handlers = _build_registry(registry, run, db)
             server = Server(sock_path=sock_path, registry=handlers)
             await server.start()
