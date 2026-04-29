@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from chub.daemon.clock import now_ms
@@ -12,6 +14,9 @@ from chub.daemon.ids import new_session_id
 from chub.daemon.persistence import Database
 from chub.daemon.session import Session, SessionKind, SessionStatus
 from chub.proto.errors import ChubError, ErrorCode
+from chub.proto.rpc import Event, encode_message
+
+WriteCallable = Callable[[bytes], Awaitable[None]]
 
 
 class Registry:
@@ -28,6 +33,7 @@ class Registry:
         self._lock = asyncio.Lock()
         self._colors = ColorAllocator()
         self._preferred_color_for_name: dict[str, str] = {}
+        self._wrapper_writers: dict[str, WriteCallable] = {}
 
     async def _persist(self, s: Session) -> None:
         if self.db is not None:
@@ -129,3 +135,46 @@ class Registry:
                 s.ended_at = now_ms()
         await self._persist(s)
         await self._emit({"event": "session_status_changed", "id": s.id, "status": status.value})
+
+    async def attach_wrapper(self, session_id: str, write: WriteCallable) -> None:
+        """Bind a wrapper transport's write closure to a session id.
+
+        Used so that the daemon can later push ``inject_to_pty`` events back
+        through the originating wrapper's connection.
+        """
+        self._wrapper_writers[session_id] = write
+
+    async def detach_wrapper(self, session_id: str) -> None:
+        self._wrapper_writers.pop(session_id, None)
+
+    async def inject(self, session_id: str, payload: bytes) -> None:
+        s = await self.get(session_id)
+        if s.kind is SessionKind.TMUX_ATTACHED:
+            try:
+                # Lazy import: the tmux attach module is wired in Phase 11.
+                from importlib import import_module
+
+                tmux_mod = import_module("chub.daemon.attach.tmux")
+            except ImportError as e:
+                raise ChubError(
+                    ErrorCode.INJECTION_NOT_SUPPORTED,
+                    "tmux attach not built yet",
+                ) from e
+            await tmux_mod.inject_tmux(s, payload)
+            return
+        write = self._wrapper_writers.get(session_id)
+        if write is None:
+            raise ChubError(
+                ErrorCode.WRAPPER_UNREACHABLE, "no wrapper for session"
+            )
+        await write(
+            encode_message(
+                Event(
+                    method="inject_to_pty",
+                    params={
+                        "session_id": session_id,
+                        "payload_b64": base64.b64encode(payload).decode(),
+                    },
+                )
+            )
+        )

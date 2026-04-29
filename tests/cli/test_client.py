@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from chub.cli.client import Client
-from chub.daemon.handlers import HandlerRegistry
+from chub.daemon.handlers import CallContext, HandlerRegistry
 from chub.daemon.server import Server
 from chub.proto.errors import ChubError, ErrorCode
 
@@ -22,10 +22,10 @@ async def started() -> AsyncIterator[Path]:
     home = Path(tempfile.mkdtemp(prefix="chub-"))
     reg = HandlerRegistry()
 
-    async def echo(p: dict[str, Any]) -> dict[str, Any]:
+    async def echo(p: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         return {"echo": p.get("x")}
 
-    async def boom(p: dict[str, Any]) -> dict[str, Any]:
+    async def boom(p: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         raise ChubError(ErrorCode.SESSION_NOT_FOUND, "missing")
 
     reg.register("echo", echo)

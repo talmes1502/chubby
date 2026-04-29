@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from chub.daemon.handlers import HandlerRegistry
+from chub.daemon.handlers import CallContext, HandlerRegistry
 from chub.daemon.server import Server
 from chub.wrapper.client import WrapperClient
 
@@ -20,7 +20,7 @@ async def test_register_and_send_chunk() -> None:
         reg = HandlerRegistry()
         received: list[dict[str, Any]] = []
 
-        async def register_wrapped(p: dict[str, Any]) -> dict[str, Any]:
+        async def register_wrapped(p: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
             return {
                 "session": {
                     "id": "s_1",
@@ -40,7 +40,7 @@ async def test_register_and_send_chunk() -> None:
                 }
             }
 
-        async def push_output(p: dict[str, Any]) -> dict[str, Any]:
+        async def push_output(p: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
             received.append(p)
             return {}
 

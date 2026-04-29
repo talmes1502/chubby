@@ -1,0 +1,43 @@
+"""Tests for Registry.inject and the wrapper-writer attach path."""
+
+from __future__ import annotations
+
+import pytest
+
+from chub.daemon.registry import Registry
+from chub.daemon.session import SessionKind
+from chub.proto.errors import ChubError, ErrorCode
+
+
+async def test_inject_writes_to_attached_writer() -> None:
+    captured: list[bytes] = []
+
+    async def write(b: bytes) -> None:
+        captured.append(b)
+
+    r = Registry(hub_run_id="hr_t")
+    s = await r.register(name="x", kind=SessionKind.WRAPPED, cwd="/tmp", pid=1)
+    await r.attach_wrapper(s.id, write)
+    await r.inject(s.id, b"hello\n")
+    assert captured
+    assert b"inject_to_pty" in captured[0]
+
+
+async def test_inject_without_attached_writer_raises() -> None:
+    r = Registry(hub_run_id="hr_t")
+    s = await r.register(name="ro", kind=SessionKind.WRAPPED, cwd="/tmp")
+    with pytest.raises(ChubError) as exc:
+        await r.inject(s.id, b"x")
+    assert exc.value.code is ErrorCode.WRAPPER_UNREACHABLE
+
+
+async def test_inject_tmux_kind_raises_until_phase_11() -> None:
+    """tmux module is not built yet — Registry.inject must surface
+    INJECTION_NOT_SUPPORTED instead of crashing on ImportError."""
+    r = Registry(hub_run_id="hr_t")
+    s = await r.register(
+        name="tm", kind=SessionKind.TMUX_ATTACHED, cwd="/tmp", tmux_target="x:0.0"
+    )
+    with pytest.raises(ChubError) as exc:
+        await r.inject(s.id, b"x")
+    assert exc.value.code is ErrorCode.INJECTION_NOT_SUPPORTED

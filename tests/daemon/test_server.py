@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from chub.daemon.handlers import HandlerRegistry
+from chub.daemon.handlers import CallContext, HandlerRegistry
 from chub.daemon.server import Server
 from chub.proto import frame
 
@@ -20,7 +20,7 @@ async def started_server(tmp_path: Path):
     sock_path = short_dir / "h.sock"
     reg = HandlerRegistry()
 
-    async def ping(params: dict) -> dict:
+    async def ping(params: dict, ctx: CallContext) -> dict:
         return {"echo": params.get("message"), "server_time_ms": 1}
 
     reg.register("ping", ping)

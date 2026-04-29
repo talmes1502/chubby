@@ -3,11 +3,28 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from chub.proto.errors import ChubError, ErrorCode
 
-Handler = Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]]
+
+@dataclass
+class CallContext:
+    """Per-call context passed to every handler.
+
+    ``connection_id`` uniquely identifies the connection within the running
+    server (used to bind a session to its wrapper transport). ``write`` lets
+    the handler push server-initiated frames back to the originating peer.
+    """
+
+    connection_id: int
+    write: Callable[[bytes], Awaitable[None]]
+
+
+Handler = Callable[
+    [dict[str, Any], CallContext], Awaitable[dict[str, Any] | None]
+]
 
 
 class NoSuchHandler(Exception):
@@ -23,8 +40,13 @@ class HandlerRegistry:
             raise ValueError(f"handler {method!r} already registered")
         self._h[method] = fn
 
-    async def invoke(self, method: str, params: dict[str, Any]) -> dict[str, Any] | None:
+    async def invoke(
+        self,
+        method: str,
+        params: dict[str, Any],
+        ctx: CallContext,
+    ) -> dict[str, Any] | None:
         fn = self._h.get(method)
         if fn is None:
             raise ChubError(ErrorCode.INVALID_PAYLOAD, f"unknown method {method!r}")
-        return await fn(params)
+        return await fn(params, ctx)

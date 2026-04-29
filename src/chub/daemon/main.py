@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
+import os
 import signal
 import sys
 from typing import Any
@@ -11,21 +13,25 @@ from typing import Any
 from chub import __version__
 from chub.daemon import paths
 from chub.daemon.clock import now_ms
-from chub.daemon.handlers import HandlerRegistry
-from chub.daemon.pidlock import PidLockBusy, acquire
+from chub.daemon.handlers import CallContext, HandlerRegistry
 from chub.daemon.persistence import Database
+from chub.daemon.pidlock import PidLockBusy, acquire
 from chub.daemon.registry import Registry
 from chub.daemon.runs import end_run, start_run
 from chub.daemon.server import Server
-from chub.daemon.session import SessionKind
+from chub.daemon.session import SessionKind, SessionStatus
+from chub.proto.errors import ChubError, ErrorCode
 from chub.proto.schema import (
+    InjectParams,
     ListSessionsParams,
     ListSessionsResult,
+    PushOutputParams,
     RecolorSessionParams,
     RegisterWrappedParams,
     RegisterWrappedResult,
     RenameSessionParams,
     SessionDict,
+    SpawnSessionParams,
 )
 
 log = logging.getLogger("chubd")
@@ -36,33 +42,97 @@ PROTOCOL_VERSION = 1
 def _build_registry(reg: Registry) -> HandlerRegistry:
     h = HandlerRegistry()
 
-    async def ping(params: dict[str, Any]) -> dict[str, Any]:
+    async def ping(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         return {"echo": params.get("message"), "server_time_ms": now_ms()}
 
-    async def version(params: dict[str, Any]) -> dict[str, Any]:
+    async def version(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         return {"version": __version__, "protocol": PROTOCOL_VERSION}
 
-    async def register_wrapped(params: dict[str, Any]) -> dict[str, Any]:
+    async def register_wrapped(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
         p = RegisterWrappedParams.model_validate(params)
         s = await reg.register(
             name=p.name, kind=SessionKind.WRAPPED, cwd=p.cwd, pid=p.pid, tags=p.tags, color=p.color
         )
+        await reg.attach_wrapper(s.id, ctx.write)
         return RegisterWrappedResult(session=SessionDict(**s.to_dict())).model_dump()
 
-    async def list_sessions(params: dict[str, Any]) -> dict[str, Any]:
+    async def list_sessions(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
         ListSessionsParams.model_validate(params)
         sessions = [SessionDict(**s.to_dict()) for s in await reg.list_all()]
         return ListSessionsResult(sessions=sessions).model_dump()
 
-    async def rename_session(params: dict[str, Any]) -> dict[str, Any]:
+    async def rename_session(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
         p = RenameSessionParams.model_validate(params)
         await reg.rename(p.id, p.name)
         return {}
 
-    async def recolor_session(params: dict[str, Any]) -> dict[str, Any]:
+    async def recolor_session(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
         p = RecolorSessionParams.model_validate(params)
         await reg.recolor(p.id, p.color)
         return {}
+
+    async def push_output(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        p = PushOutputParams.model_validate(params)
+        # Validate base64 early; full log/persist/fan-out arrive in Phase 7.
+        base64.b64decode(p.data_b64)
+        return {}
+
+    async def inject(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        p = InjectParams.model_validate(params)
+        s = await reg.get(p.session_id)
+        if s.kind is SessionKind.READONLY:
+            raise ChubError(
+                ErrorCode.INJECTION_NOT_SUPPORTED,
+                "session is read-only; restart via chub-claude",
+            )
+        await reg.inject(p.session_id, base64.b64decode(p.payload_b64))
+        return {}
+
+    async def session_ended(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        sid = params["session_id"]
+        await reg.update_status(sid, SessionStatus.DEAD)
+        await reg.detach_wrapper(sid)
+        return {}
+
+    async def spawn_session(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        p = SpawnSessionParams.model_validate(params)
+        proc_env = {
+            **os.environ,
+            "CHUB_NAME": p.name,
+            "CHUB_HOME": str(paths.hub_home()),
+        }
+        await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "chub.wrapper.main",
+            "--name", p.name, "--cwd", p.cwd, "--tags", ",".join(p.tags),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=proc_env,
+            start_new_session=True,
+        )
+        for _ in range(50):
+            try:
+                s = await reg.get_by_name(p.name)
+                return {"session": SessionDict(**s.to_dict()).model_dump()}
+            except ChubError:
+                await asyncio.sleep(0.1)
+        raise ChubError(ErrorCode.INTERNAL, "spawned wrapper did not register")
 
     h.register("ping", ping)
     h.register("version", version)
@@ -70,6 +140,10 @@ def _build_registry(reg: Registry) -> HandlerRegistry:
     h.register("list_sessions", list_sessions)
     h.register("rename_session", rename_session)
     h.register("recolor_session", recolor_session)
+    h.register("push_output", push_output)
+    h.register("inject", inject)
+    h.register("session_ended", session_ended)
+    h.register("spawn_session", spawn_session)
     return h
 
 
