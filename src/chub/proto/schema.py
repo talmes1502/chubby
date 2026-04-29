@@ -159,3 +159,12 @@ class GetHubRunResult(_Strict):
 class SetHubRunNoteParams(_Strict):
     id: str
     note: str
+
+
+# --- tags (Phase 10) ----------------------------------------------------------
+
+
+class SetSessionTagsParams(_Strict):
+    id: str
+    add: list[str] = []
+    remove: list[str] = []

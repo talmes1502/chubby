@@ -128,6 +128,22 @@ class Registry:
         await self._persist(s)
         await self._emit({"event": "session_recolored", "id": s.id, "color": color})
 
+    async def set_tags(
+        self, session_id: str, *, add: list[str], remove: list[str]
+    ) -> None:
+        async with self._lock:
+            s = self._by_id.get(session_id)
+            if s is None:
+                raise ChubError(
+                    ErrorCode.SESSION_NOT_FOUND, f"no session {session_id}"
+                )
+            cur = set(s.tags)
+            cur.update(add)
+            cur.difference_update(remove)
+            s.tags = sorted(cur)
+        await self._persist(s)
+        await self._emit({"event": "session_tagged", "id": s.id, "tags": s.tags})
+
     async def update_status(self, session_id: str, status: SessionStatus) -> None:
         async with self._lock:
             s = self._by_id.get(session_id)

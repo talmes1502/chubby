@@ -18,6 +18,7 @@ from chub.cli.commands import (
     respawn,
     send,
     spawn,
+    tag,
     up,
 )
 from chub.cli.commands import list as list_cmd
@@ -38,3 +39,4 @@ app.command(name="install-hooks")(install_hooks.run)
 app.command(name="history")(history.run)
 app.command(name="note")(note.run)
 app.command(name="respawn")(respawn.run)
+app.command(name="tag")(tag.run)

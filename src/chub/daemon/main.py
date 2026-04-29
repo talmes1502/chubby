@@ -41,6 +41,7 @@ from chub.proto.schema import (
     SearchTranscriptsParams,
     SessionDict,
     SetHubRunNoteParams,
+    SetSessionTagsParams,
     SpawnSessionParams,
 )
 
@@ -215,6 +216,13 @@ def _build_registry(
         await db.set_run_note(p.id, p.note)
         return {}
 
+    async def set_session_tags(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        p = SetSessionTagsParams.model_validate(params)
+        await reg.set_tags(p.id, add=p.add, remove=p.remove)
+        return {}
+
     h.register("ping", ping)
     h.register("version", version)
     h.register("register_wrapped", register_wrapped)
@@ -231,6 +239,7 @@ def _build_registry(
     h.register("list_hub_runs", list_hub_runs)
     h.register("get_hub_run", get_hub_run)
     h.register("set_hub_run_note", set_hub_run_note)
+    h.register("set_session_tags", set_session_tags)
     return h
 
 
