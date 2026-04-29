@@ -31,13 +31,30 @@ async def test_inject_without_attached_writer_raises() -> None:
     assert exc.value.code is ErrorCode.WRAPPER_UNREACHABLE
 
 
-async def test_inject_tmux_kind_raises_until_phase_11() -> None:
-    """tmux module is not built yet — Registry.inject must surface
-    INJECTION_NOT_SUPPORTED instead of crashing on ImportError."""
+async def test_inject_tmux_kind_dispatches_to_tmux_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """For TMUX_ATTACHED sessions, Registry.inject delegates to inject_tmux."""
+    captured: list[tuple[str, bytes]] = []
+
+    async def fake_inject_tmux(session: object, payload: bytes) -> None:
+        captured.append((getattr(session, "name", "?"), payload))
+
+    import chub.daemon.attach.tmux as tmux_mod
+
+    monkeypatch.setattr(tmux_mod, "inject_tmux", fake_inject_tmux)
     r = Registry(hub_run_id="hr_t")
     s = await r.register(
         name="tm", kind=SessionKind.TMUX_ATTACHED, cwd="/tmp", tmux_target="x:0.0"
     )
+    await r.inject(s.id, b"x")
+    assert captured == [("tm", b"x")]
+
+
+async def test_inject_tmux_without_target_raises() -> None:
+    """A TMUX_ATTACHED session created without tmux_target should raise."""
+    r = Registry(hub_run_id="hr_t")
+    s = await r.register(name="tm", kind=SessionKind.TMUX_ATTACHED, cwd="/tmp")
     with pytest.raises(ChubError) as exc:
         await r.inject(s.id, b"x")
-    assert exc.value.code is ErrorCode.INJECTION_NOT_SUPPORTED
+    assert exc.value.code is ErrorCode.TMUX_TARGET_INVALID

@@ -39,6 +39,7 @@ class Registry:
         self._buffers: dict[str, bytearray] = {}
         self._flush_tasks: dict[str, asyncio.Task[None]] = {}
         self._notify_tasks: set[asyncio.Task[None]] = set()
+        self._tmux_stops: dict[str, asyncio.Event] = {}
 
     async def _persist(self, s: Session) -> None:
         if self.db is not None:
@@ -179,17 +180,9 @@ class Registry:
     async def inject(self, session_id: str, payload: bytes) -> None:
         s = await self.get(session_id)
         if s.kind is SessionKind.TMUX_ATTACHED:
-            try:
-                # Lazy import: the tmux attach module is wired in Phase 11.
-                from importlib import import_module
+            from chub.daemon.attach.tmux import inject_tmux
 
-                tmux_mod = import_module("chub.daemon.attach.tmux")
-            except ImportError as e:
-                raise ChubError(
-                    ErrorCode.INJECTION_NOT_SUPPORTED,
-                    "tmux attach not built yet",
-                ) from e
-            await tmux_mod.inject_tmux(s, payload)
+            await inject_tmux(s, payload)
             return
         write = self._wrapper_writers.get(session_id)
         if write is None:
