@@ -7,6 +7,7 @@ import typer
 from chub.cli.commands import (
     attach,
     broadcast,
+    detach,
     down,
     grep,
     history,
@@ -14,6 +15,7 @@ from chub.cli.commands import (
     mark_idle,
     note,
     ping,
+    promote,
     recolor,
     register_readonly,
     rename,
@@ -44,3 +46,5 @@ app.command(name="respawn")(respawn.run)
 app.command(name="tag")(tag.run)
 app.command(name="broadcast")(broadcast.run)
 app.command(name="attach")(attach.run)
+app.command(name="promote")(promote.run)
+app.command(name="detach")(detach.run)

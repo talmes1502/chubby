@@ -34,6 +34,7 @@ from chub.proto.schema import (
     ListSessionsParams,
     ListSessionsResult,
     MarkIdleParams,
+    PromoteSessionParams,
     PushOutputParams,
     RecolorSessionParams,
     RegisterReadonlyParams,
@@ -285,6 +286,29 @@ def _build_registry(
         await reg.update_status(p.id, SessionStatus.DEAD)
         return {}
 
+    async def promote_session(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        from chub.daemon.attach.promote import relaunch_wrapper, wait_for_exit
+
+        p = PromoteSessionParams.model_validate(params)
+        s = await reg.get(p.id)
+        if s.kind is not SessionKind.READONLY:
+            raise ChubError(
+                ErrorCode.INVALID_PAYLOAD, "session is not readonly"
+            )
+        if s.pid is None:
+            await relaunch_wrapper(name=s.name, cwd=s.cwd, tags=list(s.tags))
+            await reg.update_status(s.id, SessionStatus.DEAD)
+            return {}
+        if not await wait_for_exit(s.pid, timeout=600.0):
+            raise ChubError(
+                ErrorCode.INTERNAL, "timed out waiting for raw claude to exit"
+            )
+        await reg.update_status(s.id, SessionStatus.DEAD)
+        await relaunch_wrapper(name=s.name, cwd=s.cwd, tags=list(s.tags))
+        return {}
+
     h.register("ping", ping)
     h.register("version", version)
     h.register("register_wrapped", register_wrapped)
@@ -305,6 +329,7 @@ def _build_registry(
     h.register("scan_candidates", scan_candidates)
     h.register("attach_tmux", attach_tmux)
     h.register("detach_session", detach_session)
+    h.register("promote_session", promote_session)
     return h
 
 
