@@ -26,8 +26,11 @@ from chub.proto.schema import (
     InjectParams,
     ListSessionsParams,
     ListSessionsResult,
+    MarkIdleParams,
     PushOutputParams,
     RecolorSessionParams,
+    RegisterReadonlyParams,
+    RegisterReadonlyResult,
     RegisterWrappedParams,
     RegisterWrappedResult,
     RenameSessionParams,
@@ -45,6 +48,7 @@ def _build_registry(
     reg: Registry, run: HubRun, db: Database
 ) -> HandlerRegistry:
     h = HandlerRegistry()
+    background_tasks: set[asyncio.Task[None]] = set()
 
     async def ping(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         return {"echo": params.get("message"), "server_time_ms": now_ms()}
@@ -152,6 +156,37 @@ def _build_registry(
         )
         return {"matches": rows}
 
+    async def register_readonly(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        p = RegisterReadonlyParams.model_validate(params)
+        name = p.name or f"{os.path.basename(p.cwd.rstrip('/'))}-{p.claude_session_id[:4]}"
+        s = await reg.register(
+            name=name,
+            kind=SessionKind.READONLY,
+            cwd=p.cwd,
+            claude_session_id=p.claude_session_id,
+            tags=p.tags,
+        )
+        # Start the JSONL tailer for this session as a background task.
+        # Imported lazily so tests can monkeypatch ``hooks.start_tailer``.
+        from chub.daemon import hooks as hooks_mod
+
+        task = asyncio.create_task(hooks_mod.start_tailer(reg, s))
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+        return RegisterReadonlyResult(session=SessionDict(**s.to_dict())).model_dump()
+
+    async def mark_idle(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        p = MarkIdleParams.model_validate(params)
+        for s in await reg.list_all():
+            if s.claude_session_id == p.claude_session_id:
+                await reg.update_status(s.id, SessionStatus.AWAITING_USER)
+                return {}
+        return {}
+
     h.register("ping", ping)
     h.register("version", version)
     h.register("register_wrapped", register_wrapped)
@@ -163,6 +198,8 @@ def _build_registry(
     h.register("session_ended", session_ended)
     h.register("spawn_session", spawn_session)
     h.register("search_transcripts", search_transcripts)
+    h.register("register_readonly", register_readonly)
+    h.register("mark_idle", mark_idle)
     return h
 
 

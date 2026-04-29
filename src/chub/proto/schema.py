@@ -116,3 +116,21 @@ class SearchTranscriptsParams(_Strict):
 
 class SearchTranscriptsResult(_Strict):
     matches: list[dict[str, Any]]
+
+
+# --- readonly registration / idle (Phase 8) -----------------------------------
+
+
+class RegisterReadonlyParams(_Strict):
+    cwd: str
+    claude_session_id: str
+    name: str | None = None
+    tags: list[str] = []
+
+
+class RegisterReadonlyResult(_Strict):
+    session: SessionDict
+
+
+class MarkIdleParams(_Strict):
+    claude_session_id: str
