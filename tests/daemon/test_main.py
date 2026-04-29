@@ -51,3 +51,34 @@ async def test_run_serves_ping_and_version(short_home: Path, monkeypatch) -> Non
     finally:
         stop.set()
         await server_task
+
+
+async def _rpc(sock_path: Path, method: str, params: dict) -> dict:
+    reader, writer = await asyncio.open_unix_connection(str(sock_path))
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+    writer.write(frame.encode(body))
+    await writer.drain()
+    raw = await frame.read_frame(reader)
+    writer.close()
+    await writer.wait_closed()
+    assert raw is not None
+    return json.loads(raw)
+
+
+async def test_register_wrapped_then_list(short_home: Path, monkeypatch) -> None:
+    monkeypatch.setenv("CHUB_HOME", str(short_home))
+    stop = asyncio.Event()
+    server_task = asyncio.create_task(chubd_main.serve(stop_event=stop))
+    sock = short_home / "hub.sock"
+    for _ in range(50):
+        if sock.exists():
+            break
+        await asyncio.sleep(0.02)
+    try:
+        out = await _rpc(sock, "register_wrapped", {"name": "front", "cwd": "/tmp", "pid": 1234})
+        sid = out["result"]["session"]["id"]
+        listed = await _rpc(sock, "list_sessions", {})
+        assert any(s["id"] == sid for s in listed["result"]["sessions"])
+    finally:
+        stop.set()
+        await server_task
