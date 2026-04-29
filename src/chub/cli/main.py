@@ -5,6 +5,7 @@ from __future__ import annotations
 import typer
 
 from chub.cli.commands import (
+    broadcast,
     down,
     grep,
     history,
@@ -40,3 +41,4 @@ app.command(name="history")(history.run)
 app.command(name="note")(note.run)
 app.command(name="respawn")(respawn.run)
 app.command(name="tag")(tag.run)
+app.command(name="broadcast")(broadcast.run)
