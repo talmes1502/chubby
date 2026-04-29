@@ -31,6 +31,7 @@ from chub.proto.schema import (
     RegisterWrappedParams,
     RegisterWrappedResult,
     RenameSessionParams,
+    SearchTranscriptsParams,
     SessionDict,
     SpawnSessionParams,
 )
@@ -138,6 +139,19 @@ def _build_registry(
                 await asyncio.sleep(0.1)
         raise ChubError(ErrorCode.INTERNAL, "spawned wrapper did not register")
 
+    async def search_transcripts(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        p = SearchTranscriptsParams.model_validate(params)
+        hub_run = None if p.all_runs else (p.hub_run_id or run.id)
+        rows = await db.search(
+            p.query,
+            hub_run_id=hub_run,
+            session_id=p.session_id,
+            limit=p.limit,
+        )
+        return {"matches": rows}
+
     h.register("ping", ping)
     h.register("version", version)
     h.register("register_wrapped", register_wrapped)
@@ -148,6 +162,7 @@ def _build_registry(
     h.register("inject", inject)
     h.register("session_ended", session_ended)
     h.register("spawn_session", spawn_session)
+    h.register("search_transcripts", search_transcripts)
     return h
 
 

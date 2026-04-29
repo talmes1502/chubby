@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -99,3 +101,18 @@ class SpawnSessionParams(_Strict):
     name: str
     cwd: str
     tags: list[str] = []
+
+
+# --- transcript search (Phase 7) ----------------------------------------------
+
+
+class SearchTranscriptsParams(_Strict):
+    query: str
+    hub_run_id: str | None = None
+    session_id: str | None = None
+    all_runs: bool = False
+    limit: int = 200
+
+
+class SearchTranscriptsResult(_Strict):
+    matches: list[dict[str, Any]]
