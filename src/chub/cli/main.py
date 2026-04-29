@@ -23,6 +23,7 @@ from chub.cli.commands import (
     send,
     spawn,
     tag,
+    tui,
     up,
 )
 from chub.cli.commands import list as list_cmd
@@ -48,3 +49,4 @@ app.command(name="broadcast")(broadcast.run)
 app.command(name="attach")(attach.run)
 app.command(name="promote")(promote.run)
 app.command(name="detach")(detach.run)
+app.command(name="tui")(tui.run)
