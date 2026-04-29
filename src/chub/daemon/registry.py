@@ -11,6 +11,7 @@ from chub.daemon.clock import now_ms
 from chub.daemon.colors import ColorAllocator
 from chub.daemon.events import EventLog
 from chub.daemon.ids import new_session_id
+from chub.daemon.logs import LogWriter
 from chub.daemon.persistence import Database
 from chub.daemon.session import Session, SessionKind, SessionStatus
 from chub.proto.errors import ChubError, ErrorCode
@@ -34,6 +35,9 @@ class Registry:
         self._colors = ColorAllocator()
         self._preferred_color_for_name: dict[str, str] = {}
         self._wrapper_writers: dict[str, WriteCallable] = {}
+        self._writers: dict[str, LogWriter] = {}
+        self._buffers: dict[str, bytearray] = {}
+        self._flush_tasks: dict[str, asyncio.Task[None]] = {}
 
     async def _persist(self, s: Session) -> None:
         if self.db is not None:
@@ -177,4 +181,44 @@ class Registry:
                     },
                 )
             )
+        )
+
+    async def attach_log_writer(self, session_id: str, writer: LogWriter) -> None:
+        self._writers[session_id] = writer
+        self._buffers[session_id] = bytearray()
+
+    async def record_chunk(self, session_id: str, data: bytes, role: str) -> None:
+        w = self._writers.get(session_id)
+        if w is None:
+            return
+        await w.append(data)
+        self._buffers.setdefault(session_id, bytearray()).extend(data)
+        task = self._flush_tasks.get(session_id)
+        if task and not task.done():
+            task.cancel()
+        self._flush_tasks[session_id] = asyncio.create_task(
+            self._delayed_flush(session_id, role)
+        )
+
+    async def _delayed_flush(self, session_id: str, role: str) -> None:
+        try:
+            await asyncio.sleep(0.2)
+        except asyncio.CancelledError:
+            return
+        await self.flush_message(session_id, role=role)
+
+    async def flush_message(self, session_id: str, *, role: str) -> None:
+        if self.db is None:
+            return
+        buf = self._buffers.get(session_id)
+        if not buf:
+            return
+        text = buf.decode("utf-8", errors="replace")
+        self._buffers[session_id] = bytearray()
+        await self.db.insert_message(
+            session_id=session_id,
+            hub_run_id=self.hub_run_id,
+            ts=now_ms(),
+            role=role,
+            content=text,
         )

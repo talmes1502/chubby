@@ -14,10 +14,11 @@ from chub import __version__
 from chub.daemon import paths
 from chub.daemon.clock import now_ms
 from chub.daemon.handlers import CallContext, HandlerRegistry
+from chub.daemon.logs import LogWriter
 from chub.daemon.persistence import Database
 from chub.daemon.pidlock import PidLockBusy, acquire
 from chub.daemon.registry import Registry
-from chub.daemon.runs import end_run, start_run
+from chub.daemon.runs import HubRun, end_run, start_run
 from chub.daemon.server import Server
 from chub.daemon.session import SessionKind, SessionStatus
 from chub.proto.errors import ChubError, ErrorCode
@@ -39,7 +40,9 @@ log = logging.getLogger("chubd")
 PROTOCOL_VERSION = 1
 
 
-def _build_registry(reg: Registry) -> HandlerRegistry:
+def _build_registry(
+    reg: Registry, run: HubRun, db: Database
+) -> HandlerRegistry:
     h = HandlerRegistry()
 
     async def ping(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
@@ -56,6 +59,8 @@ def _build_registry(reg: Registry) -> HandlerRegistry:
             name=p.name, kind=SessionKind.WRAPPED, cwd=p.cwd, pid=p.pid, tags=p.tags, color=p.color
         )
         await reg.attach_wrapper(s.id, ctx.write)
+        writer = LogWriter(run.dir / "logs", color=s.color, session_name=s.name)
+        await reg.attach_log_writer(s.id, writer)
         return RegisterWrappedResult(session=SessionDict(**s.to_dict())).model_dump()
 
     async def list_sessions(
@@ -83,8 +88,7 @@ def _build_registry(reg: Registry) -> HandlerRegistry:
         params: dict[str, Any], ctx: CallContext
     ) -> dict[str, Any]:
         p = PushOutputParams.model_validate(params)
-        # Validate base64 early; full log/persist/fan-out arrive in Phase 7.
-        base64.b64decode(p.data_b64)
+        await reg.record_chunk(p.session_id, base64.b64decode(p.data_b64), role=p.role)
         return {}
 
     async def inject(
@@ -162,7 +166,7 @@ async def serve(*, stop_event: asyncio.Event | None = None) -> None:
         run = await start_run(db)
         try:
             registry = Registry(hub_run_id=run.id, db=db, event_log=run.event_log)
-            handlers = _build_registry(registry)
+            handlers = _build_registry(registry, run, db)
             server = Server(sock_path=sock_path, registry=handlers)
             await server.start()
             try:
