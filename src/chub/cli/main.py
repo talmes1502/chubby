@@ -15,6 +15,7 @@ from chub.cli.commands import (
     recolor,
     register_readonly,
     rename,
+    respawn,
     send,
     spawn,
     up,
@@ -36,3 +37,4 @@ app.command(name="mark-idle")(mark_idle.run)
 app.command(name="install-hooks")(install_hooks.run)
 app.command(name="history")(history.run)
 app.command(name="note")(note.run)
+app.command(name="respawn")(respawn.run)
