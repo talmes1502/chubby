@@ -13,8 +13,9 @@ from chub.daemon import paths
 from chub.daemon.clock import now_ms
 from chub.daemon.handlers import HandlerRegistry
 from chub.daemon.pidlock import PidLockBusy, acquire
+from chub.daemon.persistence import Database
 from chub.daemon.registry import Registry
-from chub.daemon.runs import start_run
+from chub.daemon.runs import end_run, start_run
 from chub.daemon.server import Server
 from chub.daemon.session import SessionKind
 from chub.proto.schema import (
@@ -83,15 +84,20 @@ async def serve(*, stop_event: asyncio.Event | None = None) -> None:
         loop.add_signal_handler(sig, stop_event.set)
 
     with acquire(pid_path):
-        run = start_run()
-        registry = Registry(hub_run_id=run.id)
-        handlers = _build_registry(registry)
-        server = Server(sock_path=sock_path, registry=handlers)
-        await server.start()
+        db = await Database.open(paths.state_db_path())
+        run = await start_run(db)
         try:
-            await stop_event.wait()
+            registry = Registry(hub_run_id=run.id, db=db, event_log=run.event_log)
+            handlers = _build_registry(registry)
+            server = Server(sock_path=sock_path, registry=handlers)
+            await server.start()
+            try:
+                await stop_event.wait()
+            finally:
+                await server.stop()
         finally:
-            await server.stop()
+            await end_run(db, run.id)
+            await db.close()
 
 
 def main() -> None:
