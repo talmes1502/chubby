@@ -14,6 +14,7 @@ from chub.daemon.ids import new_session_id
 from chub.daemon.logs import LogWriter
 from chub.daemon.persistence import Database
 from chub.daemon.session import Session, SessionKind, SessionStatus
+from chub.daemon.subscriptions import SubscriptionHub
 from chub.proto.errors import ChubError, ErrorCode
 from chub.proto.rpc import Event, encode_message
 
@@ -26,10 +27,12 @@ class Registry:
         hub_run_id: str,
         db: Database | None = None,
         event_log: EventLog | None = None,
+        subs: SubscriptionHub | None = None,
     ) -> None:
         self.hub_run_id = hub_run_id
         self.db = db
         self.event_log = event_log
+        self.subs = subs
         self._by_id: dict[str, Session] = {}
         self._lock = asyncio.Lock()
         self._colors = ColorAllocator()
@@ -49,6 +52,11 @@ class Registry:
     async def _emit(self, event: dict[str, Any]) -> None:
         if self.event_log is not None:
             await self.event_log.append(event)
+        if self.subs is not None:
+            ev = dict(event)
+            kind = ev.pop("event", None) or ev.pop("kind", None)
+            if kind:
+                await self.subs.broadcast(kind, ev)
 
     async def register(
         self,

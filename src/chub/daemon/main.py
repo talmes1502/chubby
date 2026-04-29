@@ -21,6 +21,7 @@ from chub.daemon.registry import Registry
 from chub.daemon.runs import HubRun, end_run, resolve_resume, start_run
 from chub.daemon.server import Server
 from chub.daemon.session import SessionKind, SessionStatus
+from chub.daemon.subscriptions import SubscriptionHub
 from chub.proto.errors import ChubError, ErrorCode
 from chub.proto.schema import (
     AttachTmuxParams,
@@ -57,7 +58,7 @@ PROTOCOL_VERSION = 1
 
 
 def _build_registry(
-    reg: Registry, run: HubRun, db: Database
+    reg: Registry, run: HubRun, db: Database, subs: SubscriptionHub
 ) -> HandlerRegistry:
     h = HandlerRegistry()
     background_tasks: set[asyncio.Task[None]] = set()
@@ -309,6 +310,21 @@ def _build_registry(
         await relaunch_wrapper(name=s.name, cwd=s.cwd, tags=list(s.tags))
         return {}
 
+    async def subscribe_events(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        sub_id = await subs.subscribe(ctx.write)
+        return {"subscription_id": sub_id}
+
+    async def unsubscribe(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        sid = int(params["subscription_id"])
+        await subs.unsubscribe(sid)
+        return {}
+
+    h.register("subscribe_events", subscribe_events)
+    h.register("unsubscribe", unsubscribe)
     h.register("ping", ping)
     h.register("version", version)
     h.register("register_wrapped", register_wrapped)
@@ -351,7 +367,10 @@ async def serve(*, stop_event: asyncio.Event | None = None) -> None:
             resumed_from = await resolve_resume(db, resume_target)
         run = await start_run(db, resumed_from=resumed_from)
         try:
-            registry = Registry(hub_run_id=run.id, db=db, event_log=run.event_log)
+            subs = SubscriptionHub()
+            registry = Registry(
+                hub_run_id=run.id, db=db, event_log=run.event_log, subs=subs
+            )
             if resumed_from:
                 for prev in await db.list_sessions(hub_run_id=resumed_from):
                     if prev.kind is SessionKind.READONLY:
@@ -368,7 +387,7 @@ async def serve(*, stop_event: asyncio.Event | None = None) -> None:
                     if not pid_alive:
                         s = await registry.get_by_name(prev.name)
                         await registry.update_status(s.id, SessionStatus.DEAD)
-            handlers = _build_registry(registry, run, db)
+            handlers = _build_registry(registry, run, db, subs)
             server = Server(sock_path=sock_path, registry=handlers)
             await server.start()
             try:
