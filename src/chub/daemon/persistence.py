@@ -148,3 +148,40 @@ class Database:
     async def set_run_note(self, run_id: str, note: str) -> None:
         await self.conn.execute("UPDATE hub_runs SET notes=? WHERE id=?", (note, run_id))
         await self.conn.commit()
+
+    async def insert_message(
+        self, *, session_id: str, hub_run_id: str, ts: int, role: str, content: str
+    ) -> None:
+        await self.conn.execute(
+            "INSERT INTO transcript_fts (session_id, hub_run_id, ts, role, content) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (session_id, hub_run_id, ts, role, content),
+        )
+        await self.conn.commit()
+
+    async def search(
+        self,
+        query: str,
+        *,
+        hub_run_id: str | None = None,
+        session_id: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        params: list[Any] = [query]
+        sql = (
+            "SELECT session_id, hub_run_id, ts, role, "
+            "snippet(transcript_fts, 4, '[', ']', '...', 8) AS snippet "
+            "FROM transcript_fts WHERE transcript_fts MATCH ?"
+        )
+        if hub_run_id is not None:
+            sql += " AND hub_run_id = ?"
+            params.append(hub_run_id)
+        if session_id is not None:
+            sql += " AND session_id = ?"
+            params.append(session_id)
+        sql += " ORDER BY ts DESC LIMIT ?"
+        params.append(limit)
+        cur = await self.conn.execute(sql, tuple(params))
+        assert cur.description is not None
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r, strict=False)) for r in await cur.fetchall()]
