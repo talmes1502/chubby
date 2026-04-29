@@ -38,6 +38,7 @@ class Registry:
         self._writers: dict[str, LogWriter] = {}
         self._buffers: dict[str, bytearray] = {}
         self._flush_tasks: dict[str, asyncio.Task[None]] = {}
+        self._notify_tasks: set[asyncio.Task[None]] = set()
 
     async def _persist(self, s: Session) -> None:
         if self.db is not None:
@@ -155,6 +156,14 @@ class Registry:
                 s.ended_at = now_ms()
         await self._persist(s)
         await self._emit({"event": "session_status_changed", "id": s.id, "status": status.value})
+        if status is SessionStatus.AWAITING_USER:
+            from chub.daemon.notify import notify
+
+            task = asyncio.create_task(
+                notify(f"chub: {s.name}", "session is awaiting your input")
+            )
+            self._notify_tasks.add(task)
+            task.add_done_callback(self._notify_tasks.discard)
 
     async def attach_wrapper(self, session_id: str, write: WriteCallable) -> None:
         """Bind a wrapper transport's write closure to a session id.
