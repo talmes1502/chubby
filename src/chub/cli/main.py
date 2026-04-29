@@ -7,8 +7,10 @@ import typer
 from chub.cli.commands import (
     down,
     grep,
+    history,
     install_hooks,
     mark_idle,
+    note,
     ping,
     recolor,
     register_readonly,
@@ -32,3 +34,5 @@ app.command(name="grep")(grep.run)
 app.command(name="register-readonly")(register_readonly.run)
 app.command(name="mark-idle")(mark_idle.run)
 app.command(name="install-hooks")(install_hooks.run)
+app.command(name="history")(history.run)
+app.command(name="note")(note.run)

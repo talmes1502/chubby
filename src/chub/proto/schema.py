@@ -134,3 +134,28 @@ class RegisterReadonlyResult(_Strict):
 
 class MarkIdleParams(_Strict):
     claude_session_id: str
+
+
+# --- hub-run history / notes (Phase 9) ----------------------------------------
+
+
+class ListHubRunsParams(_Strict):
+    pass
+
+
+class ListHubRunsResult(_Strict):
+    runs: list[dict[str, Any]]
+
+
+class GetHubRunParams(_Strict):
+    id: str
+
+
+class GetHubRunResult(_Strict):
+    run: dict[str, Any]
+    sessions: list[dict[str, Any]]
+
+
+class SetHubRunNoteParams(_Strict):
+    id: str
+    note: str

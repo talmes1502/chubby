@@ -23,7 +23,11 @@ from chub.daemon.server import Server
 from chub.daemon.session import SessionKind, SessionStatus
 from chub.proto.errors import ChubError, ErrorCode
 from chub.proto.schema import (
+    GetHubRunParams,
+    GetHubRunResult,
     InjectParams,
+    ListHubRunsParams,
+    ListHubRunsResult,
     ListSessionsParams,
     ListSessionsResult,
     MarkIdleParams,
@@ -36,6 +40,7 @@ from chub.proto.schema import (
     RenameSessionParams,
     SearchTranscriptsParams,
     SessionDict,
+    SetHubRunNoteParams,
     SpawnSessionParams,
 )
 
@@ -187,6 +192,29 @@ def _build_registry(
                 return {}
         return {}
 
+    async def list_hub_runs(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        ListHubRunsParams.model_validate(params)
+        return ListHubRunsResult(runs=await db.list_hub_runs()).model_dump()
+
+    async def get_hub_run(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        p = GetHubRunParams.model_validate(params)
+        runs = [r for r in await db.list_hub_runs() if r["id"] == p.id]
+        if not runs:
+            raise ChubError(ErrorCode.SESSION_NOT_FOUND, f"no hub-run {p.id}")
+        sessions = [s.to_dict() for s in await db.list_sessions(hub_run_id=p.id)]
+        return GetHubRunResult(run=runs[0], sessions=sessions).model_dump()
+
+    async def set_hub_run_note(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        p = SetHubRunNoteParams.model_validate(params)
+        await db.set_run_note(p.id, p.note)
+        return {}
+
     h.register("ping", ping)
     h.register("version", version)
     h.register("register_wrapped", register_wrapped)
@@ -200,6 +228,9 @@ def _build_registry(
     h.register("search_transcripts", search_transcripts)
     h.register("register_readonly", register_readonly)
     h.register("mark_idle", mark_idle)
+    h.register("list_hub_runs", list_hub_runs)
+    h.register("get_hub_run", get_hub_run)
+    h.register("set_hub_run_note", set_hub_run_note)
     return h
 
 
