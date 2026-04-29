@@ -168,3 +168,34 @@ class SetSessionTagsParams(_Strict):
     id: str
     add: list[str] = []
     remove: list[str] = []
+
+
+# --- attach / promote / detach (Phase 11) -------------------------------------
+
+
+class ScanCandidatesParams(_Strict):
+    pass
+
+
+class ScanCandidatesResult(_Strict):
+    candidates: list[dict[str, Any]]
+
+
+class AttachTmuxParams(_Strict):
+    name: str
+    cwd: str
+    pid: int
+    tmux_target: str
+    tags: list[str] = []
+
+
+class AttachTmuxResult(_Strict):
+    session: SessionDict
+
+
+class DetachSessionParams(_Strict):
+    id: str
+
+
+class PromoteSessionParams(_Strict):
+    id: str

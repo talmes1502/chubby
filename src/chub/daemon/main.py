@@ -23,6 +23,9 @@ from chub.daemon.server import Server
 from chub.daemon.session import SessionKind, SessionStatus
 from chub.proto.errors import ChubError, ErrorCode
 from chub.proto.schema import (
+    AttachTmuxParams,
+    AttachTmuxResult,
+    DetachSessionParams,
     GetHubRunParams,
     GetHubRunResult,
     InjectParams,
@@ -38,6 +41,8 @@ from chub.proto.schema import (
     RegisterWrappedParams,
     RegisterWrappedResult,
     RenameSessionParams,
+    ScanCandidatesParams,
+    ScanCandidatesResult,
     SearchTranscriptsParams,
     SessionDict,
     SetHubRunNoteParams,
@@ -223,6 +228,63 @@ def _build_registry(
         await reg.set_tags(p.id, add=p.add, remove=p.remove)
         return {}
 
+    async def scan_candidates(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        from chub.daemon.attach.scanner import scan
+
+        ScanCandidatesParams.model_validate(params)
+        cs = await scan()
+        live = await reg.list_all()
+        known_pids = {s.pid for s in live if s.pid is not None}
+        return ScanCandidatesResult(
+            candidates=[
+                {
+                    "pid": c.pid,
+                    "cwd": c.cwd,
+                    "tmux_target": c.tmux_target,
+                    "classification": c.classification,
+                    "already_attached": c.pid in known_pids,
+                }
+                for c in cs
+            ]
+        ).model_dump()
+
+    async def attach_tmux(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        from chub.daemon.attach.tmux import watch_pane
+
+        p = AttachTmuxParams.model_validate(params)
+        s = await reg.register(
+            name=p.name,
+            kind=SessionKind.TMUX_ATTACHED,
+            cwd=p.cwd,
+            pid=p.pid,
+            tmux_target=p.tmux_target,
+            tags=p.tags,
+        )
+        writer = LogWriter(run.dir / "logs", color=s.color, session_name=s.name)
+        await reg.attach_log_writer(s.id, writer)
+        stop = asyncio.Event()
+        reg._tmux_stops[s.id] = stop
+        task = asyncio.create_task(watch_pane(reg, s.id, p.tmux_target, stop=stop))
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+        return AttachTmuxResult(session=SessionDict(**s.to_dict())).model_dump()
+
+    async def detach_session(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        p = DetachSessionParams.model_validate(params)
+        # Resolve session (raises SESSION_NOT_FOUND if missing).
+        await reg.get(p.id)
+        stop = reg._tmux_stops.get(p.id)
+        if stop is not None:
+            stop.set()
+        await reg.update_status(p.id, SessionStatus.DEAD)
+        return {}
+
     h.register("ping", ping)
     h.register("version", version)
     h.register("register_wrapped", register_wrapped)
@@ -240,6 +302,9 @@ def _build_registry(
     h.register("get_hub_run", get_hub_run)
     h.register("set_hub_run_note", set_hub_run_note)
     h.register("set_session_tags", set_session_tags)
+    h.register("scan_candidates", scan_candidates)
+    h.register("attach_tmux", attach_tmux)
+    h.register("detach_session", detach_session)
     return h
 
 
