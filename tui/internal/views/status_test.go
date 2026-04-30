@@ -18,7 +18,7 @@ func containsAll(haystack string, needles ...string) (string, bool) {
 
 func TestRawStatusBar_ModeMainEmptyCompose(t *testing.T) {
 	got := rawStatusBar(StatusModeMain, false, 0)
-	if missing, ok := containsAll(got, "Tab cycle", "Ctrl+B", "Ctrl+H", "Ctrl+N", "Ctrl+P", "Ctrl+K", "Ctrl+Y", "?", "q"); ok {
+	if missing, ok := containsAll(got, "Tab cycle", "Ctrl+B", "Ctrl+H", "Ctrl+J", "Ctrl+N", "Ctrl+P", "Ctrl+K", "Ctrl+Y", "?", "q"); ok {
 		t.Fatalf("ModeMain (empty compose) missing %q: %s", missing, got)
 	}
 }

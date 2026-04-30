@@ -177,6 +177,9 @@ type Model struct {
 	// groupCollapsed tracks which group headers are collapsed in the
 	// left rail. Persisted to ~/.claude/hub/tui-state.json on change.
 	groupCollapsed map[string]bool
+	// railCollapsed hides the left rail entirely; viewport takes full
+	// width. Toggled with Ctrl+J. Persisted in tui-state.json.
+	railCollapsed bool
 	// railCursor indexes the currently-highlighted row in the visible
 	// rail (may be a group header or a session). Up/Down walks this;
 	// Tab/Shift+Tab walks m.focused (session-only).
@@ -256,6 +259,7 @@ func New(c *rpc.Client) Model {
 		bcast:          broadcastState{selected: map[string]bool{}},
 		grep:           grepState{query: views.NewGrepQuery()},
 		groupCollapsed: LoadCollapsedGroups(),
+		railCollapsed:  LoadRailCollapsed(),
 		search:         searchState{query: views.NewSearchQuery()},
 		historyLoaded:  map[string]bool{},
 	}
@@ -658,7 +662,10 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				r := rows[m.railCursor]
 				if r.Kind == RailRowHeader {
 					m.groupCollapsed[r.GroupName] = !m.groupCollapsed[r.GroupName]
-					_ = SaveCollapsedGroups(m.groupCollapsed)
+					_ = SaveTUIState(TUIState{
+						GroupsCollapsed: collapsedGroupNames(m.groupCollapsed),
+						RailCollapsed:   m.railCollapsed,
+					})
 					return m, nil
 				}
 			}
@@ -694,6 +701,13 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeHistory
 		m.history = historyState{}
 		return m, m.loadHubRuns()
+	case "ctrl+j":
+		m.railCollapsed = !m.railCollapsed
+		_ = SaveTUIState(TUIState{
+			GroupsCollapsed: collapsedGroupNames(m.groupCollapsed),
+			RailCollapsed:   m.railCollapsed,
+		})
+		return m, nil
 	case "/":
 		// Bare "/" is now reserved for typing slash commands into the
 		// compose bar (autocompleted via Tab). Grep transcripts moved to
@@ -1646,20 +1660,31 @@ func (m Model) View() string {
 	if h < 5 {
 		h = 5
 	}
-	rows := m.railRows()
-	focusedID := ""
-	if s := m.focusedSession(); s != nil {
-		focusedID = s.ID
+	var main string
+	if m.railCollapsed {
+		// Single full-width pane: viewport spans the entire terminal
+		// (minus the small lipgloss frame allowance JoinVertical adds).
+		fullW := m.width - 2
+		if fullW < 20 {
+			fullW = 20
+		}
+		main = renderViewport(m.focusedSession(), m.conversation, fullW, h)
+	} else {
+		rows := m.railRows()
+		focusedID := ""
+		if s := m.focusedSession(); s != nil {
+			focusedID = s.ID
+		}
+		searchHeader := ""
+		if m.mode == ModeSearch {
+			searchHeader = m.search.query.View()
+		} else if q := m.search.query.Value(); q != "" {
+			searchHeader = "/ " + q
+		}
+		left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h)
+		right := renderViewport(m.focusedSession(), m.conversation, rightW, h)
+		main = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	}
-	searchHeader := ""
-	if m.mode == ModeSearch {
-		searchHeader = m.search.query.View()
-	} else if q := m.search.query.Value(); q != "" {
-		searchHeader = "/ " + q
-	}
-	left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h)
-	right := renderViewport(m.focusedSession(), m.conversation, rightW, h)
-	main := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
 	target := "(no session)"
 	color := "#888"
@@ -1897,6 +1922,7 @@ func (m Model) viewHelp() string {
   Ctrl+B             broadcast modal
   Ctrl+G             grep transcripts (current run)
   Ctrl+H             history panel (past hub-runs)
+  Ctrl+J             toggle rail (full-width conversation)
   Ctrl+Y             copy focused session's conversation to clipboard
 
   ?                  this help
