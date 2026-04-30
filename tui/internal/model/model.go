@@ -41,6 +41,7 @@ type Mode int
 const (
 	ModeMain Mode = iota
 	ModeBroadcast
+	ModeGrep
 )
 
 // broadcastState is held in the Model so the reducer can mutate it
@@ -51,6 +52,15 @@ type broadcastState struct {
 	field    int
 	cursor   int
 	text     string
+}
+
+// grepState backs the FTS palette: a textinput plus a debounced
+// search command pipeline. debounceToken invalidates stale results.
+type grepState struct {
+	query         textinput.Model
+	results       []map[string]any
+	cursor        int
+	debounceToken int
 }
 
 // Model is the Bubble Tea state.
@@ -67,6 +77,7 @@ type Model struct {
 	compose textinput.Model
 
 	bcast broadcastState
+	grep  grepState
 }
 
 type tickMsg struct{}
@@ -76,6 +87,11 @@ type errMsg struct{ err error }
 type composeSentMsg struct{}
 type composeFailedMsg struct{ err error }
 type bcastDoneMsg struct{ n int }
+type grepDebounceMsg struct{ token int }
+type grepResultsMsg struct {
+	token   int
+	matches []map[string]any
+}
 
 // New constructs a Model bound to an already-connected rpc.Client.
 func New(c *rpc.Client) Model {
@@ -85,6 +101,7 @@ func New(c *rpc.Client) Model {
 		mode:    ModeMain,
 		compose: views.NewCompose(),
 		bcast:   broadcastState{selected: map[string]bool{}},
+		grep:    grepState{query: views.NewGrepQuery()},
 	}
 }
 
@@ -174,6 +191,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case bcastDoneMsg:
 		m.mode = ModeMain
 		return m, m.refreshSessions()
+	case grepDebounceMsg:
+		if msg.token != m.grep.debounceToken {
+			return m, nil
+		}
+		return m, m.doGrep(m.grep.query.Value(), msg.token)
+	case grepResultsMsg:
+		if msg.token != m.grep.debounceToken {
+			return m, nil
+		}
+		m.grep.results = msg.matches
+		if m.grep.cursor >= len(m.grep.results) {
+			m.grep.cursor = 0
+		}
+		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -187,6 +218,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case ModeBroadcast:
 		return m.handleKeyBroadcast(msg)
+	case ModeGrep:
+		return m.handleKeyGrep(msg)
 	default:
 		return m.handleKeyMain(msg)
 	}
@@ -208,6 +241,16 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeBroadcast
 		m.bcast = broadcastState{selected: map[string]bool{}}
 		return m, nil
+	case "/":
+		// "/" enters grep palette only when the compose bar is empty,
+		// so a literal slash typed mid-prompt still goes to the buffer.
+		if m.compose.Value() == "" {
+			m.mode = ModeGrep
+			m.grep.query = views.NewGrepQuery()
+			m.grep.results = nil
+			m.grep.cursor = 0
+			return m, nil
+		}
 	case "enter":
 		return m, m.sendComposed()
 	case "shift+enter":
@@ -271,6 +314,73 @@ func (m Model) handleKeyBroadcast(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m Model) handleKeyGrep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = ModeMain
+		return m, nil
+	case "up":
+		if m.grep.cursor > 0 {
+			m.grep.cursor--
+		}
+		return m, nil
+	case "down":
+		if m.grep.cursor < len(m.grep.results)-1 {
+			m.grep.cursor++
+		}
+		return m, nil
+	case "enter":
+		// Jump to the result's session: focus it on the main view.
+		if m.grep.cursor >= 0 && m.grep.cursor < len(m.grep.results) {
+			r := m.grep.results[m.grep.cursor]
+			if sid, _ := r["session_id"].(string); sid != "" {
+				for i, s := range m.sessions {
+					if s.ID == sid {
+						m.focused = i
+						break
+					}
+				}
+			}
+		}
+		m.mode = ModeMain
+		return m, nil
+	}
+	// Forward to query textinput, then schedule a debounced search.
+	var cmd tea.Cmd
+	m.grep.query, cmd = m.grep.query.Update(msg)
+	m.grep.debounceToken++
+	tok := m.grep.debounceToken
+	debounce := tea.Tick(250*time.Millisecond, func(time.Time) tea.Msg {
+		return grepDebounceMsg{token: tok}
+	})
+	return m, tea.Batch(cmd, debounce)
+}
+
+// doGrep is the actual FTS RPC. token is checked in the reducer to
+// invalidate stale results when the user keeps typing.
+func (m Model) doGrep(query string, token int) tea.Cmd {
+	if query == "" {
+		return func() tea.Msg { return grepResultsMsg{token: token, matches: nil} }
+	}
+	c := m.client
+	return func() tea.Msg {
+		raw, err := c.Call(context.Background(), "search_transcripts", map[string]any{
+			"query": query,
+			"limit": 50,
+		})
+		if err != nil {
+			return errMsg{err}
+		}
+		var r struct {
+			Matches []map[string]any `json:"matches"`
+		}
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return errMsg{err}
+		}
+		return grepResultsMsg{token: token, matches: r.Matches}
+	}
 }
 
 // sendBroadcast injects the textarea contents into every selected session.
@@ -358,6 +468,8 @@ func (m Model) View() string {
 	switch m.mode {
 	case ModeBroadcast:
 		return m.viewBroadcast()
+	case ModeGrep:
+		return m.viewGrep()
 	}
 	leftW := 24
 	rightW := m.width - leftW - 2
@@ -422,6 +534,43 @@ func (m Model) viewBroadcast() string {
 		btnStyle = btnStyle.BorderForeground(lipgloss.Color("12")).Bold(true)
 	}
 	b.WriteString(btnStyle.Render(" Send "))
+	return b.String()
+}
+
+func (m Model) viewGrep() string {
+	w := m.width
+	if w < 40 {
+		w = 40
+	}
+	resH := m.height - 8
+	if resH < 5 {
+		resH = 5
+	}
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Bold(true).Render(
+		"Grep transcripts (Esc=cancel, Enter=jump to session)") + "\n\n")
+	qStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Width(w - 4)
+	b.WriteString(qStyle.Render(m.grep.query.View()) + "\n\n")
+
+	resStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+		Width(w - 4).Height(resH)
+	var rs strings.Builder
+	for i, r := range m.grep.results {
+		cursor := "  "
+		if i == m.grep.cursor {
+			cursor = "▸ "
+		}
+		role, _ := r["role"].(string)
+		snippet, _ := r["snippet"].(string)
+		ts, _ := r["ts"].(float64)
+		t := time.UnixMilli(int64(ts)).Format("01-02 15:04")
+		line := fmt.Sprintf("%s%s [%s] %s", cursor, t, role, snippet)
+		if len(line) > w-6 {
+			line = line[:w-6]
+		}
+		rs.WriteString(line + "\n")
+	}
+	b.WriteString(resStyle.Render(rs.String()))
 	return b.String()
 }
 
