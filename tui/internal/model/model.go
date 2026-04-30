@@ -95,13 +95,17 @@ type searchState struct {
 	query textinput.Model
 }
 
-// spawnState backs ModeSpawn: a small modal with two textinputs
-// (name + cwd). Tab cycles between the fields. cwd defaults to the
-// focused session's cwd or $HOME and supports ~ expansion at submit.
+// spawnState backs ModeSpawn: a small modal with three textinputs
+// (name + cwd + group). Tab cycles between the fields. cwd defaults to
+// the focused session's cwd or $HOME and supports ~ expansion at
+// submit. group is optional; when non-empty, it's passed as the first
+// tag so the new session lands in that rail group (GroupKey gives
+// precedence to the first tag).
 type spawnState struct {
 	name  textinput.Model
 	cwd   textinput.Model
-	field int // 0=name, 1=cwd
+	group textinput.Model
+	field int // 0=name, 1=cwd, 2=group
 	err   error
 }
 
@@ -491,6 +495,7 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.spawn = spawnState{
 			name:  views.NewSpawnNameInput(),
 			cwd:   views.NewSpawnCwdInput(cwd),
+			group: views.NewSpawnGroupInput(""),
 			field: 0,
 		}
 		m.mode = ModeSpawn
@@ -715,52 +720,66 @@ func (m Model) handleKeySpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeMain
 		return m, nil
 	case "tab":
-		m.spawn.field = (m.spawn.field + 1) % 2
-		if m.spawn.field == 0 {
-			m.spawn.name.Focus()
-			m.spawn.cwd.Blur()
-		} else {
-			m.spawn.cwd.Focus()
-			m.spawn.name.Blur()
-		}
+		m.spawn.field = (m.spawn.field + 1) % 3
+		m.refocusSpawn()
 		return m, nil
 	case "shift+tab":
-		m.spawn.field = (m.spawn.field + 1) % 2
-		if m.spawn.field == 0 {
-			m.spawn.name.Focus()
-			m.spawn.cwd.Blur()
-		} else {
-			m.spawn.cwd.Focus()
-			m.spawn.name.Blur()
-		}
+		m.spawn.field = (m.spawn.field + 2) % 3
+		m.refocusSpawn()
 		return m, nil
 	case "enter":
 		name := strings.TrimSpace(m.spawn.name.Value())
 		if name == "" {
 			m.spawn.field = 0
-			m.spawn.name.Focus()
-			m.spawn.cwd.Blur()
+			m.refocusSpawn()
 			return m, nil
 		}
 		cwd := views.ExpandHome(strings.TrimSpace(m.spawn.cwd.Value()))
-		return m, m.doSpawn(name, cwd)
+		group := strings.TrimSpace(m.spawn.group.Value())
+		var tags []string
+		if group != "" {
+			tags = []string{group}
+		}
+		return m, m.doSpawn(name, cwd, tags)
 	}
 	var cmd tea.Cmd
-	if m.spawn.field == 0 {
+	switch m.spawn.field {
+	case 0:
 		m.spawn.name, cmd = m.spawn.name.Update(msg)
-	} else {
+	case 1:
 		m.spawn.cwd, cmd = m.spawn.cwd.Update(msg)
+	case 2:
+		m.spawn.group, cmd = m.spawn.group.Update(msg)
 	}
 	return m, cmd
 }
 
-func (m Model) doSpawn(name, cwd string) tea.Cmd {
+// refocusSpawn applies Focus()/Blur() so only the active spawn-modal
+// field shows the cursor. Called whenever m.spawn.field changes.
+func (m *Model) refocusSpawn() {
+	m.spawn.name.Blur()
+	m.spawn.cwd.Blur()
+	m.spawn.group.Blur()
+	switch m.spawn.field {
+	case 0:
+		m.spawn.name.Focus()
+	case 1:
+		m.spawn.cwd.Focus()
+	case 2:
+		m.spawn.group.Focus()
+	}
+}
+
+func (m Model) doSpawn(name, cwd string, tags []string) tea.Cmd {
 	c := m.client
+	if tags == nil {
+		tags = []string{}
+	}
 	return func() tea.Msg {
 		params := map[string]any{
 			"name": name,
 			"cwd":  cwd,
-			"tags": []string{},
+			"tags": tags,
 		}
 		if _, err := c.Call(context.Background(), "spawn_session", params); err != nil {
 			return spawnFailedMsg{err}
@@ -1298,19 +1317,17 @@ func (m Model) viewSpawn() string {
 	}
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	highlight := lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
-	nameLabel := "  name: "
-	cwdLabel := "  cwd:  "
-	if m.spawn.field == 0 {
-		nameLabel = highlight.Render("▸ name: ")
-		cwdLabel = dim.Render("  cwd:  ")
-	} else {
-		nameLabel = dim.Render("  name: ")
-		cwdLabel = highlight.Render("▸ cwd:  ")
+	label := func(text string, active bool) string {
+		if active {
+			return highlight.Render("▸ " + text)
+		}
+		return dim.Render("  " + text)
 	}
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Render("New session") + "\n\n")
-	b.WriteString(nameLabel + m.spawn.name.View() + "\n")
-	b.WriteString(cwdLabel + m.spawn.cwd.View() + "\n\n")
+	b.WriteString(label("name:  ", m.spawn.field == 0) + m.spawn.name.View() + "\n")
+	b.WriteString(label("cwd:   ", m.spawn.field == 1) + m.spawn.cwd.View() + "\n")
+	b.WriteString(label("group: ", m.spawn.field == 2) + m.spawn.group.View() + "\n\n")
 	if m.spawn.err != nil {
 		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("9")).
 			Render("error: "+m.spawn.err.Error()) + "\n\n")
