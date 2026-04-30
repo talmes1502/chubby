@@ -249,6 +249,16 @@ type historyTurnsMsg struct {
 }
 type copiedMsg struct{ count int }
 
+// autoSpawnedMsg is emitted when the empty-startup auto-spawn succeeds.
+// The reducer surfaces a transient toast and triggers a session refresh.
+type autoSpawnedMsg struct{ name, cwd string }
+
+// autoSpawnFallbackMsg is emitted when auto-spawn cannot reasonably
+// succeed (HOME unresolvable, every "temp"/"temp-N" already taken,
+// non-name-collision RPC error). The reducer falls back to opening the
+// spawn modal so the user can pick something else.
+type autoSpawnFallbackMsg struct{ err error }
+
 // New constructs a Model bound to an already-connected rpc.Client.
 func New(c *rpc.Client) Model {
 	return Model{
@@ -382,12 +392,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.loadHistory(s.ID))
 			}
 		}
-		// First listMsg + no sessions: auto-open the spawn modal so the
-		// user doesn't stare at an empty viewport.
+		// First listMsg + no sessions: auto-spawn a "temp" session at
+		// $HOME so the user has something to chat with immediately. The
+		// modal only appears as a fallback when auto-spawn fails (e.g.
+		// a leftover "temp" name collision the variant cycle can't escape).
 		if !m.initialListReceived {
 			m.initialListReceived = true
 			if len(m.sessions) == 0 && m.mode == ModeMain {
-				m.openSpawnModal()
+				cmds = append(cmds, m.autoSpawnDefault())
 			}
 		}
 		return m, tea.Batch(cmds...)
@@ -519,6 +531,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			color:       "10",
 			expiresAt:   time.Now().Add(2 * time.Second),
 		})
+		return m, nil
+	case autoSpawnedMsg:
+		// Surface a transient toast so the user understands what just
+		// happened — they didn't ask for a session, but one appeared, so
+		// hint at the rename shortcut for renaming it later.
+		m.toasts = append(m.toasts, toast{
+			sessionName: fmt.Sprintf("auto-started '%s' at %s (Ctrl+R to rename)",
+				msg.name, prettyHomePath(msg.cwd)),
+			color:     "10",
+			expiresAt: time.Now().Add(5 * time.Second),
+		})
+		return m, m.refreshSessions()
+	case autoSpawnFallbackMsg:
+		// Auto-spawn couldn't proceed — punt to the modal so the user
+		// can pick a name/cwd themselves.
+		m.openSpawnModal()
+		if msg.err != nil {
+			m.spawn.err = msg.err
+		}
 		return m, nil
 	case grepDebounceMsg:
 		if msg.token != m.grep.debounceToken {
@@ -997,6 +1028,53 @@ func (m *Model) refocusSpawn() {
 	case 2:
 		m.spawn.group.Focus()
 	}
+}
+
+// autoSpawnDefault spawns a default "temp" session at $HOME so a freshly
+// booted TUI with no existing sessions has something to chat with
+// immediately. If the spawn fails (likely a name collision with a
+// leftover "temp" from a previous run) we cycle through "temp-2",
+// "temp-3", ... up to a small cap and only fall back to the modal when
+// every variant is taken or the failure isn't a name collision.
+func (m Model) autoSpawnDefault() tea.Cmd {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		// Can't auto-default — punt to the modal so the user can decide.
+		return func() tea.Msg { return autoSpawnFallbackMsg{} }
+	}
+	c := m.client
+	return func() tea.Msg {
+		// Try names temp, temp-2, temp-3, ... up to a reasonable cap.
+		for n := 1; n <= 9; n++ {
+			name := "temp"
+			if n > 1 {
+				name = fmt.Sprintf("temp-%d", n)
+			}
+			_, err := c.Call(context.Background(), "spawn_session",
+				map[string]any{"name": name, "cwd": home, "tags": []string{}})
+			if err != nil {
+				// ChubError with NAME_TAKEN? Try the next variant.
+				le := strings.ToLower(err.Error())
+				if strings.Contains(le, "name") && strings.Contains(le, "in use") {
+					continue
+				}
+				// Other error — fall back to the modal.
+				return autoSpawnFallbackMsg{err: err}
+			}
+			return autoSpawnedMsg{name: name, cwd: home}
+		}
+		return autoSpawnFallbackMsg{}
+	}
+}
+
+// prettyHomePath collapses a $HOME prefix to "~" for the toast — the
+// user reads "~/projects/foo", not "/Users/very/long/projects/foo".
+func prettyHomePath(p string) string {
+	home, _ := os.UserHomeDir()
+	if home != "" && strings.HasPrefix(p, home) {
+		return "~" + p[len(home):]
+	}
+	return p
 }
 
 func (m Model) doSpawn(name, cwd string, tags []string) tea.Cmd {
