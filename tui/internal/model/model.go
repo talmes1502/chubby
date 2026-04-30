@@ -63,10 +63,12 @@ const (
 // cleanly. Tab cycles fields {0=list,1=text,2=send}; space toggles a
 // session checkbox; Enter on Send fires inject for each selected id.
 type broadcastState struct {
-	selected map[string]bool
-	field    int
-	cursor   int
-	text     string
+	selected  map[string]bool
+	field     int
+	cursor    int
+	text      string
+	compIndex int    // slash-command Tab cycle position
+	compLast  string // last value produced by a slash-tab; used to detect edits
 }
 
 // grepState backs the FTS palette: a textinput plus a debounced
@@ -151,6 +153,11 @@ type Model struct {
 	// completion tracks @-name autocomplete state in the compose bar.
 	completionIndex   int    // which match in the cycle is active
 	completionPartial string // the partial we last completed for, to detect input change
+
+	// slashCompletionLast is the compose value produced by the most
+	// recent slash-completion Tab. If the user edits past that point,
+	// the next Tab restarts the cycle from 0.
+	slashCompletionLast string
 }
 
 type tickMsg struct{}
@@ -415,6 +422,21 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "tab":
+		// /command autocompletion takes precedence over @name — once the
+		// user has typed a leading "/", they're committed to a slash
+		// command and the @name catalog is irrelevant.
+		curVal := m.compose.Value()
+		if curVal != m.slashCompletionLast {
+			// User has edited since our last slash-tab — restart the cycle.
+			m.completionIndex = 0
+		}
+		if newVal, ok := trySlashComplete(curVal, m.completionIndex); ok {
+			m.compose.SetValue(newVal)
+			m.compose.CursorEnd()
+			m.slashCompletionLast = newVal
+			m.completionIndex++
+			return m, nil
+		}
 		if m.tryComplete() {
 			return m, nil
 		}
@@ -478,8 +500,11 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.history = historyState{}
 		return m, m.loadHubRuns()
 	case "/":
-		// "/" enters grep palette only when the compose bar is empty,
-		// so a literal slash typed mid-prompt still goes to the buffer.
+		// Bare "/" is now reserved for typing slash commands into the
+		// compose bar (autocompleted via Tab). Grep transcripts moved to
+		// Ctrl+G to keep the palette reachable without stealing the
+		// slash key from the compose buffer.
+	case "ctrl+g":
 		if m.compose.Value() == "" {
 			m.mode = ModeGrep
 			m.grep.query = views.NewGrepQuery()
@@ -506,6 +531,20 @@ func (m Model) handleKeyBroadcast(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeMain
 		return m, nil
 	case "tab":
+		// In the textarea, Tab tries slash-command completion first;
+		// only if that doesn't apply do we cycle fields. Other fields
+		// use Tab for field-cycling unconditionally.
+		if m.bcast.field == 1 {
+			if m.bcast.text != m.bcast.compLast {
+				m.bcast.compIndex = 0
+			}
+			if newVal, ok := trySlashComplete(m.bcast.text, m.bcast.compIndex); ok {
+				m.bcast.text = newVal
+				m.bcast.compLast = newVal
+				m.bcast.compIndex++
+				return m, nil
+			}
+		}
 		m.bcast.field = (m.bcast.field + 1) % 3
 		return m, nil
 	case "shift+tab":
@@ -533,15 +572,19 @@ func (m Model) handleKeyBroadcast(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "enter":
 			m.bcast.text += "\n"
+			m.bcast.compIndex = 0
 		case "backspace":
 			if len(m.bcast.text) > 0 {
 				m.bcast.text = m.bcast.text[:len(m.bcast.text)-1]
 			}
+			m.bcast.compIndex = 0
 		default:
 			if msg.Type == tea.KeyRunes {
 				m.bcast.text += string(msg.Runes)
+				m.bcast.compIndex = 0
 			} else if msg.String() == " " {
 				m.bcast.text += " "
+				m.bcast.compIndex = 0
 			}
 		}
 	case 2: // send button
@@ -1009,7 +1052,20 @@ func (m Model) viewBroadcast() string {
 	if m.bcast.field == 1 {
 		textStyle = textStyle.BorderForeground(lipgloss.Color("12"))
 	}
-	b.WriteString(textStyle.Render(m.bcast.text+"_") + "\n")
+	body := m.bcast.text + "_"
+	if g := slashGhost(m.bcast.text); g != "" {
+		body = m.bcast.text +
+			lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(g) +
+			"_"
+	}
+	b.WriteString(textStyle.Render(body) + "\n")
+	// Below the textarea: a small dim hint line previewing the first
+	// slash-completion match. Mirrors the compose-bar ghost so users
+	// know Tab is wired here too.
+	if hint := slashGhost(m.bcast.text); hint != "" {
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
+			Render("  Tab → "+m.bcast.text+hint) + "\n")
+	}
 
 	btnStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
 	if m.bcast.field == 2 {
@@ -1124,12 +1180,13 @@ func (m Model) viewHelp() string {
   Space              toggle group collapse
   Enter              send composed message to focused session
   @name <msg>        one-shot redirect: send to <name>, then snap back
-  Tab (in compose)   autocomplete @name
+  Tab (in compose)   autocomplete @name or /command
+  /<name>            Claude slash command (Tab completes; e.g. /model sonnet)
 
   Ctrl+N             new session in focused cwd
   Ctrl+K             search session list
   Ctrl+B             broadcast modal
-  /                  grep transcripts (current run)
+  Ctrl+G             grep transcripts (current run)
   Ctrl+H             history panel (past hub-runs)
 
   ?                  this help
@@ -1292,9 +1349,15 @@ func (m *Model) tryComplete() bool {
 
 // composeGhost returns the dim suffix to render after the compose
 // textinput's content: shows the next completion match for the
-// trailing "@<partial>". Empty string means no ghost.
+// trailing "@<partial>" or "/<cmd-or-arg-partial>". Empty string means
+// no ghost.
 func (m Model) composeGhost() string {
 	val := m.compose.Value()
+	// Slash command / arg ghost takes priority — a leading "/" is
+	// unambiguous, and the @-mention regex won't match a slash anyway.
+	if g := slashGhost(val); g != "" {
+		return g
+	}
 	partial, _, ok := extractTrailingAt(val)
 	if !ok || partial == "" {
 		return ""
