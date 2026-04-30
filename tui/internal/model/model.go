@@ -1081,15 +1081,13 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case " ":
-		// Space toggles a group/folder header collapse, but only when
+		// Space toggles a folder header's collapse state, but only when
 		// compose is empty (otherwise space goes to the textinput).
-		// Folders and auto-groups share the same collapsed map; the
-		// renderer reads it the same way for both.
 		if m.compose.Value() == "" {
 			rows := m.railRows()
 			if m.railCursor >= 0 && m.railCursor < len(rows) {
 				r := rows[m.railCursor]
-				if r.Kind == RailRowHeader || r.Kind == RailRowFolder {
+				if r.Kind == RailRowFolder {
 					m.groupCollapsed[r.GroupName] = !m.groupCollapsed[r.GroupName]
 					_ = SaveTUIState(TUIState{
 						GroupsCollapsed: collapsedGroupNames(m.groupCollapsed),
@@ -1655,22 +1653,6 @@ func (m Model) enterRenameMode() (tea.Model, tea.Cmd) {
 			target:   RenameSession,
 			sessions: []string{s.ID},
 			oldName:  s.Name,
-		}
-	case RailRowHeader:
-		ids := []string{}
-		for _, s := range m.sessions {
-			if GroupKey(s) == row.GroupName {
-				ids = append(ids, s.ID)
-			}
-		}
-		input.SetValue(row.GroupName)
-		input.CursorEnd()
-		input.Focus()
-		m.rename = renameState{
-			input:    input,
-			target:   RenameGroup,
-			sessions: ids,
-			oldName:  row.GroupName,
 		}
 	case RailRowFolder:
 		// User folder rename — does not retag any sessions; just
@@ -3843,15 +3825,27 @@ func (m *Model) cycleFocusedSession(dir int) {
 	m.syncRailCursorToFocus()
 }
 
-// moveRailCursor walks all rail rows by `dir` (+1 or -1). When the
-// cursor lands on a session, m.focused is updated; landing on a header
-// leaves the focused session alone.
+// moveRailCursor walks the rail rows by `dir` (+1 or -1). Separator
+// rows (RailRowUnfiledSeparator) are skipped — they're decorative and
+// the cursor should never rest on them. When the cursor lands on a
+// session, m.focused is updated; landing on a folder header leaves the
+// focused session alone.
 func (m *Model) moveRailCursor(dir int) {
 	rows := m.railRows()
 	if len(rows) == 0 {
 		return
 	}
-	m.railCursor = (m.railCursor + dir + len(rows)) % len(rows)
+	n := len(rows)
+	// Walk at most n steps so we don't loop forever if every row is a
+	// separator (shouldn't happen, but defensive).
+	next := m.railCursor
+	for step := 0; step < n; step++ {
+		next = (next + dir + n) % n
+		if rows[next].Kind != RailRowUnfiledSeparator {
+			break
+		}
+	}
+	m.railCursor = next
 	m.focusRailRow()
 }
 
@@ -3899,26 +3893,18 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("12")).
 			Render(" "+searchHeader) + "\n")
 	}
-	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	separatorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true)
 	folderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
 	for i, r := range rows {
 		switch r.Kind {
-		case RailRowHeader:
-			arrow := "▾"
-			if collapsed[r.GroupName] {
-				arrow = "▸"
-			}
-			cursorMark := " "
-			if i == cursor {
-				cursorMark = ">"
-			}
-			line := fmt.Sprintf("%s %s %s", cursorMark, arrow, r.GroupName)
-			b.WriteString(headerStyle.Render(line) + "\n")
+		case RailRowUnfiledSeparator:
+			// Dim, non-interactive separator between the folder block
+			// and the unfiled-sessions block. Skipped by cursor
+			// navigation in moveRailCursor.
+			b.WriteString(separatorStyle.Render("  "+r.GroupName) + "\n")
 		case RailRowFolder:
-			// Folders use a 📁 glyph instead of the auto-group ▾/▸ so
-			// the user can tell them apart at a glance even when
-			// expanded. We still honor the collapsed state via the
-			// same shared map.
+			// Folders use a 📁 glyph; honor the collapsed state via the
+			// same shared map used elsewhere.
 			glyph := "📁"
 			if collapsed[r.GroupName] {
 				glyph = "📁▸"

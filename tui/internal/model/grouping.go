@@ -1,12 +1,19 @@
-// Package model — grouping.go: hybrid session grouping for the left rail.
+// Package model — grouping.go: rail row layout for the left rail.
 //
-// Group key:
-//   - if session has tags: first tag
-//   - else: path.Base(cwd)
-//   - cwd is "/" or "" → "(untitled)"
+// Layout (as of D10a):
+//   - Folder rows (alphabetical) with their assigned sessions underneath
+//   - Then unfiled sessions as a flat list (alphabetical by Name,
+//     case-insensitive). No header row above unfiled sessions when there
+//     are NO folders; a dim "(unfiled)" separator row is inserted only
+//     when both folders AND unfiled sessions are present, so the user
+//     can tell where the folder section ends.
 //
-// Groups sort alphabetically (case-insensitive); "(untitled)" sorts last.
-// Sessions within a group sort alphabetically by Name.
+// Auto-grouping by first-tag / cwd-basename was removed in D10a — every
+// session that isn't in an explicit user folder shows up as a flat row
+// at the bottom. The legacy `GroupKey` helper is kept (now narrowed to
+// "first tag wins, falling back to cwd basename") because it's still
+// used by Ctrl+N pre-fill heuristics and the one-time D10c migration
+// that reads old auto-group identity off existing sessions.
 package model
 
 import (
@@ -15,17 +22,18 @@ import (
 	"strings"
 )
 
-// UntitledGroup is the fallback group key when a session has no tags
-// and a cwd of "" or "/".
+// UntitledGroup is the legacy fallback group key when a session has no
+// tags and a cwd of "" or "/". Retained for the D10c migration and
+// Ctrl+N "skip untitled when prefilling" heuristic; the rail no longer
+// renders an UntitledGroup header.
 const UntitledGroup = "(untitled)"
 
-// Group is a named bucket of sessions, in display order.
-type Group struct {
-	Name     string
-	Sessions []Session
-}
-
-// GroupKey returns the display group key for a session.
+// GroupKey returns the legacy auto-derived group key for a session: the
+// first tag, falling back to the cwd basename, falling back to
+// UntitledGroup. Used by D10c migration (assigns existing sessions to
+// folders matching their old auto-group key) and by openSpawnModal's
+// pre-fill heuristic. Not used at render time anymore — the rail
+// flattens unfiled sessions directly.
 func GroupKey(s Session) string {
 	if len(s.Tags) > 0 && s.Tags[0] != "" {
 		return s.Tags[0]
@@ -44,55 +52,54 @@ func GroupKey(s Session) string {
 type RailRowKind int
 
 const (
-	// RailRowHeader is an auto-derived group header (first tag or cwd
-	// basename). Glyph: ▾/▸.
-	RailRowHeader RailRowKind = iota
-	// RailRowSession is a session row inside any kind of header (folder
-	// or auto group). The renderer disambiguates via the parent
-	// GroupName when it cares.
-	RailRowSession
 	// RailRowFolder is an explicit user-created folder header. Glyph:
-	// 📁. Folders sort alphabetically among themselves and always
-	// render above the auto-group section.
-	RailRowFolder
+	// 📁. Folders sort alphabetically among themselves.
+	RailRowFolder RailRowKind = iota
+	// RailRowSession is a session row, either inside a folder (when
+	// GroupName is the folder name) or at the top level for unfiled
+	// sessions (when GroupName is "").
+	RailRowSession
+	// RailRowUnfiledSeparator is a non-interactive dim separator row
+	// rendered between the folder block and the flat unfiled-sessions
+	// block, but ONLY when both blocks are non-empty. Skipped by all
+	// cursor navigation.
+	RailRowUnfiledSeparator
 )
 
-// RailRow is a flattened row in the left rail. Either a group header
-// or a session. The renderer and the up/down navigator both consume
-// this list, so they stay in lock-step.
+// RailRow is a flattened row in the left rail. Either a folder header,
+// a session, or the unfiled-separator. The renderer and the up/down
+// navigator both consume this list, so they stay in lock-step.
 type RailRow struct {
 	Kind      RailRowKind
 	GroupName string
 	// SessionIdx is the index into the unfiltered Model.sessions slice
-	// for RailRowSession. -1 for headers.
+	// for RailRowSession. -1 for headers / separators.
 	SessionIdx int
 	// Session is a copy convenience for renderers; only set for
 	// RailRowSession.
 	Session Session
 }
 
-// BuildRailRows flattens folders + auto-groups + collapsed state into
-// the visible rail rows.
+// BuildRailRows flattens folders + unfiled-sessions + collapsed state
+// into the visible rail rows.
 //
 // Layout:
-//  1. User-created folders (alphabetical), each with assigned visible
-//     sessions underneath.
-//  2. Auto-derived groups (alphabetical, "(untitled)" last) for every
-//     visible session NOT assigned to a folder.
+//  1. User-created folders (alphabetical, case-insensitive), each with
+//     their assigned visible sessions underneath.
+//  2. A dim "(unfiled)" separator row, but only when both folder rows
+//     and unfiled sessions are present.
+//  3. Unfiled sessions (alphabetical by Name, case-insensitive).
 //
-// Headers are emitted always, even when collapsed; sessions inside a
-// collapsed header are not emitted. Sessions in a folder do NOT also
-// appear in their auto group — folders take precedence.
+// Folder headers are emitted always, even when collapsed; sessions
+// inside a collapsed folder are not emitted.
 //
 // sessions is the (already filtered, if applicable) full session list.
 // origSessions is the unfiltered sessions slice — needed so SessionIdx
 // points back into the canonical Model.sessions for focus tracking.
 // folders is the user folder state; pass an empty FoldersState (or
-// FoldersState{} zero value) to opt out and get the legacy rail.
-// collapsed keys are header names — folder names and auto-group names
-// share the same map; folder/group name collisions are unlikely in
-// practice and we accept the tiny ambiguity rather than carrying a
-// second map.
+// FoldersState{} zero value) to opt out and get a flat alphabetical
+// list of every visible session.
+// collapsed keys are folder names.
 func BuildRailRows(sessions []Session, origSessions []Session, collapsed map[string]bool, folders FoldersState) []RailRow {
 	idxByID := make(map[string]int, len(origSessions))
 	for i, s := range origSessions {
@@ -110,15 +117,16 @@ func BuildRailRows(sessions []Session, origSessions []Session, collapsed map[str
 
 	// 1. Folders, alphabetical.
 	assigned := make(map[string]bool, 16)
-	for _, name := range folders.AllFolderNames() {
+	folderNames := folders.AllFolderNames()
+	for _, name := range folderNames {
 		rows = append(rows, RailRow{
 			Kind:       RailRowFolder,
 			GroupName:  name,
 			SessionIdx: -1,
 		})
-		// Mark every assigned id (visible or not) so the auto-group
-		// section below skips them. Unassigned-and-hidden sessions stay
-		// hidden naturally because they're not in `sessions`.
+		// Mark every assigned id (visible or not) so the unfiled section
+		// below skips them. Unassigned-and-hidden sessions stay hidden
+		// naturally because they're not in `sessions`.
 		ids := folders.SessionsInFolder(name)
 		for _, id := range ids {
 			assigned[id] = true
@@ -142,66 +150,38 @@ func BuildRailRows(sessions []Session, origSessions []Session, collapsed map[str
 		}
 	}
 
-	// 2. Auto-groups for the rest.
-	unassigned := make([]Session, 0, len(sessions))
+	// 2. Collect unfiled sessions, alphabetical by Name (case-insensitive).
+	unfiled := make([]Session, 0, len(sessions))
 	for _, s := range sessions {
 		if assigned[s.ID] {
 			continue
 		}
-		unassigned = append(unassigned, s)
+		unfiled = append(unfiled, s)
 	}
-	for _, g := range GroupSessions(unassigned) {
+	sort.SliceStable(unfiled, func(i, j int) bool {
+		return strings.ToLower(unfiled[i].Name) < strings.ToLower(unfiled[j].Name)
+	})
+
+	// 3. Separator only when BOTH folders AND unfiled sessions exist.
+	hasFolders := len(folderNames) > 0
+	hasUnfiled := len(unfiled) > 0
+	if hasFolders && hasUnfiled {
 		rows = append(rows, RailRow{
-			Kind:       RailRowHeader,
-			GroupName:  g.Name,
+			Kind:       RailRowUnfiledSeparator,
+			GroupName:  "(unfiled)",
 			SessionIdx: -1,
 		})
-		if collapsed[g.Name] {
-			continue
-		}
-		for _, s := range g.Sessions {
-			rows = append(rows, RailRow{
-				Kind:       RailRowSession,
-				GroupName:  g.Name,
-				SessionIdx: idxByID[s.ID],
-				Session:    s,
-			})
-		}
 	}
-	return rows
-}
 
-// GroupSessions hybrid-groups sessions and returns them in display order:
-// groups alphabetical (case-insensitive), "(untitled)" last; sessions
-// inside each group alphabetical by Name (case-insensitive).
-func GroupSessions(sessions []Session) []Group {
-	buckets := map[string][]Session{}
-	for _, s := range sessions {
-		k := GroupKey(s)
-		buckets[k] = append(buckets[k], s)
-	}
-	keys := make([]string, 0, len(buckets))
-	for k := range buckets {
-		keys = append(keys, k)
-	}
-	sort.SliceStable(keys, func(i, j int) bool {
-		ki, kj := keys[i], keys[j]
-		// Untitled always last.
-		if ki == UntitledGroup && kj != UntitledGroup {
-			return false
-		}
-		if kj == UntitledGroup && ki != UntitledGroup {
-			return true
-		}
-		return strings.ToLower(ki) < strings.ToLower(kj)
-	})
-	out := make([]Group, 0, len(keys))
-	for _, k := range keys {
-		ss := buckets[k]
-		sort.SliceStable(ss, func(i, j int) bool {
-			return strings.ToLower(ss[i].Name) < strings.ToLower(ss[j].Name)
+	// 4. Unfiled sessions, flat.
+	for _, s := range unfiled {
+		rows = append(rows, RailRow{
+			Kind:       RailRowSession,
+			GroupName:  "",
+			SessionIdx: idxByID[s.ID],
+			Session:    s,
 		})
-		out = append(out, Group{Name: k, Sessions: ss})
 	}
-	return out
+
+	return rows
 }
