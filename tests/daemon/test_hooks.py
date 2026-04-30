@@ -11,7 +11,8 @@ from chub.daemon.hooks import (
     _extract_turn_text,
     _stringify,
     _tail_jsonl,
-    claude_transcript_path,
+    find_jsonl_for_session,
+    find_new_jsonl_for_cwd,
     watch_for_transcript,
 )
 from chub.daemon.persistence import Database
@@ -29,12 +30,51 @@ class _FakeSubs:
         self.broadcasts.append((event_method, params))
 
 
-def test_claude_transcript_path_encodes_cwd() -> None:
-    p = claude_transcript_path("abc1234", "/Users/me/proj")
-    assert p.name == "abc1234.jsonl"
-    # Encoding replaces "/" with "-" and strips the leading dash; the Path
-    # home is platform-dependent so just check the project-folder element.
-    assert p.parent.name == "Users-me-proj"
+def test_find_jsonl_for_session_globs_any_subdir(tmp_path: Path, monkeypatch) -> None:
+    """find_jsonl_for_session should locate the file regardless of which
+    projects/<subdir>/ Claude wrote it under — no path encoding assumed."""
+    fake_root = tmp_path / "projects"
+    sub = fake_root / "any-encoded-name-could-go-here"
+    sub.mkdir(parents=True)
+    (sub / "abc1234.jsonl").write_text("{}\n")
+
+    import chub.daemon.hooks as hooks_mod
+    monkeypatch.setattr(hooks_mod, "claude_projects_root", lambda: fake_root)
+
+    found = find_jsonl_for_session("abc1234")
+    assert found is not None
+    assert found.name == "abc1234.jsonl"
+
+
+def test_find_new_jsonl_for_cwd_matches_via_cwd_field(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """find_new_jsonl_for_cwd should match by reading the cwd field inside
+    the JSONL (encoding-free), not by computing a subdir name."""
+    fake_root = tmp_path / "projects"
+    sub_a = fake_root / "anything-A"
+    sub_b = fake_root / "anything-B"
+    sub_a.mkdir(parents=True)
+    sub_b.mkdir(parents=True)
+
+    target_cwd = str(tmp_path / "my" / "proj")
+    Path(target_cwd).mkdir(parents=True)
+    other_cwd = str(tmp_path / "other")
+    Path(other_cwd).mkdir(parents=True)
+
+    (sub_a / "match.jsonl").write_text(
+        json.dumps({"type": "first", "cwd": target_cwd}) + "\n"
+    )
+    (sub_b / "wrong.jsonl").write_text(
+        json.dumps({"type": "first", "cwd": other_cwd}) + "\n"
+    )
+
+    import chub.daemon.hooks as hooks_mod
+    monkeypatch.setattr(hooks_mod, "claude_projects_root", lambda: fake_root)
+
+    found = find_new_jsonl_for_cwd(target_cwd, since_ms=0)
+    assert found is not None
+    assert found.name == "match.jsonl"
 
 
 def test_stringify_handles_str_list_dict_none() -> None:
@@ -191,64 +231,52 @@ async def test_tailer_skips_blank_invalid_and_non_turn_records(tmp_path: Path) -
     assert len(rows) == 1
 
 
-async def test_watch_for_transcript_binds_new_jsonl(tmp_path: Path) -> None:
-    """watch_for_transcript should pick up a JSONL written after session creation
-    and call set_claude_session_id."""
-    # Fake home — point projects at tmp_path/projects/<encoded>.
-    cwd = "/proj/foo"
-    encoded = "proj-foo"
-    proj_dir = tmp_path / "projects" / encoded
-    proj_dir.mkdir(parents=True)
+async def test_watch_for_transcript_binds_new_jsonl(tmp_path: Path, monkeypatch) -> None:
+    """watch_for_transcript picks up a JSONL written after session creation
+    by matching the cwd field inside the file — no path encoding."""
+    # Use a real cwd so Path.resolve() comparisons line up.
+    cwd_dir = tmp_path / "work"
+    cwd_dir.mkdir()
+    cwd = str(cwd_dir)
+
+    fake_root = tmp_path / "projects"
+    # Put the JSONL in a deliberately-encoded subdir to prove the lookup
+    # doesn't depend on any specific encoding scheme.
+    sub = fake_root / "whatever-encoded-name"
+    sub.mkdir(parents=True)
+
+    import chub.daemon.hooks as hooks_mod
+    monkeypatch.setattr(hooks_mod, "claude_projects_root", lambda: fake_root)
 
     db = await Database.open(tmp_path / "s.db")
     subs = _FakeSubs()
     reg = Registry(hub_run_id="hr_t", db=db, subs=subs)  # type: ignore[arg-type]
-    s = await reg.register(
-        name="foo", kind=SessionKind.WRAPPED, cwd=cwd
-    )
+    s = await reg.register(name="foo", kind=SessionKind.WRAPPED, cwd=cwd)
 
-    # Monkey-patch claude_projects_dir to point at our tmp dir.
-    import chub.daemon.hooks as hooks_mod
-
-    orig = hooks_mod.claude_projects_dir
-    hooks_mod.claude_projects_dir = lambda c: proj_dir  # type: ignore[assignment]
-    try:
-        # Fire the watcher in the background; after a short delay write a
-        # JSONL — the watcher should detect it and call set_claude_session_id.
-        async def writer() -> None:
-            await asyncio.sleep(0.05)
-            (proj_dir / "abc1234.jsonl").write_text(
-                json.dumps(
-                    {
-                        "type": "user",
-                        "message": {"role": "user", "content": "hello"},
-                    }
-                )
-                + "\n"
+    async def writer() -> None:
+        await asyncio.sleep(0.05)
+        (sub / "abc1234.jsonl").write_text(
+            json.dumps({"type": "first", "cwd": cwd}) + "\n"
+            + json.dumps(
+                {"type": "user", "message": {"role": "user", "content": "hello"}}
             )
-
-        # Run the watcher with stop_after=1 inside _tail_jsonl by giving a
-        # very short timeout window — but we *do* want it to find the file
-        # and invoke set_claude_session_id, so use a short poll interval and
-        # just cancel after a moment.
-        watch_task = asyncio.create_task(
-            watch_for_transcript(reg, s, poll_interval=0.05, timeout=2.0)
+            + "\n"
         )
+
+    watch_task = asyncio.create_task(
+        watch_for_transcript(reg, s, poll_interval=0.05, timeout=2.0)
+    )
+    try:
         await writer()
-        # Give the watcher a moment to detect, bind, then start tailing.
         await asyncio.sleep(0.3)
+    finally:
         watch_task.cancel()
         try:
             await watch_task
         except asyncio.CancelledError:
             pass
 
-        bound = await reg.get(s.id)
-        assert bound.claude_session_id == "abc1234"
-        # session_id_resolved should have been broadcast.
-        assert any(
-            m == "session_id_resolved" for m, _ in subs.broadcasts
-        )
-    finally:
-        hooks_mod.claude_projects_dir = orig  # type: ignore[assignment]
-        await db.close()
+    bound = await reg.get(s.id)
+    assert bound.claude_session_id == "abc1234"
+    assert any(m == "session_id_resolved" for m, _ in subs.broadcasts)
+    await db.close()

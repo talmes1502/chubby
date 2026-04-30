@@ -292,29 +292,18 @@ def _build_registry(
     ) -> dict[str, Any]:
         """Register a running raw ``claude`` PID as a readonly session.
 
-        Heuristic JSONL discovery: look in ``~/.claude/projects/<encoded-cwd>/``
-        (where ``encoded-cwd = cwd.replace("/", "-")``, leading dash stripped)
-        and pick the most recently modified ``*.jsonl``. The session id is the
-        filename stem. If no transcript is found we still register the session
-        so the user can see the raw process — we just won't tail anything.
+        JSONL discovery is encoding-free: we scan ``~/.claude/projects/*/*.jsonl``
+        for the most recent file whose first records reference this cwd.
+        If none is found we still register the session — the user can still
+        see it in lists; we just won't have a transcript feed.
         """
         from chub.daemon import hooks as hooks_mod
 
         p = AttachExistingReadonlyParams.model_validate(params)
         name = p.name or f"{os.path.basename(p.cwd.rstrip('/'))}-{p.pid}"
 
-        # Discover most-recent JSONL transcript for this cwd.
-        encoded = p.cwd.replace("/", "-").lstrip("-")
-        proj_dir = Path.home() / ".claude" / "projects" / encoded
-        claude_session_id: str | None = None
-        if proj_dir.is_dir():
-            try:
-                jsonls = [f for f in proj_dir.iterdir() if f.suffix == ".jsonl"]
-            except OSError:
-                jsonls = []
-            if jsonls:
-                jsonls.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-                claude_session_id = jsonls[0].stem
+        found = hooks_mod.find_new_jsonl_for_cwd(p.cwd, since_ms=0)
+        claude_session_id: str | None = found.stem if found is not None else None
 
         s = await reg.register(
             name=name,

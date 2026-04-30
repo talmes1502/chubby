@@ -29,21 +29,82 @@ from chub.daemon.session import Session
 log = logging.getLogger(__name__)
 
 
-def claude_transcript_path(claude_session_id: str, cwd: str) -> Path:
-    """Return the path to Claude's JSONL transcript for a given session.
+def claude_projects_root() -> Path:
+    """Return ``~/.claude/projects/`` — the parent of all per-cwd subdirs."""
+    return Path.home() / ".claude" / "projects"
 
-    Claude encodes the cwd as ``cwd.replace("/", "-")`` and stores the file at
-    ``~/.claude/projects/<encoded>/<session_id>.jsonl``. Leading dashes are
-    stripped (e.g. an absolute path ``/Users/me`` becomes ``Users-me``).
+
+def find_jsonl_for_session(claude_session_id: str) -> Path | None:
+    """Locate Claude's JSONL transcript for a known session id.
+
+    We don't know which projects/<encoded-cwd>/ subdir Claude wrote it
+    in — Claude's encoding is its own and may evolve — so we just glob
+    all subdirs for ``<id>.jsonl``. The id is a UUID so the match is
+    unambiguous.
     """
-    encoded = cwd.replace("/", "-").lstrip("-")
-    return Path.home() / ".claude" / "projects" / encoded / f"{claude_session_id}.jsonl"
+    root = claude_projects_root()
+    if not root.is_dir():
+        return None
+    for hit in root.glob(f"*/{claude_session_id}.jsonl"):
+        return hit
+    return None
 
 
-def claude_projects_dir(cwd: str) -> Path:
-    """Return ``~/.claude/projects/<encoded-cwd>/`` for the given cwd."""
-    encoded = cwd.replace("/", "-").lstrip("-")
-    return Path.home() / ".claude" / "projects" / encoded
+def find_new_jsonl_for_cwd(cwd: str, since_ms: int) -> Path | None:
+    """Find a JSONL file in ``~/.claude/projects/`` whose realpath cwd
+    matches ``cwd`` and whose mtime is at or after ``since_ms``.
+
+    We don't trust any path-encoding scheme: the JSONL itself records
+    the cwd in its first record, so we open candidate files and read
+    that field. Returns the most recently modified match, or None.
+
+    This is encoding-free and works for any cwd Claude can store.
+    """
+    root = claude_projects_root()
+    if not root.is_dir():
+        return None
+    target = str(Path(cwd).resolve())
+    threshold_s = since_ms / 1000.0
+    candidates: list[tuple[float, Path]] = []
+    for jsonl in root.glob("*/*.jsonl"):
+        try:
+            st = jsonl.stat()
+        except OSError:
+            continue
+        if st.st_mtime < threshold_s:
+            continue
+        if _jsonl_matches_cwd(jsonl, target):
+            candidates.append((st.st_mtime, jsonl))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
+def _jsonl_matches_cwd(jsonl: Path, target_cwd: str) -> bool:
+    """Return True if the JSONL was produced by a Claude session in ``target_cwd``.
+
+    Reads up to the first 32 records to find a ``cwd`` field; Claude's
+    early summary records carry it. If we can't determine, return False.
+    """
+    try:
+        with open(jsonl, encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                if i >= 32:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                cwd = rec.get("cwd")
+                if isinstance(cwd, str):
+                    return str(Path(cwd).resolve()) == target_cwd
+    except OSError:
+        return False
+    return False
 
 
 def _stringify(content: Any) -> str:
@@ -203,9 +264,18 @@ async def _tail_jsonl(
 
 
 async def start_tailer(registry: Registry, s: Session) -> None:
+    """Tail the JSONL for a session whose ``claude_session_id`` is known.
+
+    Locates the file by globbing all of ``~/.claude/projects/*/<id>.jsonl``
+    rather than computing an encoded subdir path — that means it works for
+    any cwd Claude can store, regardless of its path-encoding scheme.
+    """
     if s.claude_session_id is None:
         return
-    path = claude_transcript_path(s.claude_session_id, s.cwd)
+    path = find_jsonl_for_session(s.claude_session_id)
+    if path is None:
+        log.info("start_tailer: no JSONL on disk yet for %s; skipping", s.claude_session_id)
+        return
     await _tail_jsonl(registry, s.id, path)
 
 
@@ -219,37 +289,25 @@ async def watch_for_transcript(
     """Wait for Claude to create a JSONL for ``session``, then start tailing.
 
     Wrapped/spawned sessions don't know their ``claude_session_id`` up
-    front — Claude only writes its transcript file once a real
-    ``SessionStart`` hook fires. We poll the projects dir for a JSONL
-    with mtime newer than ``session.created_at``; the first match wins.
+    front — Claude only writes its transcript once it's running. We
+    scan the entire ``~/.claude/projects/`` tree for a JSONL whose first
+    records reference the session's cwd and whose mtime is newer than
+    ``session.created_at``. This is encoding-free: no assumptions about
+    how Claude maps cwd → subdir name.
 
     Once found we set ``session.claude_session_id`` on the registry
     (which broadcasts ``session_id_resolved``) and spawn the regular
     tailer. If nothing shows up within ``timeout`` seconds we log and
-    give up — the user can still see the raw PTY for that session, we
-    just won't have a structured conversation feed.
+    give up.
     """
-    proj_dir = claude_projects_dir(session.cwd)
     deadline = now_ms() + int(timeout * 1000)
     found: Path | None = None
     while now_ms() < deadline:
-        if proj_dir.is_dir():
-            try:
-                # Only consider files modified after the session was
-                # created — older transcripts belong to previous claude
-                # invocations in the same cwd.
-                threshold_s = session.created_at / 1000.0
-                candidates = [
-                    f
-                    for f in proj_dir.iterdir()
-                    if f.suffix == ".jsonl" and f.stat().st_mtime >= threshold_s
-                ]
-            except OSError:
-                candidates = []
-            if candidates:
-                candidates.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-                found = candidates[0]
-                break
+        found = await asyncio.to_thread(
+            find_new_jsonl_for_cwd, session.cwd, session.created_at
+        )
+        if found is not None:
+            break
         await asyncio.sleep(poll_interval)
     if found is None:
         log.info(

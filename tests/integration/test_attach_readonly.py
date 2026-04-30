@@ -11,6 +11,7 @@ Verifies:
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -77,24 +78,30 @@ async def test_attach_existing_readonly_finds_transcript(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When a JSONL exists in ~/.claude/projects/<encoded-cwd>/, use it."""
+    """When a JSONL referencing this cwd exists anywhere under
+    ~/.claude/projects/, attach_existing_readonly should find it via the
+    encoding-free cwd-field scan."""
     from chub.daemon import hooks as hooks_mod
 
     async def _noop(reg, s) -> None:  # type: ignore[no-untyped-def]
         return None
 
     monkeypatch.setattr(hooks_mod, "start_tailer", _noop)
-    monkeypatch.setenv("HOME", str(tmp_path))
 
     cwd = tmp_path / "Some" / "Project"
     cwd.mkdir(parents=True)
 
-    # Encoded cwd: leading slash dropped, slashes -> dashes.
-    encoded = str(cwd).replace("/", "-").lstrip("-")
-    proj_dir = tmp_path / ".claude" / "projects" / encoded
-    proj_dir.mkdir(parents=True)
-    transcript = proj_dir / "abc-123-456.jsonl"
-    transcript.write_text('{"role":"user","content":"hi"}\n')
+    # Stash the JSONL under an arbitrary subdir name to prove the lookup
+    # doesn't depend on any specific encoding scheme.
+    fake_root = tmp_path / "projects-root"
+    sub = fake_root / "any-encoded-name"
+    sub.mkdir(parents=True)
+    transcript = sub / "abc-123-456.jsonl"
+    transcript.write_text(
+        json.dumps({"type": "first", "cwd": str(cwd)}) + "\n"
+    )
+
+    monkeypatch.setattr(hooks_mod, "claude_projects_root", lambda: fake_root)
 
     stop = asyncio.Event()
     server_task = asyncio.create_task(chubd_main.serve(stop_event=stop))
