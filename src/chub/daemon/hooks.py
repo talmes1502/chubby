@@ -124,44 +124,28 @@ def _stringify(content: Any) -> str:
 
 
 def _summarize_tool_use(block: dict[str, Any]) -> str:
+    """Render a tool_use block the way Claude's UI does: a single-line
+    indicator with the tool name and no arguments. Verbose argument
+    summaries belong in the FTS index, not the live transcript view."""
     name = block.get("name", "?")
-    inp = block.get("input")
-    args_summary = ""
-    if isinstance(inp, dict):
-        # Pick the most informative-looking arg if any.
-        for key in ("file_path", "path", "command", "query", "url", "pattern"):
-            if isinstance(inp.get(key), str):
-                args_summary = inp[key]
-                break
-        if not args_summary and inp:
-            # Fall back to first key=value pair, truncated.
-            k, v = next(iter(inp.items()))
-            args_summary = f"{k}={v}"
-        if len(args_summary) > 80:
-            args_summary = args_summary[:77] + "..."
-    return f"[tool_use: {name}({args_summary})]"
-
-
-def _summarize_tool_result(block: dict[str, Any]) -> str:
-    content = block.get("content", "")
-    if isinstance(content, list):
-        # Tool result content can itself be a list of text blocks.
-        content = "".join(
-            c.get("text", "") if isinstance(c, dict) else str(c) for c in content
-        )
-    if not isinstance(content, str):
-        content = str(content)
-    return f"[tool_result: {len(content)} chars]"
+    return f"⏺ {name}"
 
 
 def _extract_turn_text(message: Any) -> str:
-    """Pull the conversation text out of a Claude transcript ``message``.
+    """Pull user-readable text out of a Claude transcript ``message``.
 
     ``message.content`` is either a plain string or a list of content
-    blocks (``text``, ``tool_use``, ``tool_result``). For the TUI we
-    concatenate text blocks verbatim and render tool blocks as one-line
-    summaries — that matches the spec's "compact" requirement without
-    losing the fact that a tool was invoked.
+    blocks. We render:
+      - ``text`` blocks: verbatim.
+      - ``tool_use`` blocks: ``⏺ <ToolName>`` (one line, no args).
+      - ``tool_result`` blocks: dropped entirely (Claude's own UI
+        collapses them; showing them as separate ``▸ [tool_result …]``
+        rows ends up looking like noise from the user side because
+        Claude's protocol delivers tool results as ``type=user``
+        records).
+
+    Returns the empty string if there's nothing user-readable — the
+    tailer drops empty turns so they don't render as blank rows.
     """
     if not isinstance(message, dict):
         return ""
@@ -177,14 +161,11 @@ def _extract_turn_text(message: Any) -> str:
         btype = block.get("type")
         if btype == "text":
             t = block.get("text")
-            if isinstance(t, str):
+            if isinstance(t, str) and t:
                 parts.append(t)
         elif btype == "tool_use":
             parts.append(_summarize_tool_use(block))
-        elif btype == "tool_result":
-            parts.append(_summarize_tool_result(block))
-        # Unknown block types are silently dropped — they're rare and
-        # not user-facing conversation.
+        # tool_result and unknown block types are silently dropped.
     return "\n".join(parts)
 
 

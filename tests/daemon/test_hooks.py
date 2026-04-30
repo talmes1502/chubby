@@ -101,7 +101,9 @@ def test_extract_turn_text_text_blocks() -> None:
     assert _extract_turn_text(msg) == "first part\nsecond part"
 
 
-def test_extract_turn_text_renders_tool_blocks_compactly() -> None:
+def test_extract_turn_text_renders_tool_blocks_claude_style() -> None:
+    """tool_use blocks become compact one-liners; tool_result blocks
+    are dropped entirely (Claude's own UI collapses them)."""
     msg = {
         "role": "assistant",
         "content": [
@@ -119,8 +121,26 @@ def test_extract_turn_text_renders_tool_blocks_compactly() -> None:
     }
     out = _extract_turn_text(msg)
     assert "let me check" in out
-    assert "[tool_use: Read(/tmp/x.py)]" in out
-    assert "[tool_result: 6 chars]" in out
+    assert "⏺ Read" in out
+    # Tool args MUST NOT appear (Claude's UI shows just the tool name).
+    assert "/tmp/x.py" not in out
+    # Tool results MUST NOT appear at all.
+    assert "tool_result" not in out
+    assert "6 chars" not in out
+
+
+def test_extract_turn_text_returns_empty_when_only_tool_results() -> None:
+    """A user record with only tool_result blocks (Claude's internal
+    delivery of tool output back to the assistant) has no
+    user-readable text and should produce empty output so the tailer
+    drops the turn instead of rendering '▸ [tool_result …]' rows."""
+    msg = {
+        "role": "user",
+        "content": [
+            {"type": "tool_result", "content": "anything"},
+        ],
+    }
+    assert _extract_turn_text(msg) == ""
 
 
 async def test_tailer_indexes_new_lines_and_broadcasts(tmp_path: Path) -> None:
