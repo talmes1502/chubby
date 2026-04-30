@@ -142,17 +142,18 @@ type searchState struct {
 }
 
 // spawnState backs ModeSpawn: a small modal with three textinputs
-// (name + cwd + group). Tab cycles between the fields. cwd defaults to
-// the focused session's cwd or $HOME and supports ~ expansion at
-// submit. group is optional; when non-empty, it's passed as the first
-// tag so the new session lands in that rail group (GroupKey gives
-// precedence to the first tag).
+// (name + cwd + folder). Tab cycles between the fields. cwd defaults
+// to the focused session's cwd or $HOME and supports ~ expansion at
+// submit. folder is optional; when non-empty, the spawn handler
+// assigns the freshly-created session into that TUI-side folder
+// (creating it if it doesn't exist) — the daemon's spawn_session RPC
+// is invoked with empty tags regardless. Folders are TUI-local state.
 type spawnState struct {
-	name  textinput.Model
-	cwd   textinput.Model
-	group textinput.Model
-	field int // 0=name, 1=cwd, 2=group
-	err   error
+	name   textinput.Model
+	cwd    textinput.Model
+	folder textinput.Model
+	field  int // 0=name, 1=cwd, 2=folder
+	err    error
 
 	// Tab path completion in the cwd field (Phase B).
 	// pathCompletionIndex advances on each repeated Tab; pathCompletionLast
@@ -1422,12 +1423,11 @@ func (m Model) handleKeySpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		cwd := views.ExpandHome(strings.TrimSpace(m.spawn.cwd.Value()))
-		group := strings.TrimSpace(m.spawn.group.Value())
-		var tags []string
-		if group != "" {
-			tags = []string{group}
-		}
-		return m, m.doSpawn(name, cwd, tags)
+		folder := strings.TrimSpace(m.spawn.folder.Value())
+		// As of D10b the folder field is purely TUI-side: tags is empty,
+		// and the spawn handler assigns into the folder via folders.json
+		// after the daemon confirms the new session.
+		return m, m.doSpawn(name, cwd, nil, folder)
 	}
 	var cmd tea.Cmd
 	switch m.spawn.field {
@@ -1436,27 +1436,26 @@ func (m Model) handleKeySpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case 1:
 		m.spawn.cwd, cmd = m.spawn.cwd.Update(msg)
 	case 2:
-		m.spawn.group, cmd = m.spawn.group.Update(msg)
+		m.spawn.folder, cmd = m.spawn.folder.Update(msg)
 	}
 	return m, cmd
 }
 
-// openSpawnModal seeds spawnState (cwd defaults to focused session's cwd
-// or $HOME, group defaults to focused session's group when meaningful)
-// and switches to ModeSpawn. Pointer receiver because we mutate m.mode
-// and m.spawn. Called by Ctrl+N and by the auto-open path in listMsg
-// when the first list comes back empty.
+// openSpawnModal seeds spawnState (cwd defaults to focused session's
+// cwd or $HOME, folder defaults to the focused session's currently-
+// assigned folder when there is one) and switches to ModeSpawn.
+// Pointer receiver because we mutate m.mode and m.spawn. Called by
+// Ctrl+N and by the auto-open path in listMsg when the first list
+// comes back empty.
 func (m *Model) openSpawnModal() {
 	cwd := ""
-	group := ""
+	folder := ""
 	if s := m.focusedSession(); s != nil {
 		cwd = s.Cwd
-		// Pre-fill the group with the focused session's group so the
-		// new session lands in the same rail bucket. Skip "(untitled)"
-		// — that's the no-group fallback, not a meaningful tag.
-		if g := GroupKey(*s); g != UntitledGroup {
-			group = g
-		}
+		// Pre-fill folder with the focused session's current folder
+		// (TUI-side). If it's not in any folder, leave the field empty
+		// — the new session lands in the unfiled list.
+		folder = m.folders.FolderForSession(s.ID)
 	}
 	if cwd == "" {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -1464,10 +1463,10 @@ func (m *Model) openSpawnModal() {
 		}
 	}
 	m.spawn = spawnState{
-		name:  views.NewSpawnNameInput(),
-		cwd:   views.NewSpawnCwdInput(cwd),
-		group: views.NewSpawnGroupInput(group),
-		field: 0,
+		name:   views.NewSpawnNameInput(),
+		cwd:    views.NewSpawnCwdInput(cwd),
+		folder: views.NewSpawnFolderInput(folder),
+		field:  0,
 	}
 	m.mode = ModeSpawn
 }
@@ -1477,14 +1476,14 @@ func (m *Model) openSpawnModal() {
 func (m *Model) refocusSpawn() {
 	m.spawn.name.Blur()
 	m.spawn.cwd.Blur()
-	m.spawn.group.Blur()
+	m.spawn.folder.Blur()
 	switch m.spawn.field {
 	case 0:
 		m.spawn.name.Focus()
 	case 1:
 		m.spawn.cwd.Focus()
 	case 2:
-		m.spawn.group.Focus()
+		m.spawn.folder.Focus()
 	}
 }
 
@@ -1573,7 +1572,18 @@ func (m Model) spawnCwdRecentNext() tea.Cmd {
 	}
 }
 
-func (m Model) doSpawn(name, cwd string, tags []string) tea.Cmd {
+// doSpawn fires the spawn_session RPC. tags is forwarded verbatim to
+// the daemon (kept as a list of strings for forward-compat — the
+// pre-D10b spawn modal turned the "group" field into the first tag,
+// but the modal no longer does this; callers pass an empty slice).
+//
+// folder, when non-empty, assigns the freshly-spawned session into a
+// TUI-side folder (folders.json). This is intentionally part of the
+// spawn flow rather than a separate Cmd because the assignment must
+// see the new session id, which only the spawn RPC's reply carries —
+// piping it back through a bare spawnDoneMsg would force every caller
+// to know about folders.
+func (m Model) doSpawn(name, cwd string, tags []string, folder string) tea.Cmd {
 	c := m.client
 	if tags == nil {
 		tags = []string{}
@@ -1584,8 +1594,25 @@ func (m Model) doSpawn(name, cwd string, tags []string) tea.Cmd {
 			"cwd":  cwd,
 			"tags": tags,
 		}
-		if _, err := c.Call(context.Background(), "spawn_session", params); err != nil {
+		raw, err := c.Call(context.Background(), "spawn_session", params)
+		if err != nil {
 			return spawnFailedMsg{err}
+		}
+		if folder == "" {
+			return spawnDoneMsg{}
+		}
+		// Best-effort folder assignment. We don't fail the spawn on an
+		// assignment error — the session is already created and the
+		// user can /movetofolder it later.
+		var r struct {
+			Session struct {
+				ID string `json:"id"`
+			} `json:"session"`
+		}
+		if err := json.Unmarshal(raw, &r); err == nil && r.Session.ID != "" {
+			st := LoadFolders()
+			st.Assign(folder, r.Session.ID)
+			_ = SaveFolders(st)
 		}
 		return spawnDoneMsg{}
 	}
@@ -3220,9 +3247,9 @@ func (m Model) viewSpawn() string {
 	}
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Render("New session") + "\n\n")
-	b.WriteString(label("name:  ", m.spawn.field == 0) + m.spawn.name.View() + "\n")
-	b.WriteString(label("cwd:   ", m.spawn.field == 1) + m.spawn.cwd.View() + "\n")
-	b.WriteString(label("group: ", m.spawn.field == 2) + m.spawn.group.View() + "\n\n")
+	b.WriteString(label("name:   ", m.spawn.field == 0) + m.spawn.name.View() + "\n")
+	b.WriteString(label("cwd:    ", m.spawn.field == 1) + m.spawn.cwd.View() + "\n")
+	b.WriteString(label("folder: ", m.spawn.field == 2) + m.spawn.folder.View() + "\n\n")
 	if m.spawn.err != nil {
 		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("9")).
 			Render("error: "+m.spawn.err.Error()) + "\n\n")

@@ -31,13 +31,14 @@ func NewSpawnCwdInput(initial string) textinput.Model {
 	return t
 }
 
-// NewSpawnGroupInput returns an unfocused textinput for the optional
-// group label. The trimmed value, when non-empty, is sent as the first
-// element of the spawn RPC's tags list, so it becomes the rail group
-// (see grouping.GroupKey: first tag wins).
-func NewSpawnGroupInput(initial string) textinput.Model {
+// NewSpawnFolderInput returns an unfocused textinput for the optional
+// folder name. After D10b the trimmed value, when non-empty, is used
+// to assign the new session into a TUI-side folder (folders.json) —
+// it is no longer passed to the daemon's spawn_session RPC as a tag.
+// The folder is created if it doesn't already exist.
+func NewSpawnFolderInput(initial string) textinput.Model {
 	t := textinput.New()
-	t.Placeholder = "optional — becomes rail group / first tag"
+	t.Placeholder = "optional — assign to folder (creates if missing)"
 	t.Prompt = "▸ "
 	t.CharLimit = 0
 	if initial != "" {

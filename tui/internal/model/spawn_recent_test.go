@@ -131,10 +131,10 @@ func makeSpawnModel(cl *rpc.Client) Model {
 		historyLoaded:  map[string]bool{},
 		groupCollapsed: map[string]bool{},
 		spawn: spawnState{
-			name:  views.NewSpawnNameInput(),
-			cwd:   views.NewSpawnCwdInput(""),
-			group: views.NewSpawnGroupInput(""),
-			field: 1, // cwd
+			name:   views.NewSpawnNameInput(),
+			cwd:    views.NewSpawnCwdInput(""),
+			folder: views.NewSpawnFolderInput(""),
+			field:  1, // cwd
 		},
 	}
 	m.refocusSpawn()

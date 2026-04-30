@@ -15,17 +15,17 @@ func TestSpawn_TabCyclesThreeFields(t *testing.T) {
 	m := Model{
 		mode: ModeSpawn,
 		spawn: spawnState{
-			name:  views.NewSpawnNameInput(),
-			cwd:   views.NewSpawnCwdInput(""),
-			group: views.NewSpawnGroupInput(""),
-			field: 0,
+			name:   views.NewSpawnNameInput(),
+			cwd:    views.NewSpawnCwdInput(""),
+			folder: views.NewSpawnFolderInput(""),
+			field:  0,
 		},
 	}
 	// Constructor focuses name; ensure others are blurred up front.
 	m.refocusSpawn()
-	if !m.spawn.name.Focused() || m.spawn.cwd.Focused() || m.spawn.group.Focused() {
+	if !m.spawn.name.Focused() || m.spawn.cwd.Focused() || m.spawn.folder.Focused() {
 		t.Fatalf("initial focus mismatch: name=%v cwd=%v group=%v",
-			m.spawn.name.Focused(), m.spawn.cwd.Focused(), m.spawn.group.Focused())
+			m.spawn.name.Focused(), m.spawn.cwd.Focused(), m.spawn.folder.Focused())
 	}
 
 	tab := tea.KeyMsg{Type: tea.KeyTab}
@@ -52,69 +52,13 @@ func TestSpawn_TabCyclesThreeFields(t *testing.T) {
 	// On field=2 (group), only the group input should be focused.
 	m.spawn.field = 2
 	m.refocusSpawn()
-	if !m.spawn.group.Focused() {
+	if !m.spawn.folder.Focused() {
 		t.Fatalf("group should be focused when field=2")
 	}
 	if m.spawn.name.Focused() || m.spawn.cwd.Focused() {
 		t.Fatalf("only group should be focused when field=2: name=%v cwd=%v",
 			m.spawn.name.Focused(), m.spawn.cwd.Focused())
 	}
-}
-
-// TestDoSpawn_GroupBecomesFirstTag verifies the spawn RPC params: when
-// a non-empty group is passed in tags, it lands as the first element;
-// when nil, tags becomes an empty slice (not omitted) since the
-// daemon's schema expects the field present.
-func TestDoSpawn_GroupBecomesFirstTag(t *testing.T) {
-	// We can't easily stub *rpc.Client without exporting more surface,
-	// so instead we mirror handleKeySpawn's Enter logic: a trimmed
-	// non-empty group becomes []string{group}, empty/whitespace becomes
-	// nil — and doSpawn normalizes nil to []string{} in its params.
-	cases := []struct {
-		groupInput string
-		wantTags   []string
-	}{
-		{"backend", []string{"backend"}},
-		{"  api  ", []string{"api"}},
-		{"", nil},
-		{"   ", nil},
-	}
-	for _, c := range cases {
-		// Simulate what handleKeySpawn computes pre-doSpawn.
-		var tags []string
-		trimmed := trim(c.groupInput)
-		if trimmed != "" {
-			tags = []string{trimmed}
-		}
-		if !slicesEq(tags, c.wantTags) {
-			t.Errorf("group %q: tags = %v, want %v", c.groupInput, tags, c.wantTags)
-		}
-	}
-}
-
-// trim is a tiny stand-in for strings.TrimSpace so the test doesn't add
-// a stdlib import that isn't otherwise needed.
-func trim(s string) string {
-	start, end := 0, len(s)
-	for start < end && (s[start] == ' ' || s[start] == '\t') {
-		start++
-	}
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
-		end--
-	}
-	return s[start:end]
-}
-
-func slicesEq(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // TestCtrlP_OnlyFiresOnDeadSession verifies the respawn shortcut is a
@@ -149,33 +93,28 @@ func TestCtrlP_OnlyFiresOnDeadSession(t *testing.T) {
 	}
 }
 
-// TestCtrlN_PrefillsGroupFromFocusedSession verifies that Ctrl+N pre-fills
-// the spawn modal's group field with the focused session's group, so a
-// new session lands in the same rail bucket by default.
-func TestCtrlN_PrefillsGroupFromFocusedSession(t *testing.T) {
+// TestCtrlN_PrefillsFolderFromFocusedSession verifies that Ctrl+N
+// pre-fills the spawn modal's folder field with the focused session's
+// currently-assigned folder (D10b), so a new session lands in the
+// same TUI folder by default. Sessions not in any folder produce an
+// empty pre-fill.
+func TestCtrlN_PrefillsFolderFromFocusedSession(t *testing.T) {
+	folders := FoldersState{Folders: map[string][]string{}}
+	folders.Assign("priority", "s1")
+
 	cases := []struct {
 		name    string
 		focused Session
 		want    string
 	}{
 		{
-			name:    "first tag wins",
-			focused: Session{ID: "s1", Name: "api", Cwd: "/srv/api", Tags: []string{"backend", "core"}},
-			want:    "backend",
+			name:    "session in folder pre-fills folder name",
+			focused: Session{ID: "s1", Name: "api"},
+			want:    "priority",
 		},
 		{
-			name:    "no tags falls back to cwd basename",
-			focused: Session{ID: "s2", Name: "web", Cwd: "/srv/web", Tags: nil},
-			want:    "web",
-		},
-		{
-			name:    "untitled does not pre-fill",
-			focused: Session{ID: "s3", Name: "x", Cwd: "/", Tags: nil},
-			want:    "",
-		},
-		{
-			name:    "empty cwd does not pre-fill",
-			focused: Session{ID: "s4", Name: "y", Cwd: "", Tags: nil},
+			name:    "session not in any folder leaves field empty",
+			focused: Session{ID: "s2", Name: "web", Cwd: "/srv/web"},
 			want:    "",
 		},
 	}
@@ -186,14 +125,15 @@ func TestCtrlN_PrefillsGroupFromFocusedSession(t *testing.T) {
 				focused:  0,
 				mode:     ModeMain,
 				compose:  views.NewCompose(),
+				folders:  folders,
 			}
 			out, _ := m.handleKeyMain(tea.KeyMsg{Type: tea.KeyCtrlN})
 			m2 := out.(Model)
 			if m2.mode != ModeSpawn {
 				t.Fatalf("expected ModeSpawn after Ctrl+N, got %v", m2.mode)
 			}
-			if got := m2.spawn.group.Value(); got != c.want {
-				t.Errorf("group prefill = %q, want %q", got, c.want)
+			if got := m2.spawn.folder.Value(); got != c.want {
+				t.Errorf("folder prefill = %q, want %q", got, c.want)
 			}
 		})
 	}
