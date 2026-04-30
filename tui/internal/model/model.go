@@ -43,6 +43,7 @@ const (
 	ModeBroadcast
 	ModeGrep
 	ModeHistory
+	ModeReconnecting
 )
 
 // broadcastState is held in the Model so the reducer can mutate it
@@ -101,6 +102,8 @@ type Model struct {
 	history historyState
 
 	toasts []toast
+
+	reconnectAttempts int
 }
 
 type tickMsg struct{}
@@ -121,6 +124,8 @@ type historyRunSessionsMsg struct {
 	preview  string
 }
 type toastTickMsg struct{}
+type reconnectAttemptMsg struct{}
+type reconnectedMsg struct{}
 
 // New constructs a Model bound to an already-connected rpc.Client.
 func New(c *rpc.Client) Model {
@@ -160,11 +165,15 @@ func (m Model) refreshSessions() tea.Cmd {
 func (m Model) listenEvents() tea.Cmd {
 	c := m.client
 	return func() tea.Msg {
-		ev, ok := <-c.Events()
-		if !ok {
-			return nil
+		select {
+		case ev, ok := <-c.Events():
+			if !ok {
+				return reconnectAttemptMsg{}
+			}
+			return evMsg(ev)
+		case <-c.Disconnected():
+			return reconnectAttemptMsg{}
 		}
-		return evMsg(ev)
 	}
 }
 
@@ -244,6 +253,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.toasts = kept
 		return m, toastTick()
+	case reconnectAttemptMsg:
+		return m.attemptReconnect()
+	case reconnectedMsg:
+		m.mode = ModeMain
+		m.reconnectAttempts = 0
+		return m, tea.Batch(m.refreshSessions(), m.listenEvents())
 	case tickMsg:
 		return m, tea.Batch(m.refreshSessions(), tickEvery())
 	case errMsg:
@@ -302,6 +317,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleKeyGrep(msg)
 	case ModeHistory:
 		return m.handleKeyHistory(msg)
+	case ModeReconnecting:
+		// Swallow keys while we're reconnecting; user can still ctrl+c
+		// because that's handled before the dispatch.
+		return m, nil
 	default:
 		return m.handleKeyMain(msg)
 	}
@@ -540,6 +559,33 @@ func (m Model) loadLogPreview(runID, sessionName string) tea.Cmd {
 	}
 }
 
+// attemptReconnect fires Reconnect on the client with a small backoff,
+// re-subscribes events, and re-enters ModeMain on success. On failure
+// it re-arms itself via tea.Tick.
+func (m Model) attemptReconnect() (tea.Model, tea.Cmd) {
+	m.mode = ModeReconnecting
+	m.reconnectAttempts++
+	c := m.client
+	delay := time.Second
+	switch {
+	case m.reconnectAttempts > 8:
+		delay = 8 * time.Second
+	case m.reconnectAttempts > 4:
+		delay = 4 * time.Second
+	case m.reconnectAttempts > 2:
+		delay = 2 * time.Second
+	}
+	return m, tea.Tick(delay, func(time.Time) tea.Msg {
+		if err := c.Reconnect(); err != nil {
+			return reconnectAttemptMsg{}
+		}
+		if _, err := c.Call(context.Background(), "subscribe_events", nil); err != nil {
+			return reconnectAttemptMsg{}
+		}
+		return reconnectedMsg{}
+	})
+}
+
 // doGrep is the actual FTS RPC. token is checked in the reducer to
 // invalidate stale results when the user keeps typing.
 func (m Model) doGrep(query string, token int) tea.Cmd {
@@ -654,6 +700,8 @@ func (m Model) View() string {
 		return m.viewGrep()
 	case ModeHistory:
 		return m.viewHistory()
+	case ModeReconnecting:
+		return m.viewReconnecting()
 	}
 	leftW := 24
 	rightW := m.width - leftW - 2
@@ -843,6 +891,19 @@ func (m Model) viewHistory() string {
 	header := lipgloss.NewStyle().Bold(true).Render(
 		"History (Tab=switch col, Enter=open, Esc=close)")
 	return lipgloss.JoinVertical(lipgloss.Left, header, cols)
+}
+
+func (m Model) viewReconnecting() string {
+	msg := fmt.Sprintf("reconnecting to chubd... (attempt %d)", m.reconnectAttempts)
+	w, h := m.width, m.height
+	if w < 1 {
+		w = 40
+	}
+	if h < 1 {
+		h = 10
+	}
+	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center,
+		lipgloss.NewStyle().Bold(true).Render(msg))
 }
 
 func (m Model) focusedSession() *Session {

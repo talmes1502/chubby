@@ -45,15 +45,18 @@ type RPCError struct {
 func (e *RPCError) Error() string { return fmt.Sprintf("rpc error %d: %s", e.Code, e.Message) }
 
 // Client is a JSON-RPC 2.0 client. The Events channel receives server-pushed
-// Event frames; closed when the connection drops.
+// Event frames. Disconnects are signaled via the Disconnected() channel,
+// which closes whenever the read loop exits due to a transport error;
+// Reconnect() re-arms it.
 type Client struct {
-	mu       sync.Mutex
-	conn     net.Conn
-	br       *bufio.Reader
-	pending  map[int64]chan *Response
-	events   chan Event
-	idGen    atomic.Int64
-	sockPath string
+	mu           sync.Mutex
+	conn         net.Conn
+	br           *bufio.Reader
+	pending      map[int64]chan *Response
+	events       chan Event
+	idGen        atomic.Int64
+	sockPath     string
+	disconnected chan struct{}
 }
 
 // Dial connects to chubd at sockPath and starts a read loop.
@@ -63,14 +66,23 @@ func Dial(sockPath string) (*Client, error) {
 		return nil, err
 	}
 	cl := &Client{
-		conn:     c,
-		br:       bufio.NewReader(c),
-		pending:  map[int64]chan *Response{},
-		events:   make(chan Event, 1024),
-		sockPath: sockPath,
+		conn:         c,
+		br:           bufio.NewReader(c),
+		pending:      map[int64]chan *Response{},
+		events:       make(chan Event, 1024),
+		sockPath:     sockPath,
+		disconnected: make(chan struct{}),
 	}
 	go cl.readLoop()
 	return cl, nil
+}
+
+// Disconnected returns a channel that closes when the read loop exits
+// due to a transport error. Call Reconnect to re-arm it.
+func (c *Client) Disconnected() <-chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.disconnected
 }
 
 // Call performs a synchronous JSON-RPC call, blocked on ctx.
@@ -136,6 +148,7 @@ func (c *Client) Reconnect() error {
 		close(ch)
 		delete(c.pending, id)
 	}
+	c.disconnected = make(chan struct{})
 	c.mu.Unlock()
 	go c.readLoop()
 	return nil
@@ -151,6 +164,13 @@ func (c *Client) readLoop() {
 			for id, ch := range c.pending {
 				close(ch)
 				delete(c.pending, id)
+			}
+			// Signal disconnect; Reconnect re-arms it. Skip if already closed.
+			select {
+			case <-c.disconnected:
+				// already closed
+			default:
+				close(c.disconnected)
 			}
 			c.mu.Unlock()
 			// Don't close c.events on a single transient read error — Reconnect
