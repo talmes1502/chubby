@@ -165,13 +165,13 @@ var chubbyMarkdownStyle = ansi.StyleConfig{
 		Format: "Image: {{.text}} →",
 	},
 	Code: ansi.StyleBlock{
-		// Inline code — keep the visual cue subtle. Glamour-dark's red
-		// background was the loudest mismatch with Claude's UI.
+		// Inline code — Claude's UI uses a soft accent color with no
+		// background; that reads as "this is a token" without painting
+		// a visible block on every backticked word. The earlier
+		// BackgroundColor=236 made long responses look like a series
+		// of grey rectangles.
 		StylePrimitive: ansi.StylePrimitive{
-			Prefix:          " ",
-			Suffix:          " ",
-			Color:           sptr("117"),
-			BackgroundColor: sptr("236"),
+			Color: sptr("117"),
 		},
 	},
 	CodeBlock: ansi.StyleCodeBlock{
