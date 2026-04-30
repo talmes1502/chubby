@@ -377,6 +377,39 @@ type Model struct {
 	// answer "how far up can the user scroll?" without re-running the
 	// full lipgloss wrap. Refreshed every render.
 	lastViewportLineCount int
+
+	// lastUsage records the latest token usage for each session,
+	// driven by session_usage_changed events. The samples ring (last
+	// 10 entries) feeds the tokens/sec calculation that powers the
+	// thinking-banner activity slider and "almost done" status.
+	lastUsage map[string]sessionUsage
+
+	// thinkingStartedAt remembers when each session most recently
+	// flipped to "thinking". The banner's elapsed counter and rotating
+	// status text both read this value; the entry is cleared on any
+	// non-thinking status change so the timer resets cleanly between
+	// turns.
+	thinkingStartedAt map[string]time.Time
+}
+
+// sessionUsage holds the running token totals + rolling samples for
+// one session. samples is bounded at 10 entries — enough to span the
+// 2-second tokens/sec window at typical event rates without growing
+// without bound on long sessions.
+type sessionUsage struct {
+	InputTokens          int
+	OutputTokens         int
+	CacheReadInputTokens int
+	LastUpdate           time.Time
+	samples              []usageSample
+}
+
+// usageSample mirrors views.UsageSample but lives in the model
+// package so we can keep the field-typed map without introducing a
+// circular import. We convert to []views.UsageSample at render time.
+type usageSample struct {
+	Ts           time.Time
+	OutputTokens int
 }
 
 type tickMsg struct{}
@@ -487,9 +520,11 @@ func New(c *rpc.Client) Model {
 		railCollapsed:  LoadRailCollapsed(),
 		folders:        LoadFolders(),
 		search:         searchState{query: views.NewSearchQuery()},
-		historyLoaded:  map[string]bool{},
-		scrollOffset:   map[string]int{},
-		newSinceScroll: map[string]int{},
+		historyLoaded:     map[string]bool{},
+		scrollOffset:      map[string]int{},
+		newSinceScroll:    map[string]int{},
+		lastUsage:         map[string]sessionUsage{},
+		thinkingStartedAt: map[string]time.Time{},
 	}
 }
 
@@ -701,9 +736,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Auto-detect file paths in the new turn so Ctrl+] can
 				// open the most-recent mention without re-rendering.
 				m.harvestPathsFromText(text)
+			case "session_usage_changed":
+				sid, _ := subP["session_id"].(string)
+				inF, _ := subP["input_tokens"].(float64)
+				outF, _ := subP["output_tokens"].(float64)
+				cacheF, _ := subP["cache_read_input_tokens"].(float64)
+				if sid != "" {
+					cur := m.lastUsage[sid]
+					cur.InputTokens = int(inF)
+					cur.OutputTokens = int(outF)
+					cur.CacheReadInputTokens = int(cacheF)
+					cur.LastUpdate = time.Now()
+					cur.samples = append(cur.samples, usageSample{
+						Ts:           time.Now(),
+						OutputTokens: int(outF),
+					})
+					if len(cur.samples) > 10 {
+						cur.samples = cur.samples[len(cur.samples)-10:]
+					}
+					m.lastUsage[sid] = cur
+				}
 			case "session_status_changed":
 				sid, _ := subP["session_id"].(string)
 				newStatus, _ := subP["status"].(string)
+				// Track when a session enters thinking so the banner
+				// can show elapsed time. Clear on any other status
+				// transition so the timer resets between turns.
+				if sid != "" {
+					if newStatus == "thinking" {
+						m.thinkingStartedAt[sid] = time.Now()
+					} else {
+						delete(m.thinkingStartedAt, sid)
+					}
+				}
 				if newStatus == "awaiting_user" {
 					focusedSid := ""
 					if s := m.focusedSession(); s != nil {
@@ -3027,7 +3092,8 @@ func (m Model) View() string {
 	convoActive := m.activePane == PaneConversation || m.railCollapsed
 	railActive := m.activePane == PaneRail && !m.railCollapsed
 	rightCol := renderViewport(m.focusedSession(), m.conversation, convoW, h, m.spinnerFrame,
-		m.scrollOffset[focusedSID], m.newSinceScroll[focusedSID], convoActive)
+		m.scrollOffset[focusedSID], m.newSinceScroll[focusedSID], convoActive,
+		m.lastUsage[focusedSID], m.thinkingStartedAt[focusedSID])
 	rightStack := lipgloss.JoinVertical(lipgloss.Left, rightCol, composeBar)
 	if m.slashPopupVisible() {
 		popup := views.RenderSlashPopup(m.slashPopupCmds, m.slashPopupCursor, convoW)
@@ -4123,9 +4189,16 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 		Render(b.String())
 }
 
-// renderSessionBanner builds the colored top-of-viewport header:
+// renderSessionBanner builds the colored top-of-viewport header. The
+// banner is a TWO-LINE block:
 //
-//	┃ <name>  ●  <cwd> · <kind> · <status-glyph> <status>
+//	┃ <name>  ●  <cwd> · <kind>
+//	  <spinner> 1m 23s · ↓ 2.0k tokens · cogitating ▰▰▰▱▱▱▱▱▱▱
+//
+// or, when not thinking but with usage available:
+//
+//	┃ <name>  ●  <cwd> · <kind> · idle
+//	  ↑ 12.3k ↓ 2.0k tokens · cache 999
 //
 // The bar (U+2503) and session-name are rendered in the session's color
 // (bold). The dot (U+25CF) acts as a swatch, also in the session's color.
@@ -4136,25 +4209,108 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 // yellow so the user sees that the viewport is no longer pinned to
 // the bottom even if the new-messages badge isn't visible (e.g. they
 // scrolled up but no new messages have arrived yet).
-func renderSessionBanner(s *Session, spinnerFrame int, scrolledUp bool) string {
+//
+// usage / thinkingStartedAt / isThinking / spinnerFrame drive the
+// activity line. When isThinking is true, we show the live elapsed
+// counter + token rate slider; otherwise we show static usage totals
+// (only if any tokens have been observed for this session).
+func renderSessionBanner(
+	s *Session,
+	spinnerFrame int,
+	scrolledUp bool,
+	usage sessionUsage,
+	thinkingStartedAt time.Time,
+	isThinking bool,
+) string {
 	col := lipgloss.Color(s.Color)
 	colorStyle := lipgloss.NewStyle().Foreground(col).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	glyph := statusGlyph(s.Status, spinnerFrame)
 	bar := colorStyle.Render("┃")
 	name := colorStyle.Render(s.Name)
 	swatch := lipgloss.NewStyle().Foreground(col).Render("●")
-	// dim styles the metadata segment, but the glyph itself is already
-	// styled by statusGlyph (e.g. bright yellow for the spinner) — we
-	// keep it outside the dim wrapper so the spinner stays vivid.
-	meta := dim.Render(fmt.Sprintf("%s · %s · ", s.Cwd, s.Kind)) + glyph + dim.Render(" "+s.Status)
-	out := fmt.Sprintf("%s %s  %s  %s", bar, name, swatch, meta)
+
+	// Line 1: identity (bar/name/swatch + cwd · kind). When NOT
+	// thinking we also append the static status here so the second
+	// line is free to show usage totals without restating "idle".
+	line1 := fmt.Sprintf("%s %s  %s  %s",
+		bar, name, swatch,
+		dim.Render(fmt.Sprintf("%s · %s", s.Cwd, s.Kind)))
+	if !isThinking {
+		line1 += dim.Render(" · " + s.Status)
+	}
 	if scrolledUp {
 		hint := lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true).
 			Render(" · scrolled up · End to jump down")
-		out += hint
+		line1 += hint
 	}
-	return out
+
+	// Line 2: activity. Branches on isThinking + whether we have
+	// recorded any usage at all. Returning just line1 is allowed when
+	// there's nothing useful to show on line 2 (no tokens yet, idle).
+	line2 := buildBannerActivityLine(s, spinnerFrame, usage, thinkingStartedAt, isThinking)
+	if line2 == "" {
+		return line1
+	}
+	return line1 + "\n  " + line2
+}
+
+// buildBannerActivityLine constructs the 2nd banner line. Returns ""
+// when there's nothing to render (no usage data + not thinking) so
+// the caller can fall back to the original single-line banner shape.
+func buildBannerActivityLine(
+	s *Session,
+	spinnerFrame int,
+	usage sessionUsage,
+	thinkingStartedAt time.Time,
+	isThinking bool,
+) string {
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	col := lipgloss.Color(s.Color)
+	hasUsage := usage.InputTokens > 0 || usage.OutputTokens > 0 ||
+		usage.CacheReadInputTokens > 0
+	if !isThinking && !hasUsage {
+		return ""
+	}
+	if isThinking {
+		var elapsed time.Duration
+		if !thinkingStartedAt.IsZero() {
+			elapsed = time.Since(thinkingStartedAt)
+		}
+		viewSamples := make([]views.UsageSample, 0, len(usage.samples))
+		for _, sm := range usage.samples {
+			viewSamples = append(viewSamples, views.UsageSample{
+				Ts: sm.Ts, OutputTokens: sm.OutputTokens,
+			})
+		}
+		tps := views.TokensPerSecond(viewSamples, time.Now(), 2*time.Second)
+		// Reuse the existing thinking-spinner glyph so the second
+		// line's leader matches the rail; statusGlyph styles it for us.
+		spinner := statusGlyph("thinking", spinnerFrame)
+		elapsedStr := views.FormatElapsed(elapsed)
+		tokensStr := views.FormatTokens(usage.OutputTokens)
+		statusText := views.ThinkingStatusText(elapsed, tps)
+		slider := lipgloss.NewStyle().Foreground(col).
+			Render(views.RenderSlider(tps, 10))
+		// "  spinner Xs · ↓ Yk tokens · status ▰▰…"
+		return fmt.Sprintf(
+			"%s %s · %s · %s %s",
+			spinner,
+			dim.Render(elapsedStr),
+			dim.Render("↓ "+tokensStr+" tokens"),
+			dim.Render(statusText),
+			slider,
+		)
+	}
+	// Idle / awaiting — show static totals only.
+	parts := []string{
+		fmt.Sprintf("↑ %s", views.FormatTokens(usage.InputTokens)),
+		fmt.Sprintf("↓ %s tokens", views.FormatTokens(usage.OutputTokens)),
+	}
+	if usage.CacheReadInputTokens > 0 {
+		parts = append(parts, fmt.Sprintf("cache %s",
+			views.FormatTokens(usage.CacheReadInputTokens)))
+	}
+	return dim.Render(strings.Join(parts, " · "))
 }
 
 // viewportRender is the result of renderViewport: the framed string to
@@ -4180,12 +4336,27 @@ type viewportRender struct {
 // badge bottom-right inside the frame; the banner also gets a
 // "scrolled up" hint so the state is obvious without looking at the
 // badge.
-func renderViewport(s *Session, conversation map[string][]Turn, w, h, spinnerFrame, scrollOffset, newCount int, active bool) string {
-	r := renderViewportFull(s, conversation, w, h, spinnerFrame, scrollOffset, newCount, active)
+func renderViewport(
+	s *Session,
+	conversation map[string][]Turn,
+	w, h, spinnerFrame, scrollOffset, newCount int,
+	active bool,
+	usage sessionUsage,
+	thinkingStartedAt time.Time,
+) string {
+	r := renderViewportFull(s, conversation, w, h, spinnerFrame,
+		scrollOffset, newCount, active, usage, thinkingStartedAt)
 	return r.view
 }
 
-func renderViewportFull(s *Session, conversation map[string][]Turn, w, h, spinnerFrame, scrollOffset, newCount int, active bool) viewportRender {
+func renderViewportFull(
+	s *Session,
+	conversation map[string][]Turn,
+	w, h, spinnerFrame, scrollOffset, newCount int,
+	active bool,
+	usage sessionUsage,
+	thinkingStartedAt time.Time,
+) viewportRender {
 	borderColor := inactivePaneBorderColor
 	if active {
 		borderColor = activePaneBorderColor
@@ -4212,7 +4383,12 @@ func renderViewportFull(s *Session, conversation map[string][]Turn, w, h, spinne
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
 		Width(w).Height(h)
-	header := renderSessionBanner(s, spinnerFrame, scrollOffset > 0)
+	isThinking := s.Status == "thinking"
+	header := renderSessionBanner(s, spinnerFrame, scrollOffset > 0,
+		usage, thinkingStartedAt, isThinking)
+	// Banner may now span two lines (activity row). Count its actual
+	// rendered height so visibleH below subtracts the right amount.
+	bannerLines := strings.Count(header, "\n") + 1
 	if s.Status == "dead" {
 		hint := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true).
 			Render("session is dead — press Ctrl+P to respawn")
@@ -4240,7 +4416,9 @@ func renderViewportFull(s *Session, conversation map[string][]Turn, w, h, spinne
 	lineCount := len(lines)
 	// Visible body area: total inner height minus banner + spacer.
 	// (-2 for the rounded border was already applied via frame.Width.)
-	visibleH := h - 2 - 2 // border (top+bottom) + banner row + spacer
+	// banner height is dynamic now (1 row when no usage / not thinking,
+	// 2 rows when the activity line is present).
+	visibleH := h - 2 - bannerLines - 1 // border (top+bottom) + banner rows + spacer
 	if visibleH < 1 {
 		visibleH = 1
 	}

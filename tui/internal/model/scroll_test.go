@@ -3,6 +3,7 @@ package model
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/USER/chubby/tui/internal/rpc"
 )
@@ -236,7 +237,8 @@ func TestRenderViewport_ScrolledUp_ShowsBadge(t *testing.T) {
 		turns[i] = Turn{Role: "assistant", Text: "line" + string(rune('a'+i%26)), Ts: int64(i)}
 	}
 	conv := map[string][]Turn{"s1": turns}
-	out := renderViewport(s, conv, 60, 10, 0, 5, 3, true)
+	out := renderViewport(s, conv, 60, 10, 0, 5, 3, true,
+		sessionUsage{}, time.Time{})
 	if !strings.Contains(out, "3 new") {
 		t.Fatalf("expected badge with new count in output, got: %q", out)
 	}
@@ -250,7 +252,8 @@ func TestRenderViewport_AtBottom_NoBadge(t *testing.T) {
 	s := &Session{ID: "s1", Name: "alpha", Color: "12"}
 	turns := []Turn{{Role: "user", Text: "hi", Ts: 1}}
 	conv := map[string][]Turn{"s1": turns}
-	out := renderViewport(s, conv, 60, 10, 0, 0, 5, true)
+	out := renderViewport(s, conv, 60, 10, 0, 0, 5, true,
+		sessionUsage{}, time.Time{})
 	if strings.Contains(out, "new · End to jump") {
 		t.Fatalf("did not expect badge when offset=0, got: %q", out)
 	}
@@ -266,7 +269,8 @@ func TestRenderViewport_ScrolledUp_BannerHint(t *testing.T) {
 		turns[i] = Turn{Role: "assistant", Text: "line", Ts: int64(i)}
 	}
 	conv := map[string][]Turn{"s1": turns}
-	out := renderViewport(s, conv, 60, 10, 0, 3, 0, true)
+	out := renderViewport(s, conv, 60, 10, 0, 3, 0, true,
+		sessionUsage{}, time.Time{})
 	if !strings.Contains(out, "scrolled up") {
 		t.Fatalf("expected 'scrolled up' banner hint, got: %q", out)
 	}
