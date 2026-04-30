@@ -52,6 +52,8 @@ from chubby.proto.schema import (
     RegisterReadonlyResult,
     RegisterWrappedParams,
     RegisterWrappedResult,
+    ReleaseSessionParams,
+    ReleaseSessionResult,
     RenameSessionParams,
     ScanCandidatesParams,
     ScanCandidatesResult,
@@ -468,6 +470,61 @@ def _build_registry(
         await reg.update_status(p.id, SessionStatus.DEAD)
         return {}
 
+    async def release_session(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        """Release a session from chubby's management — the daemon side
+        of the TUI's ``/detach`` command.
+
+        Captures ``claude_session_id`` + ``cwd`` so the caller can
+        re-open a real ``claude --resume <id>`` outside chubby, then
+        SIGTERMs the wrapper (which kills its claude child), marks the
+        session DEAD, and removes it from the in-memory registry. The
+        on-disk JSONL transcript is untouched — the new external
+        claude resumes the same conversation seamlessly.
+        """
+        p = ReleaseSessionParams.model_validate(params)
+        s = await reg.get(p.id)
+        if not s.claude_session_id:
+            raise ChubError(
+                ErrorCode.INVALID_PAYLOAD,
+                "session has no bound claude session id yet — wait a moment and retry",
+            )
+        result = ReleaseSessionResult(
+            claude_session_id=s.claude_session_id,
+            cwd=s.cwd,
+        )
+        # Tell the wrapper to shut down. For WRAPPED/SPAWNED kinds we
+        # push a ``shutdown`` event over the wrapper's writer; the
+        # wrapper SIGTERMs its claude child and exits. For TMUX_ATTACHED
+        # we just stop the watcher (we never spawned the claude). For
+        # READONLY we have nothing to kill — we just drop our view.
+        if s.kind in (SessionKind.WRAPPED, SessionKind.SPAWNED):
+            write = reg._wrapper_writers.get(s.id)
+            if write is not None:
+                try:
+                    await write(
+                        encode_message(
+                            Event(method="shutdown", params={"session_id": s.id})
+                        )
+                    )
+                except Exception:
+                    # The wrapper may already be gone; we still want to
+                    # detach our local view. Don't surface this as an RPC
+                    # error.
+                    pass
+        elif s.kind is SessionKind.TMUX_ATTACHED:
+            stop = reg._tmux_stops.get(s.id)
+            if stop is not None:
+                stop.set()
+        # Mark dead immediately + drop from in-memory registry. The
+        # SQLite row stays so hub-run history still shows this session
+        # ran; it just won't appear in list_sessions / the TUI rail.
+        await reg.update_status(s.id, SessionStatus.DEAD)
+        await reg.detach_wrapper(s.id)
+        await reg.remove_session(s.id)
+        return result.model_dump()
+
     async def promote_session(
         params: dict[str, Any], ctx: CallContext
     ) -> dict[str, Any]:
@@ -646,6 +703,7 @@ def _build_registry(
     h.register("attach_tmux", attach_tmux)
     h.register("attach_existing_readonly", attach_existing_readonly)
     h.register("detach_session", detach_session)
+    h.register("release_session", release_session)
     h.register("promote_session", promote_session)
     h.register("purge", purge)
     h.register("update_claude_pid", update_claude_pid)

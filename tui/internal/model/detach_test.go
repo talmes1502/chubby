@@ -1,25 +1,158 @@
 package model
 
 import (
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/USER/chubby/tui/internal/rpc"
 	"github.com/USER/chubby/tui/internal/views"
 )
 
-// TestSendComposed_RoutesDetachToOpenWindow — typing "/detach" with a
-// focused session calls our stubbed openDetachedFn and surfaces a
-// chubCommandDoneMsg with a non-empty toast. We never touch a real
-// daemon RPC: /detach is a pure chub-side command, so the inject path
-// must NOT fire (hence d.calls stays empty).
-func TestSendComposed_RoutesDetachToOpenWindow(t *testing.T) {
-	d, cl := startFakeDaemon(t)
-	prev := openDetachedFn
-	t.Cleanup(func() { openDetachedFn = prev })
-	var captured string
-	openDetachedFn = func(name string) error {
-		captured = name
+// fakeReleaseDaemon is a fake RPC server that replies to
+// ``release_session`` with a canned (claude_session_id, cwd) payload
+// and records the params it received. Mirrors the chubby_commands_test
+// fakeDaemon but with a custom result for one method — the generic
+// fakeDaemon always replies with an empty result, which would make the
+// detach handler bail out at "daemon returned no claude_session_id".
+type fakeReleaseDaemon struct {
+	t            *testing.T
+	listener     net.Listener
+	mu           sync.Mutex
+	calls        []fakeCall
+	releaseReply map[string]any // result payload for release_session
+	releaseErr   *struct {
+		code    int
+		message string
+	}
+}
+
+func startFakeReleaseDaemon(t *testing.T, claudeSID, cwd string) (*fakeReleaseDaemon, *rpc.Client) {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "chubby-")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "f.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	d := &fakeReleaseDaemon{
+		t:        t,
+		listener: ln,
+		releaseReply: map[string]any{
+			"claude_session_id": claudeSID,
+			"cwd":               cwd,
+		},
+	}
+	go d.acceptLoop()
+	cl, err := rpc.Dial(sock)
+	if err != nil {
+		ln.Close()
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() {
+		cl.Close()
+		ln.Close()
+	})
+	return d, cl
+}
+
+func (d *fakeReleaseDaemon) acceptLoop() {
+	for {
+		conn, err := d.listener.Accept()
+		if err != nil {
+			return
+		}
+		go d.serve(conn)
+	}
+}
+
+func (d *fakeReleaseDaemon) serve(conn net.Conn) {
+	defer conn.Close()
+	for {
+		hdr := make([]byte, 4)
+		if _, err := io.ReadFull(conn, hdr); err != nil {
+			return
+		}
+		n := binary.BigEndian.Uint32(hdr)
+		body := make([]byte, n)
+		if _, err := io.ReadFull(conn, body); err != nil {
+			return
+		}
+		var req struct {
+			ID     int64          `json:"id"`
+			Method string         `json:"method"`
+			Params map[string]any `json:"params"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			return
+		}
+		d.mu.Lock()
+		d.calls = append(d.calls, fakeCall{method: req.Method, params: req.Params})
+		errSpec := d.releaseErr
+		d.mu.Unlock()
+
+		resp := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+		}
+		if req.Method == "release_session" && errSpec != nil {
+			resp["error"] = map[string]any{
+				"code":    errSpec.code,
+				"message": errSpec.message,
+			}
+		} else if req.Method == "release_session" {
+			resp["result"] = d.releaseReply
+		} else {
+			resp["result"] = map[string]any{}
+		}
+		out, _ := json.Marshal(resp)
+		header := make([]byte, 4)
+		binary.BigEndian.PutUint32(header, uint32(len(out)))
+		if _, err := conn.Write(header); err != nil {
+			return
+		}
+		if _, err := conn.Write(out); err != nil {
+			return
+		}
+	}
+}
+
+func (d *fakeReleaseDaemon) lastCall() (string, map[string]any) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.calls) == 0 {
+		return "", nil
+	}
+	c := d.calls[len(d.calls)-1]
+	return c.method, c.params
+}
+
+// TestSendComposed_RoutesDetachToReleaseRPC — typing "/detach" with a
+// focused session calls release_session over RPC, then invokes
+// openExternalClaudeFn with the captured (claude_session_id, cwd). On
+// success we surface chubCommandDoneMsg with a "released" toast.
+func TestSendComposed_RoutesDetachToReleaseRPC(t *testing.T) {
+	d, cl := startFakeReleaseDaemon(t,
+		"abcdef01-0000-0000-0000-000000000000",
+		"/tmp/proj",
+	)
+	prev := openExternalClaudeFn
+	t.Cleanup(func() { openExternalClaudeFn = prev })
+	var capturedSID, capturedCwd string
+	openExternalClaudeFn = func(sid, cwd string) error {
+		capturedSID = sid
+		capturedCwd = cwd
 		return nil
 	}
 	m := Model{
@@ -41,26 +174,32 @@ func TestSendComposed_RoutesDetachToOpenWindow(t *testing.T) {
 	if !strings.Contains(done.toast, "api") {
 		t.Fatalf("toast %q should reference focused session name", done.toast)
 	}
-	if captured != "api" {
-		t.Fatalf("openDetachedFn called with %q, want api", captured)
+	if !strings.Contains(done.toast, "released") {
+		t.Fatalf("toast %q should mention 'released'", done.toast)
 	}
-	d.mu.Lock()
-	n := len(d.calls)
-	d.mu.Unlock()
-	if n != 0 {
-		t.Fatalf("/detach must not contact the daemon, saw %d calls", n)
+	method, params := d.lastCall()
+	if method != "release_session" {
+		t.Fatalf("method = %q, want release_session", method)
+	}
+	if params["id"] != "s1" {
+		t.Fatalf("id param = %v, want s1", params["id"])
+	}
+	if capturedSID != "abcdef01-0000-0000-0000-000000000000" {
+		t.Fatalf("openExternalClaudeFn sid = %q, want abcdef01-...", capturedSID)
+	}
+	if capturedCwd != "/tmp/proj" {
+		t.Fatalf("openExternalClaudeFn cwd = %q, want /tmp/proj", capturedCwd)
 	}
 }
 
-// TestSendComposed_DetachWithNoFocusFailsCleanly — /detach with no
-// focused session surfaces a composeFailedMsg without invoking the
-// spawn helper.
-func TestSendComposed_DetachWithNoFocusFailsCleanly(t *testing.T) {
-	_, cl := startFakeDaemon(t)
-	prev := openDetachedFn
-	t.Cleanup(func() { openDetachedFn = prev })
+// TestDetach_NoFocusedSessionFails — /detach with no focused session
+// surfaces composeFailedMsg and never contacts the daemon.
+func TestDetach_NoFocusedSessionFails(t *testing.T) {
+	d, cl := startFakeReleaseDaemon(t, "", "")
+	prev := openExternalClaudeFn
+	t.Cleanup(func() { openExternalClaudeFn = prev })
 	called := false
-	openDetachedFn = func(name string) error {
+	openExternalClaudeFn = func(sid, cwd string) error {
 		called = true
 		return nil
 	}
@@ -77,21 +216,33 @@ func TestSendComposed_DetachWithNoFocusFailsCleanly(t *testing.T) {
 		t.Fatalf("expected composeFailedMsg, got %T (%v)", msg, msg)
 	}
 	if called {
-		t.Fatal("openDetachedFn must not run when nothing is focused")
+		t.Fatal("openExternalClaudeFn must not run when nothing is focused")
+	}
+	d.mu.Lock()
+	n := len(d.calls)
+	d.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("daemon must not be contacted when no session is focused, saw %d calls", n)
 	}
 }
 
-// TestSendComposed_DetachSpawnErrorBecomesComposeFailed — when the
-// terminal-spawn helper returns an error (e.g. no GUI terminal on
-// Linux), the user gets a composeFailedMsg with the underlying error
-// wrapped in "detach failed: ..." so the cause is visible in the
-// status bar.
-func TestSendComposed_DetachSpawnErrorBecomesComposeFailed(t *testing.T) {
-	_, cl := startFakeDaemon(t)
-	prev := openDetachedFn
-	t.Cleanup(func() { openDetachedFn = prev })
-	openDetachedFn = func(name string) error {
-		return fmt.Errorf("no GUI terminal found")
+// TestDetach_RPCErrorBecomesComposeFailed — when release_session
+// returns an error (e.g. session has no bound claude_session_id yet),
+// the user gets composeFailedMsg with "detach failed:" prefix.
+func TestDetach_RPCErrorBecomesComposeFailed(t *testing.T) {
+	d, cl := startFakeReleaseDaemon(t, "", "")
+	d.mu.Lock()
+	d.releaseErr = &struct {
+		code    int
+		message string
+	}{code: 1010, message: "session has no bound claude session id yet — wait a moment and retry"}
+	d.mu.Unlock()
+	prev := openExternalClaudeFn
+	t.Cleanup(func() { openExternalClaudeFn = prev })
+	called := false
+	openExternalClaudeFn = func(sid, cwd string) error {
+		called = true
+		return nil
 	}
 	m := Model{
 		client:   cl,
@@ -109,8 +260,44 @@ func TestSendComposed_DetachSpawnErrorBecomesComposeFailed(t *testing.T) {
 	if !strings.Contains(failed.err.Error(), "detach failed") {
 		t.Fatalf("error should be wrapped with 'detach failed': %v", failed.err)
 	}
-	if !strings.Contains(failed.err.Error(), "no GUI terminal found") {
-		t.Fatalf("error should preserve underlying cause: %v", failed.err)
+	if called {
+		t.Fatal("openExternalClaudeFn must not run when the daemon RPC failed")
+	}
+}
+
+// TestDetach_SpawnErrorStillReleases — when openExternalClaudeFn
+// fails, we still return chubCommandDoneMsg (NOT composeFailedMsg)
+// because the daemon-side release already succeeded; the toast warns
+// the user the new window couldn't be opened so they can do it
+// manually.
+func TestDetach_SpawnErrorStillReleases(t *testing.T) {
+	_, cl := startFakeReleaseDaemon(t,
+		"abcdef01-0000-0000-0000-000000000000",
+		"/tmp/proj",
+	)
+	prev := openExternalClaudeFn
+	t.Cleanup(func() { openExternalClaudeFn = prev })
+	openExternalClaudeFn = func(sid, cwd string) error {
+		return fmt.Errorf("no GUI terminal found")
+	}
+	m := Model{
+		client:   cl,
+		sessions: []Session{{ID: "s1", Name: "api"}},
+		focused:  0,
+		mode:     ModeMain,
+		compose:  views.NewCompose(),
+	}
+	m.compose.SetValue("/detach")
+	msg := runCmd(m.sendComposed())
+	done, ok := msg.(chubCommandDoneMsg)
+	if !ok {
+		t.Fatalf("expected chubCommandDoneMsg (release succeeded server-side), got %T (%v)", msg, msg)
+	}
+	if !strings.Contains(done.toast, "released api") {
+		t.Fatalf("toast %q should confirm release", done.toast)
+	}
+	if !strings.Contains(done.toast, "could not open new window") {
+		t.Fatalf("toast %q should mention spawn-window failure", done.toast)
 	}
 }
 
@@ -136,6 +323,8 @@ func TestSplitChubCommand_RecognizesDetach(t *testing.T) {
 // startupFocusName so the first listMsg can resolve it. CHUBBY_DETACHED=1
 // forces railCollapsed=true at startup. We use t.Setenv so the env
 // vars unset themselves at test-end without polluting other tests.
+// (These flags are no longer driven by /detach but the env-var path
+// is still supported for manual `chubby tui --focus`.)
 func TestModelNew_StartupFocusFromEnv(t *testing.T) {
 	_, cl := startFakeDaemon(t)
 	t.Setenv("CHUBBY_FOCUS_SESSION", "api")

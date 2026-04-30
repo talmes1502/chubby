@@ -52,7 +52,7 @@ var SlashCommands = []SlashCommand{
 		"(chubby) remove focused session from its folder",
 		nil},
 	{"detach",
-		"(chubby) pop the focused session into a new terminal window",
+		"(chubby) release session from chubby; opens a new terminal with claude --resume",
 		nil},
 }
 

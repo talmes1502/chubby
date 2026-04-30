@@ -214,6 +214,49 @@ async def test_run_one_claude_resume_argv(monkeypatch) -> None:
     assert client.register_calls == []
 
 
+async def test_run_one_claude_shutdown_path(monkeypatch) -> None:
+    """When the daemon pushes a ``shutdown`` event (the ``/detach``
+    release path), the wrapper SIGTERMs claude and ``_run_one_claude``
+    returns with ``shutdown_requested=True`` (and ``restart_requested``
+    stays False). The main loop uses this to exit without --resume."""
+    import chubby.wrapper.main as wm
+
+    monkeypatch.setattr(wm, "PtySession", FakePty)
+
+    async def fake_wait_sid(pid: int, timeout_s: float) -> str | None:
+        return "abcdef01-0000-0000-0000-000000000000"
+
+    monkeypatch.setattr(wm, "_wait_for_claude_session_id", fake_wait_sid)
+    monkeypatch.setattr(wm.signal, "signal", lambda *_a, **_k: None)
+    monkeypatch.setattr(sys, "stdin", _NullStdin(), raising=False)
+
+    client = FakeClient()
+
+    async def kick_shutdown() -> None:
+        await asyncio.sleep(0.05)
+        await client._events.put(
+            Event(method="shutdown", params={"session_id": "s_test"})
+        )
+
+    asyncio.create_task(kick_shutdown())
+
+    res = await asyncio.wait_for(
+        wm._run_one_claude(
+            client=client,  # type: ignore[arg-type]
+            cwd="/tmp",
+            passthrough=[],
+            resume=None,
+            is_first_iteration=True,
+            name="ref",
+            tags=[],
+        ),
+        timeout=5.0,
+    )
+
+    assert res.shutdown_requested is True
+    assert res.restart_requested is False
+
+
 class _NullBuffer:
     """Stand-in for ``sys.stdin.buffer`` whose read1 returns empty bytes
     immediately so the stdin pump exits without blocking the loop."""

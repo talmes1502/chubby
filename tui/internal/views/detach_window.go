@@ -1,7 +1,7 @@
 // Package views — detach_window.go: spawn a new GUI terminal window
-// running `chubby tui --focus <name> --detached` so a single chubby
-// session can live in its own OS window. Backs the chub-side
-// /detach slash command.
+// running an arbitrary shell command line. Backs the chub-side
+// /detach slash command, which now releases a session from chubby's
+// management and re-opens a real `claude --resume <id>` outside it.
 package views
 
 import (
@@ -20,31 +20,39 @@ var execCommand = exec.Command
 // $PATH. Defaults to the real exec.LookPath.
 var execLookPath = exec.LookPath
 
-// OpenDetachedWindow spawns a new GUI terminal window running
-// `chubby tui --focus <name> --detached`. macOS uses osascript to
-// drive Terminal.app; Linux walks a priority list of common terminals
-// and picks the first one on $PATH. Other OSes return an error
-// suggesting the user run the command manually.
+// OpenExternalClaude spawns a new GUI terminal window that runs
+// `cd <cwd> && claude --resume <session-id>`. The session is no longer
+// chubby-managed; the user gets a normal claude in a normal terminal,
+// with the same JSONL transcript so the conversation continues.
+//
+// macOS uses osascript to drive Terminal.app; Linux walks a priority
+// list of common terminals and picks the first one on $PATH. Other
+// OSes return an error suggesting the user run the command manually.
 //
 // The spawned process is detached (we call .Start, not .Run) so the
 // originating chubby-tui doesn't block waiting for the new window.
-func OpenDetachedWindow(name string) error {
-	cmdLine := fmt.Sprintf("chubby tui --focus %q --detached", name)
+func OpenExternalClaude(claudeSessionID, cwd string) error {
+	// Quote both substitutions through %q so cwds with spaces / quotes
+	// can't break out of the shell command line.
+	cmdLine := fmt.Sprintf("cd %q && claude --resume %q", cwd, claudeSessionID)
 	switch runtime.GOOS {
 	case "darwin":
-		return openMacosTerminal(cmdLine)
+		return openMacosTerminalCmd(cmdLine)
 	case "linux":
-		return openLinuxTerminal(cmdLine)
+		return openLinuxTerminalCmd(cmdLine)
 	default:
-		return fmt.Errorf("detach not supported on %s — run `chubby tui --focus %s --detached` manually", runtime.GOOS, name)
+		return fmt.Errorf(
+			"detach not supported on %s — run `claude --resume %s` from %s manually",
+			runtime.GOOS, claudeSessionID, cwd,
+		)
 	}
 }
 
-// openMacosTerminal asks Terminal.app via osascript to open a fresh
+// openMacosTerminalCmd asks Terminal.app via osascript to open a fresh
 // window running cmdLine. We use `do script` (which spawns a new
 // window by default) and then `activate` so the window comes to the
 // front. .Start (not .Run) so we don't block.
-func openMacosTerminal(cmdLine string) error {
+func openMacosTerminalCmd(cmdLine string) error {
 	script := fmt.Sprintf(`
 tell application "Terminal"
     do script %q
@@ -55,13 +63,13 @@ end tell
 	return cmd.Start()
 }
 
-// openLinuxTerminal walks a priority-ordered list of GUI terminals and
-// hands the first one we find on $PATH a `sh -c <cmdLine>` wrapper.
+// openLinuxTerminalCmd walks a priority-ordered list of GUI terminals
+// and hands the first one we find on $PATH a `sh -c <cmdLine>` wrapper.
 // gnome-terminal goes first because it's the GNOME default (Ubuntu,
 // Fedora Workstation); konsole/xterm cover KDE and the lowest common
 // denominator; alacritty/kitty are popular among power users. If none
 // are installed we return an error listing what we tried.
-func openLinuxTerminal(cmdLine string) error {
+func openLinuxTerminalCmd(cmdLine string) error {
 	candidates := [][]string{
 		{"gnome-terminal", "--", "sh", "-c", cmdLine},
 		{"konsole", "-e", "sh", "-c", cmdLine},

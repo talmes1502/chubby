@@ -391,12 +391,14 @@ type Model struct {
 	// turns.
 	thinkingStartedAt map[string]time.Time
 
-	// startupFocusName, when non-empty, is the session name that
-	// /detach passed via CHUBBY_FOCUS_SESSION. Resolved on the FIRST
-	// listMsg by scanning m.sessions for a Name match, then cleared so
-	// later list refreshes don't re-snap the user's focus. Pairs with
-	// CHUBBY_DETACHED=1 (which sets railCollapsed) to give the
-	// detached-window experience: one session visible, no rail noise.
+	// startupFocusName, when non-empty, is the session name passed via
+	// CHUBBY_FOCUS_SESSION (i.e. ``chubby tui --focus <name>``).
+	// Resolved on the FIRST listMsg by scanning m.sessions for a Name
+	// match, then cleared so later list refreshes don't re-snap the
+	// user's focus. Pairs with CHUBBY_DETACHED=1 (which sets
+	// railCollapsed). Still supported as a manual flag, even though
+	// /detach no longer uses it (see doChubDetach for the new
+	// release-session semantics).
 	startupFocusName string
 }
 
@@ -518,7 +520,9 @@ type attachDoneMsg struct {
 // New constructs a Model bound to an already-connected rpc.Client.
 //
 // Honours two env vars set by `chubby tui --focus <name> --detached`
-// (the /detach slash command's spawn path):
+// (a manual single-session view; the /detach slash command no longer
+// goes through this path — it now releases the session and opens a
+// real `claude --resume` outside chubby):
 //   - CHUBBY_FOCUS_SESSION=<name>: stash a startup-focus name resolved
 //     against the first listMsg's session slice.
 //   - CHUBBY_DETACHED=1: collapse the rail at startup so the detached
@@ -685,9 +689,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.focused >= len(m.sessions) {
 			m.focused = 0
 		}
-		// /detach passes CHUBBY_FOCUS_SESSION=<name>; we resolve it on
-		// the first list because it's the first time we have the
-		// name->index mapping. We clear the field so a later refresh
+		// `chubby tui --focus <name>` passes CHUBBY_FOCUS_SESSION=<name>;
+		// we resolve it on the first list because it's the first time
+		// we have the name->index mapping. We clear the field so a later refresh
 		// (e.g. a rename) doesn't yank focus away from wherever the
 		// user has since moved it.
 		if m.startupFocusName != "" {
@@ -2772,20 +2776,27 @@ func (m Model) doChubRemoveFromFolder() tea.Cmd {
 	}
 }
 
-// openDetachedFn is the package-level indirection for the views-side
-// terminal-spawn helper so detach_test.go can swap it for a stub
-// without actually launching a new Terminal window.
-var openDetachedFn = views.OpenDetachedWindow
+// openExternalClaudeFn is the package-level indirection for the
+// views-side terminal-spawn helper so detach_test.go can swap it for
+// a stub without actually launching a real Terminal window.
+var openExternalClaudeFn = views.OpenExternalClaude
 
-// doChubDetach pops the focused session into a fresh GUI terminal
-// window running `chubby tui --focus <name> --detached`. The new
-// process connects to the same daemon over the same socket, so the
-// detached window shows a live mirror of the session — exiting the
-// detached window leaves the session running in the main TUI.
+// doChubDetach releases the focused session from chubby's management
+// and re-opens a real ``claude --resume <id>`` in a new GUI terminal
+// window. The chubby-managed wrapper (and its claude child) are
+// killed; the in-memory registry entry is removed, so the session
+// disappears from chubby's rail. The on-disk JSONL is unchanged, so
+// the new external claude continues the same conversation.
 //
-// We surface a chubCommandDoneMsg with a toast on success so the user
-// gets the standard "compose cleared" feedback path; spawn errors
-// (e.g. no GUI terminal on Linux) come back as composeFailedMsg.
+// On success we surface a chubCommandDoneMsg with a toast so the user
+// gets the standard "compose cleared" feedback. RPC failure or a
+// missing claude_session_id come back as composeFailedMsg.
+//
+// Spawn-window failure is non-fatal: the daemon-side release already
+// succeeded (the session is GONE from chubby), so we still return
+// chubCommandDoneMsg — just with a toast that flags the spawn error.
+// Falling back to composeFailedMsg there would mislead the user into
+// thinking the release didn't happen.
 func (m Model) doChubDetach() tea.Cmd {
 	s := m.focusedSession()
 	if s == nil {
@@ -2793,12 +2804,44 @@ func (m Model) doChubDetach() tea.Cmd {
 			return composeFailedMsg{fmt.Errorf("no session focused")}
 		}
 	}
+	sid := s.ID
 	name := s.Name
+	c := m.client
 	return func() tea.Msg {
-		if err := openDetachedFn(name); err != nil {
+		raw, err := c.Call(context.Background(), "release_session",
+			map[string]any{"id": sid})
+		if err != nil {
 			return composeFailedMsg{fmt.Errorf("detach failed: %w", err)}
 		}
-		return chubCommandDoneMsg{toast: fmt.Sprintf("opened %s in a new window", name)}
+		var r struct {
+			ClaudeSessionID string `json:"claude_session_id"`
+			Cwd             string `json:"cwd"`
+		}
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return composeFailedMsg{fmt.Errorf("detach: %w", err)}
+		}
+		if r.ClaudeSessionID == "" {
+			// Daemon should have rejected this with INVALID_PAYLOAD,
+			// but defend against an unexpected empty result.
+			return composeFailedMsg{fmt.Errorf(
+				"detach: daemon returned no claude_session_id",
+			)}
+		}
+		// Open a real claude in a new GUI terminal — claude --resume
+		// <id> from the session's cwd. This is NOT another chubby tui;
+		// the user continues talking to the same conversation in a
+		// normal terminal, with no chubby wrapper.
+		if err := openExternalClaudeFn(r.ClaudeSessionID, r.Cwd); err != nil {
+			// Don't fail the whole detach — daemon-side release
+			// already succeeded, the session is gone. Just toast the
+			// spawn-window error so the user knows to open it manually.
+			return chubCommandDoneMsg{toast: fmt.Sprintf(
+				"released %s; could not open new window: %v", name, err,
+			)}
+		}
+		return chubCommandDoneMsg{toast: fmt.Sprintf(
+			"released %s into a new terminal", name,
+		)}
 	}
 }
 
@@ -3485,7 +3528,7 @@ func (m Model) viewHelp() string {
 
   /movetofolder X    (chubby) move focused session to folder X (creates if new)
   /removefromfolder  (chubby) remove focused session from its folder
-  /detach            pop focused session into a new terminal window
+  /detach            release session from chubby; opens a new terminal with claude --resume
 
   Tab (in cwd)       complete directory path; cycle on repeat
   Ctrl+P (in cwd)    cycle recent cwds

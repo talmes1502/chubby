@@ -219,6 +219,26 @@ class PromoteSessionParams(_Strict):
     id: str
 
 
+# --- /detach (release session from chubby) ------------------------------------
+
+
+class ReleaseSessionParams(_Strict):
+    """Sent by the TUI when the user types ``/detach``: capture the
+    focused session's claude_session_id + cwd, then kill the wrapper
+    (claude dies along with it) and remove the session from the
+    in-memory registry. The caller uses the captured fields to re-open
+    a fresh ``claude --resume <id>`` in a new GUI terminal — the
+    JSONL transcript is the same file, so the conversation continues
+    seamlessly outside chubby's management."""
+
+    id: str
+
+
+class ReleaseSessionResult(_Strict):
+    claude_session_id: str
+    cwd: str
+
+
 # --- purge (Phase 14) ---------------------------------------------------------
 
 

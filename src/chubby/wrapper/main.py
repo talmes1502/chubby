@@ -146,15 +146,18 @@ async def _wait_for_claude_session_id(pid: int, timeout_s: float) -> str | None:
 
 class _RunOneResult:
     """Bundle of values returned by ``_run_one_claude``: the captured
-    Claude session id (None if we never saw one) and a flag set when the
-    inject-listener received a ``restart_claude`` event from the daemon.
+    Claude session id (None if we never saw one), a flag set when the
+    inject-listener received a ``restart_claude`` event from the
+    daemon, and a flag set when the daemon told us to ``shutdown`` (the
+    ``/detach`` release path — we exit cleanly, no restart).
     """
 
-    __slots__ = ("session_id", "restart_requested")
+    __slots__ = ("session_id", "restart_requested", "shutdown_requested")
 
     def __init__(self) -> None:
         self.session_id: str | None = None
         self.restart_requested: bool = False
+        self.shutdown_requested: bool = False
 
 
 async def _run_one_claude(
@@ -317,6 +320,14 @@ async def _run_one_claude(
                 pty.signal_child(signal.SIGTERM)
                 # Don't return — keep listening so a second restart event
                 # during teardown still wins (idempotent: same effect).
+            elif msg.method == "shutdown":
+                # Daemon-side ``/detach`` release: SIGTERM claude and
+                # let the main loop exit (no --resume retry). The user
+                # is opening a fresh ``claude --resume <id>`` outside
+                # chubby's management — we just need to disappear.
+                _diag("shutdown event received — SIGTERMing claude (no restart)")
+                result.shutdown_requested = True
+                pty.signal_child(signal.SIGTERM)
 
     def on_winch(*_args: Any) -> None:
         try:
@@ -447,6 +458,12 @@ async def _run() -> int:
                 tags=tags,
             )
             is_first = False
+            if res.shutdown_requested:
+                # Daemon told us to release this session (``/detach``).
+                # Exit cleanly — the user is taking the JSONL into a
+                # fresh ``claude --resume`` outside our management.
+                _diag("wrapper exiting: shutdown requested by daemon")
+                return 0
             if not res.restart_requested:
                 _diag("wrapper exiting: claude exited normally")
                 return 0

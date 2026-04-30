@@ -7,12 +7,12 @@ import (
 	"testing"
 )
 
-// TestOpenMacosTerminal_BuildsOsascriptCommand asserts the macOS
+// TestOpenMacosTerminalCmd_BuildsOsascriptCommand asserts the macOS
 // branch wraps cmdLine in an `osascript -e <script>` invocation that
 // references Terminal.app's `do script` AppleScript verb. We swap
 // execCommand with a stub so the test never actually opens a real
 // Terminal window — important because Go test runs are headless.
-func TestOpenMacosTerminal_BuildsOsascriptCommand(t *testing.T) {
+func TestOpenMacosTerminalCmd_BuildsOsascriptCommand(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skipf("skipping macos-only test on %s", runtime.GOOS)
 	}
@@ -29,8 +29,8 @@ func TestOpenMacosTerminal_BuildsOsascriptCommand(t *testing.T) {
 		// in a test.)
 		return exec.Command("/usr/bin/true")
 	}
-	if err := openMacosTerminal(`chubby tui --focus "api" --detached`); err != nil {
-		t.Fatalf("openMacosTerminal: %v", err)
+	if err := openMacosTerminalCmd(`cd "/tmp/proj" && claude --resume "abc"`); err != nil {
+		t.Fatalf("openMacosTerminalCmd: %v", err)
 	}
 	if capturedName != "osascript" {
 		t.Fatalf("execCommand name = %q, want osascript", capturedName)
@@ -45,16 +45,17 @@ func TestOpenMacosTerminal_BuildsOsascriptCommand(t *testing.T) {
 	if !strings.Contains(script, "do script") {
 		t.Fatalf("script missing 'do script':\n%s", script)
 	}
-	if !strings.Contains(script, "chubby tui --focus") {
-		t.Fatalf("script missing chubby command:\n%s", script)
+	if !strings.Contains(script, "claude --resume") {
+		t.Fatalf("script missing claude --resume command:\n%s", script)
 	}
 }
 
-// TestOpenLinuxTerminal_PicksFirstAvailable verifies the Linux branch
-// honours the priority list: when execLookPath claims gnome-terminal
-// is on $PATH, that's the binary we exec — even if konsole is also
-// "available." We stub both helpers so no real terminal is spawned.
-func TestOpenLinuxTerminal_PicksFirstAvailable(t *testing.T) {
+// TestOpenLinuxTerminalCmd_PicksFirstAvailable verifies the Linux
+// branch honours the priority list: when execLookPath claims
+// gnome-terminal is on $PATH, that's the binary we exec — even if
+// konsole is also "available." We stub both helpers so no real
+// terminal is spawned.
+func TestOpenLinuxTerminalCmd_PicksFirstAvailable(t *testing.T) {
 	prevLookPath := execLookPath
 	prevCommand := execCommand
 	t.Cleanup(func() {
@@ -73,8 +74,8 @@ func TestOpenLinuxTerminal_PicksFirstAvailable(t *testing.T) {
 		capturedArgs = args
 		return exec.Command("/usr/bin/true")
 	}
-	if err := openLinuxTerminal(`chubby tui --focus "api" --detached`); err != nil {
-		t.Fatalf("openLinuxTerminal: %v", err)
+	if err := openLinuxTerminalCmd(`cd "/tmp/proj" && claude --resume "abc"`); err != nil {
+		t.Fatalf("openLinuxTerminalCmd: %v", err)
 	}
 	if capturedName != "gnome-terminal" {
 		t.Fatalf("execCommand name = %q, want gnome-terminal", capturedName)
@@ -82,21 +83,21 @@ func TestOpenLinuxTerminal_PicksFirstAvailable(t *testing.T) {
 	if len(capturedArgs) < 4 || capturedArgs[len(capturedArgs)-2] != "-c" {
 		t.Fatalf("expected sh -c invocation, got %v", capturedArgs)
 	}
-	if !strings.Contains(capturedArgs[len(capturedArgs)-1], "chubby tui --focus") {
-		t.Fatalf("sh -c arg missing chubby command: %v", capturedArgs)
+	if !strings.Contains(capturedArgs[len(capturedArgs)-1], "claude --resume") {
+		t.Fatalf("sh -c arg missing claude --resume command: %v", capturedArgs)
 	}
 }
 
-// TestOpenLinuxTerminal_NoTerminalAvailable returns a descriptive
+// TestOpenLinuxTerminalCmd_NoTerminalAvailable returns a descriptive
 // error listing every candidate so users know which packages would
 // unblock /detach.
-func TestOpenLinuxTerminal_NoTerminalAvailable(t *testing.T) {
+func TestOpenLinuxTerminalCmd_NoTerminalAvailable(t *testing.T) {
 	prevLookPath := execLookPath
 	t.Cleanup(func() { execLookPath = prevLookPath })
 	execLookPath = func(file string) (string, error) {
 		return "", exec.ErrNotFound
 	}
-	err := openLinuxTerminal("anything")
+	err := openLinuxTerminalCmd("anything")
 	if err == nil {
 		t.Fatal("expected error when no terminals are installed")
 	}
@@ -107,11 +108,11 @@ func TestOpenLinuxTerminal_NoTerminalAvailable(t *testing.T) {
 	}
 }
 
-// TestOpenDetachedWindow_SmokeOnHostOS is a no-spawn smoke check: on
-// the current platform, OpenDetachedWindow either succeeds (with our
+// TestOpenExternalClaude_SmokeOnHostOS is a no-spawn smoke check: on
+// the current platform, OpenExternalClaude either succeeds (with our
 // stubs) or returns the documented unsupported-OS error. It does NOT
 // open a real terminal.
-func TestOpenDetachedWindow_SmokeOnHostOS(t *testing.T) {
+func TestOpenExternalClaude_SmokeOnHostOS(t *testing.T) {
 	prevCommand := execCommand
 	prevLookPath := execLookPath
 	t.Cleanup(func() {
@@ -124,15 +125,62 @@ func TestOpenDetachedWindow_SmokeOnHostOS(t *testing.T) {
 	execLookPath = func(file string) (string, error) {
 		return "/usr/bin/" + file, nil
 	}
-	err := OpenDetachedWindow("api")
+	err := OpenExternalClaude("abcdef01-0000-0000-0000-000000000000", "/tmp/proj")
 	switch runtime.GOOS {
 	case "darwin", "linux":
 		if err != nil {
-			t.Fatalf("OpenDetachedWindow on %s: %v", runtime.GOOS, err)
+			t.Fatalf("OpenExternalClaude on %s: %v", runtime.GOOS, err)
 		}
 	default:
 		if err == nil {
 			t.Fatalf("expected unsupported-OS error on %s", runtime.GOOS)
 		}
+	}
+}
+
+// TestOpenExternalClaude_BuildsCdAndResumeCommand verifies the
+// composed shell command line includes a `cd` to the cwd and
+// `claude --resume <id>` — this is the heart of the contract.
+func TestOpenExternalClaude_BuildsCdAndResumeCommand(t *testing.T) {
+	prevCommand := execCommand
+	prevLookPath := execLookPath
+	t.Cleanup(func() {
+		execCommand = prevCommand
+		execLookPath = prevLookPath
+	})
+	var capturedScript string
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		// Capture whichever arg holds our shell command line:
+		// macos -> args[1] (after -e); linux -> last arg (after sh -c).
+		if len(args) > 0 {
+			capturedScript = args[len(args)-1]
+		}
+		return exec.Command("/usr/bin/true")
+	}
+	execLookPath = func(file string) (string, error) {
+		return "/usr/bin/" + file, nil
+	}
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skipf("skipping on %s", runtime.GOOS)
+	}
+	if err := OpenExternalClaude("the-sid", "/tmp/proj with space"); err != nil {
+		t.Fatalf("OpenExternalClaude: %v", err)
+	}
+	// On macOS the captured arg is the AppleScript; the shell command
+	// line is itself %q-escaped inside ``do script "..."``, so the
+	// inner quotes appear as \". On Linux it's the raw shell command
+	// line. Either way the cwd path and the claude --resume tokens
+	// must be present somewhere.
+	if !strings.Contains(capturedScript, "/tmp/proj with space") {
+		t.Fatalf("script missing cwd path: %s", capturedScript)
+	}
+	if !strings.Contains(capturedScript, "claude --resume") {
+		t.Fatalf("script missing claude --resume: %s", capturedScript)
+	}
+	if !strings.Contains(capturedScript, "the-sid") {
+		t.Fatalf("script missing session id: %s", capturedScript)
+	}
+	if !strings.Contains(capturedScript, "cd ") {
+		t.Fatalf("script missing cd: %s", capturedScript)
 	}
 }

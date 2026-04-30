@@ -200,6 +200,31 @@ class Registry:
             self._notify_tasks.add(task)
             task.add_done_callback(self._notify_tasks.discard)
 
+    async def remove_session(self, sid: str) -> None:
+        """Drop a session from the in-memory registry entirely.
+
+        Used by ``release_session`` (the daemon side of ``/detach``) so
+        the released session disappears from ``list_sessions`` and the
+        TUI's rail. Cancels any pending flush task, drops writers/
+        buffers, and broadcasts ``session_removed`` so subscribers can
+        update their views without a list refresh round-trip.
+
+        Note: this does NOT delete persisted history (the SQLite row,
+        the JSONL transcript on disk). It only purges the live state
+        — purging history is what ``purge`` is for.
+        """
+        async with self._lock:
+            self._by_id.pop(sid, None)
+            self._wrapper_writers.pop(sid, None)
+            self._writers.pop(sid, None)
+            self._buffers.pop(sid, None)
+            self._tmux_stops.pop(sid, None)
+            t = self._flush_tasks.pop(sid, None)
+            if t is not None and not t.done():
+                t.cancel()
+        if self.subs is not None:
+            await self.subs.broadcast("session_removed", {"id": sid})
+
     async def attach_wrapper(self, session_id: str, write: WriteCallable) -> None:
         """Bind a wrapper transport's write closure to a session id.
 
