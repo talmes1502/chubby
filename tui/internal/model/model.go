@@ -327,6 +327,34 @@ type Model struct {
 	// thinking session would queue a fresh tick — multiplying the
 	// frame advance rate the user actually sees.
 	spinnerRunning bool
+
+	// scrollOffset is the number of lines scrolled UP from the bottom
+	// of the conversation, per session. 0 = pinned to bottom. Larger
+	// values = scrolled toward older messages. Per-session state
+	// preserves the user's reading position when switching focus.
+	scrollOffset map[string]int
+
+	// newSinceScroll counts turns appended since the user last left
+	// the bottom of THIS session's conversation. Drives the "↓ N new"
+	// indicator overlay. Reset to 0 whenever the user is back at the
+	// bottom (scrollOffset[sid] == 0).
+	newSinceScroll map[string]int
+
+	// lastViewportInnerW / lastViewportInnerH cache the last rendered
+	// viewport's inner dimensions (after subtracting the rounded
+	// border). renderViewport sets these as a side-effect; the
+	// scroll-clamping helpers read them so a key event arriving before
+	// the next render uses the most recent geometry. Without this we'd
+	// either re-render on every keystroke just to compute max-scroll
+	// or risk clamping against stale dimensions.
+	lastViewportInnerW int
+	lastViewportInnerH int
+
+	// lastViewportLineCount caches the wrapped-line count of the
+	// focused conversation as last rendered. Used by maxScrollFor to
+	// answer "how far up can the user scroll?" without re-running the
+	// full lipgloss wrap. Refreshed every render.
+	lastViewportLineCount int
 }
 
 type tickMsg struct{}
@@ -438,6 +466,8 @@ func New(c *rpc.Client) Model {
 		folders:        LoadFolders(),
 		search:         searchState{query: views.NewSearchQuery()},
 		historyLoaded:  map[string]bool{},
+		scrollOffset:   map[string]int{},
+		newSinceScroll: map[string]int{},
 	}
 }
 
@@ -562,6 +592,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		// Refresh the cached viewport geometry so scroll-clamping works
+		// the moment the user starts pressing keys after a resize. The
+		// math here mirrors viewMain's layout decisions; we don't run
+		// the full layout but we do compute the same convoW/h the
+		// renderer will use, so maxScrollFor sees correct numbers.
+		m.recomputeViewportGeom()
+		// Resize that shrinks the conversation pane may have stranded
+		// per-session scrollOffsets past the new max — clamp them so
+		// the next render doesn't show empty space above the banner.
+		m.clampAllScrollOffsets()
 		return m, nil
 	case listMsg:
 		m.sessions = []Session(msg)
@@ -609,6 +649,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				role, _ := subP["role"].(string)
 				text, _ := subP["text"].(string)
 				ts, _ := subP["ts"].(float64)
+				// Snapshot length before append so we can tell whether
+				// the dedup actually skipped the turn — only "real"
+				// (non-deduped) appends should bump newSinceScroll, or
+				// the unread badge will inflate from tailer replays.
+				prevLen := len(m.conversation[sid])
 				// appendTranscriptTurn dedup-skips entries that match the
 				// last 5 turns (role+text). The daemon's tailer can replay
 				// JSONL turns from offset 0 immediately after we've
@@ -616,6 +661,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// get_session_history; without dedup the user sees each
 				// recent turn twice.
 				m.appendTranscriptTurn(sid, role, text, int64(ts))
+				appended := len(m.conversation[sid]) > prevLen
+				// D7: when the user is scrolled UP from the bottom,
+				// preserve their reading position and instead increment
+				// the unread counter so they see "↓ N new" guidance.
+				// When pinned to bottom (offset==0), do nothing — the
+				// renderer naturally tails the latest line.
+				if appended && m.scrollOffset[sid] > 0 {
+					m.newSinceScroll[sid]++
+				}
 				// Auto-detect file paths in the new turn so Ctrl+] can
 				// open the most-recent mention without re-rendering.
 				m.harvestPathsFromText(text)
@@ -983,13 +1037,47 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		// Compose forwarding fallthrough is below; only intercept these
 		// when the compose bar is empty so the user can still type 'k'.
+		// D6: when compose is empty, up/k scroll the conversation rather
+		// than walk the rail. Tab / Shift+Tab still cycle sessions, so
+		// rail navigation isn't lost. D8 will narrow this further to
+		// "only when the conversation pane is the active pane."
 		if m.compose.Value() == "" {
-			m.moveRailCursor(-1)
+			m.scrollUp(1)
 			return m, nil
 		}
 	case "down", "j":
 		if m.compose.Value() == "" {
-			m.moveRailCursor(+1)
+			m.scrollDown(1)
+			return m, nil
+		}
+	case "pgup", "ctrl+u":
+		if m.compose.Value() == "" {
+			m.scrollUp(m.halfViewportPage())
+			return m, nil
+		}
+	case "pgdown", "ctrl+d":
+		if m.compose.Value() == "" {
+			m.scrollDown(m.halfViewportPage())
+			return m, nil
+		}
+	case "home":
+		if m.compose.Value() == "" {
+			m.scrollToTop()
+			return m, nil
+		}
+	case "end":
+		if m.compose.Value() == "" {
+			m.scrollToBottom()
+			return m, nil
+		}
+	case "G":
+		// Vim-style jump-to-end. Capital G is unambiguous (compose
+		// would emit lowercase g for normal typing), so it doesn't
+		// fight the textinput when compose is non-empty either, but
+		// we keep the compose-empty gate for parity with the other
+		// scroll keys.
+		if m.compose.Value() == "" {
+			m.scrollToBottom()
 			return m, nil
 		}
 	case " ":
@@ -2786,7 +2874,12 @@ func (m Model) View() string {
 	// path-detection via UpdateRecentPaths() called from the message
 	// handlers instead.
 	composeBar := views.RenderCompose(m.compose, target, color, m.composeGhost(), convoW)
-	rightCol := renderViewport(m.focusedSession(), m.conversation, convoW, h, m.spinnerFrame)
+	focusedSID := ""
+	if s := m.focusedSession(); s != nil {
+		focusedSID = s.ID
+	}
+	rightCol := renderViewport(m.focusedSession(), m.conversation, convoW, h, m.spinnerFrame,
+		m.scrollOffset[focusedSID], m.newSinceScroll[focusedSID])
 	rightStack := lipgloss.JoinVertical(lipgloss.Left, rightCol, composeBar)
 	if m.slashPopupVisible() {
 		popup := views.RenderSlashPopup(m.slashPopupCmds, m.slashPopupCursor, convoW)
@@ -3327,6 +3420,211 @@ func (m Model) focusedSession() *Session {
 	return &m.sessions[m.focused]
 }
 
+// focusedSessionID returns the focused session's id, or "" if there
+// is no focused session. Convenience for the scroll helpers which key
+// every operation by session id.
+func (m Model) focusedSessionID() string {
+	if s := m.focusedSession(); s != nil {
+		return s.ID
+	}
+	return ""
+}
+
+// maxScrollFor reports the maximum scroll offset (in lines) for the
+// given session, based on the most-recently-rendered viewport
+// geometry. If the conversation fits entirely on screen, max is 0
+// (nowhere to scroll). Recomputes the wrapped line count on demand
+// from the cached innerW so callers don't depend on viewMain having
+// run since the last conversation mutation.
+func (m Model) maxScrollFor(sid string) int {
+	if m.lastViewportInnerH <= 0 || m.lastViewportInnerW <= 0 {
+		// We haven't rendered yet; keep the offset whatever it is so
+		// the first render establishes geometry. Returning a huge
+		// number would let scrollUp run away before render lands.
+		return m.scrollOffset[sid]
+	}
+	turns := m.conversation[sid]
+	if len(turns) == 0 {
+		return 0
+	}
+	// "color" doesn't affect line count, only ANSI bytes — we can pass
+	// any string. Color the focused session's color when available so
+	// downstream styling is consistent if the test checks the rendered
+	// output too.
+	color := "12"
+	for i := range m.sessions {
+		if m.sessions[i].ID == sid {
+			color = m.sessions[i].Color
+			break
+		}
+	}
+	body := renderTurns(turns, color, m.lastViewportInnerW)
+	// renderTurns trailing-newlines each turn, so split on "\n".
+	lc := strings.Count(body, "\n")
+	// 2 rows of banner + spacer subtract from the visible body area;
+	// matches the layout in renderViewport (header + "\n\n").
+	visible := m.lastViewportInnerH - 2
+	if visible < 1 {
+		visible = 1
+	}
+	max := lc - visible
+	if max < 0 {
+		return 0
+	}
+	return max
+}
+
+// scrollUp moves the focused session's scroll position UP by n lines
+// (toward older messages), clamped to maxScrollFor. No-op if no
+// session is focused.
+func (m *Model) scrollUp(n int) {
+	sid := m.focusedSessionID()
+	if sid == "" {
+		return
+	}
+	max := m.maxScrollFor(sid)
+	cur := m.scrollOffset[sid] + n
+	if cur > max {
+		cur = max
+	}
+	if cur < 0 {
+		cur = 0
+	}
+	m.scrollOffset[sid] = cur
+}
+
+// scrollDown moves the focused session's scroll position DOWN by n
+// lines (toward the latest message), clamped to 0. When the user
+// arrives back at the bottom (offset==0), unread-count is cleared so
+// the "↓ N new" indicator goes away.
+func (m *Model) scrollDown(n int) {
+	sid := m.focusedSessionID()
+	if sid == "" {
+		return
+	}
+	cur := m.scrollOffset[sid] - n
+	if cur < 0 {
+		cur = 0
+	}
+	m.scrollOffset[sid] = cur
+	if cur == 0 {
+		m.newSinceScroll[sid] = 0
+	}
+}
+
+// scrollToTop pins the focused session's view to the oldest visible
+// line (max offset). Bound to "home" / "g g".
+func (m *Model) scrollToTop() {
+	sid := m.focusedSessionID()
+	if sid == "" {
+		return
+	}
+	m.scrollOffset[sid] = m.maxScrollFor(sid)
+}
+
+// scrollToBottom pins the focused session's view to the latest line
+// (offset 0) and clears the unread-count. Bound to "end" / "G".
+func (m *Model) scrollToBottom() {
+	sid := m.focusedSessionID()
+	if sid == "" {
+		return
+	}
+	m.scrollOffset[sid] = 0
+	m.newSinceScroll[sid] = 0
+}
+
+// recomputeViewportGeom recalculates the conversation pane's inner
+// width and height from the current m.width / m.height, mirroring the
+// layout math in viewMain. We cache these on the model so the scroll
+// helpers can answer "max offset" without re-running the layout —
+// and so they work even before the first View() call lands. Called
+// from WindowSizeMsg and from listMsg (in case the rail visibility
+// changed before any resize arrived).
+func (m *Model) recomputeViewportGeom() {
+	leftW := 24
+	composeH := 3
+	h := m.height - composeH - 2 - 2
+	if m.slashPopupVisible() {
+		h -= len(m.slashPopupCmds)
+	}
+	if h < 5 {
+		h = 5
+	}
+	railVisible := !m.railCollapsed
+	editorVisible := m.editor.visible
+	available := m.width
+	if available < 1 {
+		available = 1
+	}
+	var convoW int
+	switch {
+	case railVisible && editorVisible:
+		rest := available - leftW - 2
+		if rest < 40 {
+			rest = 40
+		}
+		editorW := rest / 2
+		if editorW < 20 {
+			editorW = 20
+		}
+		convoW = rest - editorW
+		if convoW < 20 {
+			convoW = 20
+		}
+	case !railVisible && editorVisible:
+		rest := available - 2
+		editorW := rest / 2
+		if editorW < 20 {
+			editorW = 20
+		}
+		convoW = rest - editorW
+		if convoW < 20 {
+			convoW = 20
+		}
+	case railVisible && !editorVisible:
+		convoW = available - leftW - 2
+		if convoW < 20 {
+			convoW = 20
+		}
+	default:
+		convoW = available - 2
+		if convoW < 20 {
+			convoW = 20
+		}
+	}
+	// renderViewport draws inside a rounded border (1 col each side),
+	// so the inner width for wrapping is convoW - 2.
+	m.lastViewportInnerW = convoW - 2
+	m.lastViewportInnerH = h
+}
+
+// halfViewportPage returns the page-step for pgup/pgdown — half the
+// viewport's visible inner height, with a sensible floor so we always
+// move by at least a few lines even before the first render.
+func (m Model) halfViewportPage() int {
+	h := m.lastViewportInnerH / 2
+	if h < 5 {
+		h = 5
+	}
+	return h
+}
+
+// clampAllScrollOffsets re-applies maxScrollFor to every per-session
+// offset. Called from tea.WindowSizeMsg so a terminal resize that
+// shrinks the viewport doesn't leave stale offsets pointing past the
+// new max.
+func (m *Model) clampAllScrollOffsets() {
+	for sid, off := range m.scrollOffset {
+		max := m.maxScrollFor(sid)
+		if off > max {
+			m.scrollOffset[sid] = max
+		}
+		if off < 0 {
+			m.scrollOffset[sid] = 0
+		}
+	}
+}
+
 // transcriptDedupWindow is how many trailing turns we scan when
 // deciding whether a freshly-arrived transcript_message is a duplicate.
 // 5 is enough to absorb the daemon's tailer replay racing the
@@ -3658,7 +3956,12 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 // (bold). The dot (U+25CF) acts as a swatch, also in the session's color.
 // cwd / kind / status are dimmed so they read as metadata rather than
 // content.
-func renderSessionBanner(s *Session, spinnerFrame int) string {
+//
+// scrolledUp adds a "· scrolled up · End to jump down" suffix in
+// yellow so the user sees that the viewport is no longer pinned to
+// the bottom even if the new-messages badge isn't visible (e.g. they
+// scrolled up but no new messages have arrived yet).
+func renderSessionBanner(s *Session, spinnerFrame int, scrolledUp bool) string {
 	col := lipgloss.Color(s.Color)
 	colorStyle := lipgloss.NewStyle().Foreground(col).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
@@ -3670,7 +3973,23 @@ func renderSessionBanner(s *Session, spinnerFrame int) string {
 	// styled by statusGlyph (e.g. bright yellow for the spinner) — we
 	// keep it outside the dim wrapper so the spinner stays vivid.
 	meta := dim.Render(fmt.Sprintf("%s · %s · ", s.Cwd, s.Kind)) + glyph + dim.Render(" "+s.Status)
-	return fmt.Sprintf("%s %s  %s  %s", bar, name, swatch, meta)
+	out := fmt.Sprintf("%s %s  %s  %s", bar, name, swatch, meta)
+	if scrolledUp {
+		hint := lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true).
+			Render(" · scrolled up · End to jump down")
+		out += hint
+	}
+	return out
+}
+
+// viewportRender is the result of renderViewport: the framed string to
+// place into the layout, plus the wrapped-line count of the rendered
+// transcript body (excluding the banner) — viewMain stashes the line
+// count into m.lastViewportLineCount so the scroll-clamping helpers
+// can answer "how far up?" without re-running the wrap.
+type viewportRender struct {
+	view      string
+	lineCount int
 }
 
 // renderViewport draws the focused session's structured conversation:
@@ -3679,7 +3998,19 @@ func renderSessionBanner(s *Session, spinnerFrame int) string {
 // lines. The previous implementation rendered the raw PTY byte stream,
 // which was unreadable inside lipgloss because Claude's cursor-
 // positioning escapes don't compose with lipgloss frames.
-func renderViewport(s *Session, conversation map[string][]Turn, w, h, spinnerFrame int) string {
+//
+// scrollOffset slides the visible window UP by that many lines (0 =
+// pinned to bottom — the historical behavior). newCount, when > 0 and
+// scrollOffset > 0, renders a yellow "↓ N new messages · End to jump"
+// badge bottom-right inside the frame; the banner also gets a
+// "scrolled up" hint so the state is obvious without looking at the
+// badge.
+func renderViewport(s *Session, conversation map[string][]Turn, w, h, spinnerFrame, scrollOffset, newCount int) string {
+	r := renderViewportFull(s, conversation, w, h, spinnerFrame, scrollOffset, newCount)
+	return r.view
+}
+
+func renderViewportFull(s *Session, conversation map[string][]Turn, w, h, spinnerFrame, scrollOffset, newCount int) viewportRender {
 	if s == nil {
 		dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 		bold := lipgloss.NewStyle().Bold(true)
@@ -3690,15 +4021,17 @@ func renderViewport(s *Session, conversation map[string][]Turn, w, h, spinnerFra
 			dim.Render("or") + " " +
 			bold.Render("chubby spawn --name <n> --cwd <dir>") + " " +
 			dim.Render("from another terminal")
-		return lipgloss.NewStyle().Width(w).Height(h).
-			Border(lipgloss.RoundedBorder()).
-			Padding(1, 2).
-			Render(body)
+		return viewportRender{
+			view: lipgloss.NewStyle().Width(w).Height(h).
+				Border(lipgloss.RoundedBorder()).
+				Padding(1, 2).
+				Render(body),
+		}
 	}
 	frame := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		Width(w).Height(h)
-	header := renderSessionBanner(s, spinnerFrame)
+	header := renderSessionBanner(s, spinnerFrame, scrollOffset > 0)
 	if s.Status == "dead" {
 		hint := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true).
 			Render("session is dead — press Ctrl+P to respawn")
@@ -3709,17 +4042,52 @@ func renderViewport(s *Session, conversation map[string][]Turn, w, h, spinnerFra
 			// can see what happened before the session died.
 			body += "\n\n" + renderTurns(turns, s.Color, w-2)
 		}
-		return frame.Render(body)
+		return viewportRender{view: frame.Render(body)}
 	}
 	turns := conversation[s.ID]
 	if len(turns) == 0 {
 		body := header + "\n\n" +
 			lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
 				Render("(no messages yet — type below to send)")
-		return frame.Render(body)
+		return viewportRender{view: frame.Render(body)}
 	}
-	body := header + "\n\n" + renderTurns(turns, s.Color, w-2)
-	return frame.Render(body)
+	turnsBody := renderTurns(turns, s.Color, w-2)
+	// Slice the rendered transcript by scrollOffset. The line count
+	// we report excludes the banner+spacer, so callers can clamp
+	// scrollOffset against just the content.
+	lines := strings.Split(strings.TrimRight(turnsBody, "\n"), "\n")
+	lineCount := len(lines)
+	// Visible body area: total inner height minus banner + spacer.
+	// (-2 for the rounded border was already applied via frame.Width.)
+	visibleH := h - 2 - 2 // border (top+bottom) + banner row + spacer
+	if visibleH < 1 {
+		visibleH = 1
+	}
+	end := lineCount - scrollOffset
+	if end < 0 {
+		end = 0
+	}
+	if end > lineCount {
+		end = lineCount
+	}
+	start := end - visibleH
+	if start < 0 {
+		start = 0
+	}
+	visible := strings.Join(lines[start:end], "\n")
+	body := header + "\n\n" + visible
+
+	// "↓ N new" badge — only when actually scrolled away from the
+	// bottom AND there are new turns the user hasn't seen yet.
+	if scrollOffset > 0 && newCount > 0 {
+		badge := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("11")).Bold(true).
+			Render(fmt.Sprintf("↓ %d new · End to jump", newCount))
+		// Right-align the badge inside the inner width.
+		body += "\n" + lipgloss.NewStyle().Width(w-2).
+			Align(lipgloss.Right).Render(badge)
+	}
+	return viewportRender{view: frame.Render(body), lineCount: lineCount}
 }
 
 // renderTurns formats the structured transcript: user prompts marked

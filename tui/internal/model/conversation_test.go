@@ -71,7 +71,7 @@ func TestEvMsg_TranscriptMessage_CapsAtTurnsCap(t *testing.T) {
 // placeholder copy renders for a session with no transcript yet.
 func TestRenderViewport_NoTurns_ShowsPlaceholder(t *testing.T) {
 	s := &Session{ID: "s1", Name: "alpha", Color: "#abcdef"}
-	out := renderViewport(s, map[string][]Turn{}, 60, 10, 0)
+	out := renderViewport(s, map[string][]Turn{}, 60, 10, 0, 0, 0)
 	if !strings.Contains(out, "no messages yet") {
 		t.Fatalf("expected placeholder copy in output, got: %q", out)
 	}
@@ -88,7 +88,7 @@ func TestRenderViewport_RendersTurns(t *testing.T) {
 			{Role: "assistant", Text: "pong", Ts: 2},
 		},
 	}
-	out := renderViewport(s, conv, 60, 20, 0)
+	out := renderViewport(s, conv, 60, 20, 0, 0, 0)
 	if !strings.Contains(out, "ping") {
 		t.Fatalf("expected user text, got: %q", out)
 	}
