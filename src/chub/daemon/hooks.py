@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,55 @@ from chub.daemon.registry import Registry
 from chub.daemon.session import Session
 
 log = logging.getLogger(__name__)
+
+
+_CAVEAT_RE = re.compile(r"<local-command-caveat>.*?</local-command-caveat>", re.DOTALL)
+_CMD_RE = re.compile(
+    r"<command-name>(?P<name>.*?)</command-name>"
+    r"(?:\s*<command-message>.*?</command-message>)?"
+    r"(?:\s*<command-args>(?P<args>.*?)</command-args>)?",
+    re.DOTALL,
+)
+_STDOUT_RE = re.compile(
+    r"<local-command-stdout>(?P<body>.*?)</local-command-stdout>", re.DOTALL
+)
+
+
+def _strip_command_xml(text: str) -> str:
+    """Convert Claude's raw ``<command-*>`` XML tags into a Claude-UI-style
+    rendering.
+
+    Claude's JSONL stores user-typed slash commands (``/model``, ``/clear``,
+    etc.) as a synthetic user message whose ``content`` is an XML blob like
+    ``<command-name>/model</command-name><command-args>opus</command-args>``
+    plus a ``<local-command-caveat>`` boilerplate prefix and an optional
+    ``<local-command-stdout>`` postscript. Rendering the raw XML in our
+    transcript view is noisy; this helper collapses it into the form
+    Claude's own UI shows the user.
+    """
+    text = _CAVEAT_RE.sub("", text)
+
+    def cmd_repl(m: re.Match[str]) -> str:
+        name = m.group("name").strip()
+        args = (m.group("args") or "").strip()
+        if args:
+            return f"{name} {args}"
+        return name
+
+    text = _CMD_RE.sub(cmd_repl, text)
+
+    def stdout_repl(m: re.Match[str]) -> str:
+        body = m.group("body").strip()
+        if not body:
+            return ""
+        indented = "\n".join("  " + line for line in body.splitlines())
+        return "\n" + indented
+
+    text = _STDOUT_RE.sub(stdout_repl, text)
+
+    # Collapse runs of blank lines that the substitutions can leave behind.
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def claude_projects_root() -> Path:
@@ -180,7 +230,7 @@ def _extract_turn_text(message: Any) -> str:
         return ""
     content = message.get("content")
     if isinstance(content, str):
-        return content
+        return _strip_command_xml(content) if content else ""
     if not isinstance(content, list):
         return ""
     parts: list[str] = []
@@ -202,7 +252,8 @@ def _extract_turn_text(message: Any) -> str:
         # as just "⏺ Bash" — visual noise. Drop it; the tailer skips
         # empty turns so they won't appear in live or history views.
         return ""
-    return "\n".join(parts)
+    joined = "\n".join(parts)
+    return _strip_command_xml(joined) if joined else ""
 
 
 def _read_new_lines(path: Path, pos: int) -> tuple[int, list[str]]:

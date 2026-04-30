@@ -155,6 +155,49 @@ def test_extract_turn_text_returns_empty_when_only_tool_results() -> None:
     assert _extract_turn_text(msg) == ""
 
 
+def test_extract_turn_text_strips_command_caveat() -> None:
+    msg = {
+        "role": "user",
+        "content": "<local-command-caveat>caveat text</local-command-caveat>real text",
+    }
+    assert _extract_turn_text(msg) == "real text"
+
+
+def test_extract_turn_text_renders_slash_command_invocation() -> None:
+    msg = {
+        "role": "user",
+        "content": (
+            "<command-name>/model</command-name>\n"
+            "<command-message>model</command-message>\n"
+            "<command-args>claude-opus-4-7</command-args>"
+        ),
+    }
+    assert _extract_turn_text(msg) == "/model claude-opus-4-7"
+
+
+def test_extract_turn_text_renders_slash_command_no_args() -> None:
+    msg = {
+        "role": "user",
+        "content": "<command-name>/clear</command-name>",
+    }
+    assert _extract_turn_text(msg) == "/clear"
+
+
+def test_extract_turn_text_renders_command_stdout_indented() -> None:
+    msg = {
+        "role": "user",
+        "content": (
+            "<command-name>/model</command-name>\n"
+            "<command-args>opus</command-args>\n"
+            "<local-command-stdout>Set model to Opus 4.7\nAlso saved to settings</local-command-stdout>"
+        ),
+    }
+    out = _extract_turn_text(msg)
+    assert "/model opus" in out
+    assert "  Set model to Opus 4.7" in out
+    assert "  Also saved to settings" in out
+
+
 async def test_tailer_indexes_new_lines_and_broadcasts(tmp_path: Path) -> None:
     transcript = tmp_path / "session.jsonl"
     transcript.write_text("")
