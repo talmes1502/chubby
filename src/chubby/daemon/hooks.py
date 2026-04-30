@@ -316,6 +316,42 @@ async def _tail_jsonl(
                     role=role,
                     content=text,
                 )
+            # Assistant turns carry a `usage` block with token counts; surface
+            # it to live TUI clients as a session_usage_changed event so the
+            # banner can show running token totals + tokens/sec activity. We
+            # broadcast BEFORE the transcript_message so a listener that
+            # arms a "thinking elapsed" timer on transcript_message has the
+            # current usage totals already in hand.
+            if rtype == "assistant":
+                msg_obj = rec.get("message")
+                if isinstance(msg_obj, dict):
+                    usage = msg_obj.get("usage")
+                    if isinstance(usage, dict):
+                        in_raw = usage.get("input_tokens")
+                        out_raw = usage.get("output_tokens")
+                        cache_raw = usage.get("cache_read_input_tokens")
+                        input_tokens = (
+                            int(in_raw) if isinstance(in_raw, int | float) else 0
+                        )
+                        output_tokens = (
+                            int(out_raw) if isinstance(out_raw, int | float) else 0
+                        )
+                        cache_read = (
+                            int(cache_raw)
+                            if isinstance(cache_raw, int | float)
+                            else 0
+                        )
+                        if registry.subs is not None:
+                            await registry.subs.broadcast(
+                                "session_usage_changed",
+                                {
+                                    "session_id": session_id,
+                                    "input_tokens": input_tokens,
+                                    "output_tokens": output_tokens,
+                                    "cache_read_input_tokens": cache_read,
+                                    "ts": ts,
+                                },
+                            )
             if registry.subs is not None:
                 await registry.subs.broadcast(
                     "transcript_message",
