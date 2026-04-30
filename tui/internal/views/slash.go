@@ -4,8 +4,11 @@
 package views
 
 import (
+	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // SlashCommand is one of Claude Code's built-in /commands.
@@ -76,6 +79,69 @@ func MatchSlashArg(cmdName, prefix string) []string {
 		return strings.ToLower(out[i]) < strings.ToLower(out[j])
 	})
 	return out
+}
+
+// RenderSlashPopup draws the Claude-style autocomplete popup below the
+// compose bar. cursor is the highlighted index; w is the available
+// width (the popup will fit within it). Returns "" when matches is
+// empty so callers can JoinVertical unconditionally.
+//
+// Layout: " /name  description" — name column is left-aligned and
+// padded to the longest match (capped at 30 cols); description is
+// truncated with an ellipsis when it can't fit. The highlighted row
+// is rendered with a dim background so it reads as "selected" without
+// stealing the eye.
+func RenderSlashPopup(matches []SlashCommand, cursor int, w int) string {
+	if len(matches) == 0 {
+		return ""
+	}
+	// Find longest "/<name>" for column alignment, capped so a stray
+	// long command doesn't squeeze the description column to zero.
+	nameW := 0
+	for _, c := range matches {
+		n := len("/" + c.Name)
+		if n > nameW {
+			nameW = n
+		}
+	}
+	if nameW > 30 {
+		nameW = 30
+	}
+	// 1 leading space + nameW + 3 separator + descW = w (rough budget).
+	descW := w - nameW - 4
+	if descW < 10 {
+		descW = 10
+	}
+
+	nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
+	descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
+	cursorStyle := lipgloss.NewStyle().Background(lipgloss.Color("237"))
+
+	var b strings.Builder
+	for i, c := range matches {
+		name := "/" + c.Name
+		if len(name) > nameW {
+			name = name[:nameW-1] + "…"
+		}
+		desc := c.Description
+		if rs := []rune(desc); len(rs) > descW {
+			desc = string(rs[:descW-1]) + "…"
+		}
+		// Lay out the raw text first so column widths are correct, then
+		// re-style each segment. We can't style first because lipgloss
+		// adds ANSI escapes that would throw off %-*s padding.
+		nameCol := fmt.Sprintf(" %-*s", nameW, name)
+		descCol := "   " + desc
+		line := nameStyle.Render(nameCol) + descStyle.Render(descCol)
+		if i == cursor {
+			line = cursorStyle.Render(line)
+		}
+		b.WriteString(line)
+		if i < len(matches)-1 {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
 }
 
 // FindSlashCommand returns the SlashCommand by name (case-insensitive)

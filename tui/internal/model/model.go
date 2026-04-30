@@ -190,6 +190,12 @@ type Model struct {
 	// the next Tab restarts the cycle from 0.
 	slashCompletionLast string
 
+	// slashPopup state — non-nil/non-empty when the compose bar starts
+	// with "/" and there are matching commands. Up/Down moves cursor;
+	// Enter accepts; Esc closes. Recomputed on every compose mutation.
+	slashPopupCursor int
+	slashPopupCmds   []views.SlashCommand
+
 	// historyLoaded tracks which session ids we've already requested
 	// transcript history for, so we only fire the RPC once per session
 	// per TUI session. Without this guard the per-tick refresh would
@@ -550,6 +556,37 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Slash popup gets first dibs on navigation/accept/dismiss keys
+	// when it's visible. We only intercept Ctrl+N/Ctrl+P here (which
+	// would otherwise open the spawn modal / respawn) so the popup can
+	// be driven keyboard-only without mouse-only fallbacks.
+	if m.slashPopupVisible() {
+		switch msg.String() {
+		case "up", "ctrl+p":
+			if m.slashPopupCursor > 0 {
+				m.slashPopupCursor--
+			}
+			return m, nil
+		case "down", "ctrl+n":
+			if m.slashPopupCursor < len(m.slashPopupCmds)-1 {
+				m.slashPopupCursor++
+			}
+			return m, nil
+		case "enter":
+			m.acceptSlashPopup()
+			return m, nil
+		case "tab":
+			// Match Claude's behavior: Tab accepts the highlighted entry,
+			// same as Enter. Avoids the awkward double-cycle (popup +
+			// Tab-completion would race otherwise).
+			m.acceptSlashPopup()
+			return m, nil
+		case "esc":
+			m.slashPopupCmds = nil
+			m.slashPopupCursor = 0
+			return m, nil
+		}
+	}
 	switch msg.String() {
 	case "tab":
 		// /command autocompletion takes precedence over @name — once the
@@ -565,6 +602,7 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.compose.CursorEnd()
 			m.slashCompletionLast = newVal
 			m.completionIndex++
+			m.updateSlashPopup()
 			return m, nil
 		}
 		if m.tryComplete() {
@@ -679,6 +717,10 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Default: forward to compose textinput.
 	var cmd tea.Cmd
 	m.compose, cmd = m.compose.Update(msg)
+	// Recompute popup state every time the compose value may have
+	// changed. Cheap (linear over a tiny catalog) and keeps the popup
+	// in lock-step with what the user sees.
+	m.updateSlashPopup()
 	return m, cmd
 }
 
@@ -1443,6 +1485,12 @@ func (m Model) View() string {
 	composeH := 3
 	// Reserve 2 extra rows for the top header and bottom status bar.
 	h := m.height - composeH - 2 - 2
+	// Slash popup steals vertical space from the bottom — shrink the
+	// main panes by exactly the popup's row count so nothing gets
+	// pushed off-screen.
+	if m.slashPopupVisible() {
+		h -= len(m.slashPopupCmds)
+	}
 	if h < 5 {
 		h = 5
 	}
@@ -1469,6 +1517,10 @@ func (m Model) View() string {
 	}
 	composeBar := views.RenderCompose(m.compose, target, color, m.composeGhost(), m.width)
 	body := lipgloss.JoinVertical(lipgloss.Left, main, composeBar)
+	if m.slashPopupVisible() {
+		popup := views.RenderSlashPopup(m.slashPopupCmds, m.slashPopupCursor, m.width)
+		body = lipgloss.JoinVertical(lipgloss.Left, body, popup)
+	}
 	return m.overlayToasts(m.wrapWithChrome(body))
 }
 

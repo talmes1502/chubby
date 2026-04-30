@@ -2,6 +2,7 @@ package views
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -102,5 +103,31 @@ func TestFindSlashCommand_CaseInsensitive(t *testing.T) {
 func TestFindSlashCommand_NotFound(t *testing.T) {
 	if c := FindSlashCommand("zzz"); c != nil {
 		t.Fatalf("expected nil, got %+v", c)
+	}
+}
+
+func TestRenderSlashPopup_EmptyReturnsBlank(t *testing.T) {
+	if got := RenderSlashPopup(nil, 0, 80); got != "" {
+		t.Fatalf("expected empty string for nil matches, got %q", got)
+	}
+}
+
+func TestRenderSlashPopup_RendersAllNames(t *testing.T) {
+	matches := MatchSlashCommands("c") // clear, color, compact
+	out := RenderSlashPopup(matches, 0, 80)
+	for _, c := range matches {
+		if !strings.Contains(out, "/"+c.Name) {
+			t.Fatalf("output missing /%s; got:\n%s", c.Name, out)
+		}
+	}
+}
+
+func TestRenderSlashPopup_LineCountMatchesMatchCount(t *testing.T) {
+	matches := MatchSlashCommands("c")
+	out := RenderSlashPopup(matches, 0, 80)
+	lines := strings.Split(out, "\n")
+	if len(lines) != len(matches) {
+		t.Fatalf("expected %d lines, got %d (output:\n%s)",
+			len(matches), len(lines), out)
 	}
 }
