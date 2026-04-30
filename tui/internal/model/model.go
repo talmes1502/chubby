@@ -46,6 +46,7 @@ const (
 	ModeReconnecting
 	ModeSpawn
 	ModeSearch
+	ModeHelp
 )
 
 // broadcastState is held in the Model so the reducer can mutate it
@@ -382,6 +383,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleKeySpawn(msg)
 	case ModeSearch:
 		return m.handleKeySearch(msg)
+	case ModeHelp:
+		// Any key dismisses the overlay.
+		m.mode = ModeMain
+		return m, nil
 	case ModeReconnecting:
 		// Swallow keys while we're reconnecting; user can still ctrl+c
 		// because that's handled before the dispatch.
@@ -445,6 +450,13 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.search.query.Focus()
 		m.mode = ModeSearch
 		return m, nil
+	case "?":
+		// Only intercept '?' as the help key when compose is empty,
+		// otherwise the user can't type a literal '?' mid-prompt.
+		if m.compose.Value() == "" {
+			m.mode = ModeHelp
+			return m, nil
+		}
 	case "ctrl+h":
 		m.mode = ModeHistory
 		m.history = historyState{}
@@ -879,6 +891,8 @@ func (m Model) View() string {
 		return m.viewHistory()
 	case ModeSpawn:
 		return m.viewSpawn()
+	case ModeHelp:
+		return m.viewHelp()
 	case ModeReconnecting:
 		return m.viewReconnecting()
 	case ModeSearch:
@@ -1084,6 +1098,38 @@ func (m Model) viewHistory() string {
 	header := lipgloss.NewStyle().Bold(true).Render(
 		"History (Tab=switch col, Enter=open, Esc=close)")
 	return lipgloss.JoinVertical(lipgloss.Left, header, cols)
+}
+
+func (m Model) viewHelp() string {
+	body := `chub-tui keys
+
+  Tab / Shift+Tab    cycle focused session
+  Up / Down k / j    walk session list
+  Space              toggle group collapse
+  Enter              send composed message to focused session
+  @name <msg>        one-shot redirect: send to <name>, then snap back
+  Tab (in compose)   autocomplete @name
+
+  Ctrl+N             new session in focused cwd
+  Ctrl+F             search session list
+  Ctrl+B             broadcast modal
+  /                  grep transcripts (current run)
+  Ctrl+H             history panel (past hub-runs)
+
+  ?                  this help
+  q / Ctrl+C         quit`
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		Padding(1, 2).
+		Render(body)
+	w, h := m.width, m.height
+	if w < 1 {
+		w = 60
+	}
+	if h < 1 {
+		h = 20
+	}
+	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, box)
 }
 
 func (m Model) viewSpawn() string {
