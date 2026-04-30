@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -94,12 +95,14 @@ type searchState struct {
 	query textinput.Model
 }
 
-// spawnState backs ModeSpawn: a small modal asking for a new session
-// name, with the cwd inherited from the focused session.
+// spawnState backs ModeSpawn: a small modal with two textinputs
+// (name + cwd). Tab cycles between the fields. cwd defaults to the
+// focused session's cwd or $HOME and supports ~ expansion at submit.
 type spawnState struct {
-	name textinput.Model
-	cwd  string
-	err  error
+	name  textinput.Model
+	cwd   textinput.Model
+	field int // 0=name, 1=cwd
+	err   error
 }
 
 // historyState backs the three-column miller view: hub-runs on the
@@ -480,7 +483,16 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s := m.focusedSession(); s != nil {
 			cwd = s.Cwd
 		}
-		m.spawn = spawnState{name: views.NewSpawnNameInput(), cwd: cwd}
+		if cwd == "" {
+			if home, err := os.UserHomeDir(); err == nil {
+				cwd = home
+			}
+		}
+		m.spawn = spawnState{
+			name:  views.NewSpawnNameInput(),
+			cwd:   views.NewSpawnCwdInput(cwd),
+			field: 0,
+		}
 		m.mode = ModeSpawn
 		return m, nil
 	case "ctrl+k":
@@ -702,15 +714,43 @@ func (m Model) handleKeySpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.mode = ModeMain
 		return m, nil
+	case "tab":
+		m.spawn.field = (m.spawn.field + 1) % 2
+		if m.spawn.field == 0 {
+			m.spawn.name.Focus()
+			m.spawn.cwd.Blur()
+		} else {
+			m.spawn.cwd.Focus()
+			m.spawn.name.Blur()
+		}
+		return m, nil
+	case "shift+tab":
+		m.spawn.field = (m.spawn.field + 1) % 2
+		if m.spawn.field == 0 {
+			m.spawn.name.Focus()
+			m.spawn.cwd.Blur()
+		} else {
+			m.spawn.cwd.Focus()
+			m.spawn.name.Blur()
+		}
+		return m, nil
 	case "enter":
 		name := strings.TrimSpace(m.spawn.name.Value())
 		if name == "" {
+			m.spawn.field = 0
+			m.spawn.name.Focus()
+			m.spawn.cwd.Blur()
 			return m, nil
 		}
-		return m, m.doSpawn(name, m.spawn.cwd)
+		cwd := views.ExpandHome(strings.TrimSpace(m.spawn.cwd.Value()))
+		return m, m.doSpawn(name, cwd)
 	}
 	var cmd tea.Cmd
-	m.spawn.name, cmd = m.spawn.name.Update(msg)
+	if m.spawn.field == 0 {
+		m.spawn.name, cmd = m.spawn.name.Update(msg)
+	} else {
+		m.spawn.cwd, cmd = m.spawn.cwd.Update(msg)
+	}
 	return m, cmd
 }
 
@@ -1256,20 +1296,26 @@ func (m Model) viewSpawn() string {
 	if cw < 30 {
 		cw = 30
 	}
-	cwd := m.spawn.cwd
-	if cwd == "" {
-		cwd = "(none — daemon will pick a default)"
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	highlight := lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
+	nameLabel := "  name: "
+	cwdLabel := "  cwd:  "
+	if m.spawn.field == 0 {
+		nameLabel = highlight.Render("▸ name: ")
+		cwdLabel = dim.Render("  cwd:  ")
+	} else {
+		nameLabel = dim.Render("  name: ")
+		cwdLabel = highlight.Render("▸ cwd:  ")
 	}
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Render("New session") + "\n\n")
-	b.WriteString("  cwd:  " + cwd + "\n")
-	b.WriteString("  name: " + m.spawn.name.View() + "\n\n")
+	b.WriteString(nameLabel + m.spawn.name.View() + "\n")
+	b.WriteString(cwdLabel + m.spawn.cwd.View() + "\n\n")
 	if m.spawn.err != nil {
 		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("9")).
 			Render("error: "+m.spawn.err.Error()) + "\n\n")
 	}
-	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
-		Render("Enter to spawn · Esc to cancel"))
+	b.WriteString(dim.Render("Tab to switch field · Enter to spawn · Esc to cancel"))
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		Width(cw).

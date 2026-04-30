@@ -71,7 +71,7 @@ func TestRawStatusBar_ModeHistory(t *testing.T) {
 
 func TestRawStatusBar_ModeSpawn(t *testing.T) {
 	got := rawStatusBar(StatusModeSpawn, false, 0)
-	if missing, ok := containsAll(got, "Enter", "create", "Esc", "cancel"); ok {
+	if missing, ok := containsAll(got, "Tab", "Enter", "spawn", "Esc", "cancel"); ok {
 		t.Fatalf("ModeSpawn missing %q: %s", missing, got)
 	}
 }
