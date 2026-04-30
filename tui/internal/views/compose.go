@@ -12,7 +12,7 @@ import (
 // shift+enter handler in the Model that mutates Value directly.
 func NewCompose() textinput.Model {
 	t := textinput.New()
-	t.Placeholder = "type a prompt, Enter to send, @name to retarget"
+	t.Placeholder = "type prompt · Enter to send · @name to redirect · Tab to complete"
 	t.Prompt = "▸ "
 	t.CharLimit = 0
 	t.Focus()
