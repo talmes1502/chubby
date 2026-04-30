@@ -512,8 +512,15 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "ctrl+n":
 		cwd := ""
+		group := ""
 		if s := m.focusedSession(); s != nil {
 			cwd = s.Cwd
+			// Pre-fill the group with the focused session's group so the
+			// new session lands in the same rail bucket. Skip "(untitled)"
+			// — that's the no-group fallback, not a meaningful tag.
+			if g := GroupKey(*s); g != UntitledGroup {
+				group = g
+			}
 		}
 		if cwd == "" {
 			if home, err := os.UserHomeDir(); err == nil {
@@ -523,7 +530,7 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.spawn = spawnState{
 			name:  views.NewSpawnNameInput(),
 			cwd:   views.NewSpawnCwdInput(cwd),
-			group: views.NewSpawnGroupInput(""),
+			group: views.NewSpawnGroupInput(group),
 			field: 0,
 		}
 		m.mode = ModeSpawn

@@ -116,3 +116,53 @@ func slicesEq(a, b []string) bool {
 	}
 	return true
 }
+
+// TestCtrlN_PrefillsGroupFromFocusedSession verifies that Ctrl+N pre-fills
+// the spawn modal's group field with the focused session's group, so a
+// new session lands in the same rail bucket by default.
+func TestCtrlN_PrefillsGroupFromFocusedSession(t *testing.T) {
+	cases := []struct {
+		name    string
+		focused Session
+		want    string
+	}{
+		{
+			name:    "first tag wins",
+			focused: Session{ID: "s1", Name: "api", Cwd: "/srv/api", Tags: []string{"backend", "core"}},
+			want:    "backend",
+		},
+		{
+			name:    "no tags falls back to cwd basename",
+			focused: Session{ID: "s2", Name: "web", Cwd: "/srv/web", Tags: nil},
+			want:    "web",
+		},
+		{
+			name:    "untitled does not pre-fill",
+			focused: Session{ID: "s3", Name: "x", Cwd: "/", Tags: nil},
+			want:    "",
+		},
+		{
+			name:    "empty cwd does not pre-fill",
+			focused: Session{ID: "s4", Name: "y", Cwd: "", Tags: nil},
+			want:    "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := Model{
+				sessions: []Session{c.focused},
+				focused:  0,
+				mode:     ModeMain,
+				compose:  views.NewCompose(),
+			}
+			out, _ := m.handleKeyMain(tea.KeyMsg{Type: tea.KeyCtrlN})
+			m2 := out.(Model)
+			if m2.mode != ModeSpawn {
+				t.Fatalf("expected ModeSpawn after Ctrl+N, got %v", m2.mode)
+			}
+			if got := m2.spawn.group.Value(); got != c.want {
+				t.Errorf("group prefill = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
