@@ -211,10 +211,11 @@ type composeSentMsg struct{}
 type composeFailedMsg struct{ err error }
 
 // chubCommandDoneMsg is emitted by the chub-side compose-bar commands
-// (/color, /rename, /tag) after a successful RPC. The reducer clears
-// the compose value and triggers a session refresh so the new color /
-// name / tags show up immediately in the rail.
-type chubCommandDoneMsg struct{}
+// (/color, /rename, /tag, /refresh-claude) after a successful RPC. The
+// reducer clears the compose value and triggers a session refresh so
+// any color/name/tag change propagates to the rail. ``toast``, when
+// non-empty, surfaces a short transient message (e.g. "refreshing api…").
+type chubCommandDoneMsg struct{ toast string }
 type bcastDoneMsg struct{ n int }
 type grepDebounceMsg struct{ token int }
 type grepResultsMsg struct {
@@ -454,9 +455,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.compose.SetValue("")
 		return m, nil
 	case chubCommandDoneMsg:
-		// Chub-side commands (/color, /rename, /tag) need a refresh so the
-		// new color/name/tags propagate to the rail immediately.
+		// Chub-side commands (/color, /rename, /tag, /refresh-claude)
+		// need a refresh so the new color/name/tags propagate to the
+		// rail immediately. Any non-empty toast is surfaced via the same
+		// transient message bubble we use for awaiting_user notifications.
 		m.compose.SetValue("")
+		if msg.toast != "" {
+			m.toasts = append(m.toasts, toast{
+				sessionName: msg.toast,
+				color:       "10",
+				expiresAt:   time.Now().Add(2 * time.Second),
+			})
+		}
 		return m, m.refreshSessions()
 	case composeFailedMsg:
 		m.err = msg.err
@@ -1306,6 +1316,9 @@ func (m Model) sendComposed() tea.Cmd {
 			return m.doChubRename(arg)
 		case "/tag":
 			return m.doChubTag(arg)
+		case "/refresh-claude":
+			_ = arg // /refresh-claude takes no args; ignore any tail.
+			return m.doChubRefreshClaude()
 		}
 	}
 	target := ""
@@ -1356,12 +1369,17 @@ func (m Model) sendComposed() tea.Cmd {
 }
 
 // splitChubCommand recognises a chub-side slash command head ("/color",
-// "/rename", "/tag") at the start of the trimmed compose text and
-// returns (head, remainder-trimmed, true). The remainder may be empty
-// — the caller decides how to surface a usage error. Returns false for
-// anything else, leaving the regular inject path to handle it.
+// "/rename", "/tag", "/refresh-claude") at the start of the trimmed
+// compose text and returns (head, remainder-trimmed, true). The
+// remainder may be empty — the caller decides how to surface a usage
+// error. Returns false for anything else, leaving the regular inject
+// path to handle it.
+//
+// Heads are checked longest-first so "/refresh-claude" wins over a
+// hypothetical "/refresh"; today there's no overlap, but the ordering
+// is the right invariant.
 func splitChubCommand(s string) (cmd, arg string, ok bool) {
-	for _, head := range []string{"/color", "/rename", "/tag"} {
+	for _, head := range []string{"/refresh-claude", "/color", "/rename", "/tag"} {
 		if s == head {
 			return head, "", true
 		}
@@ -1447,6 +1465,32 @@ func (m Model) doChubTag(spec string) tea.Cmd {
 			return composeFailedMsg{err}
 		}
 		return chubCommandDoneMsg{}
+	}
+}
+
+// doChubRefreshClaude fires the refresh_claude_session RPC for the
+// focused session. The daemon pushes a restart_claude event over the
+// wrapper's writer; the wrapper SIGTERMs claude and re-launches with
+// ``claude --resume <sid>``. The chub session row stays put; the JSONL
+// stays put; only settings/MCP/hooks reload.
+//
+// We surface a short toast ("refreshing <name>…") so the user knows
+// something happened — the actual restart is a few seconds of latency
+// during which the viewport will look frozen.
+func (m Model) doChubRefreshClaude() tea.Cmd {
+	s := m.focusedSession()
+	if s == nil {
+		return nil
+	}
+	sid := s.ID
+	name := s.Name
+	c := m.client
+	return func() tea.Msg {
+		if _, err := c.Call(context.Background(), "refresh_claude_session",
+			map[string]any{"id": sid}); err != nil {
+			return composeFailedMsg{err}
+		}
+		return chubCommandDoneMsg{toast: fmt.Sprintf("refreshing %s…", name)}
 	}
 }
 
@@ -1736,6 +1780,7 @@ func (m Model) viewHelp() string {
   /color #RRGGBB     (chub) recolor focused session
   /rename <name>     (chub) rename focused session
   /tag +foo -bar     (chub) modify tags
+  /refresh-claude    (chub) restart claude with --resume (picks up settings changes)
 
   Ctrl+N             new session in focused cwd
   Ctrl+K             search session list

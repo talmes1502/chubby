@@ -41,6 +41,9 @@ var SlashCommands = []SlashCommand{
 	}},
 	{"rename", "(chub) rename the focused session", nil},
 	{"tag", "(chub) modify session tags (e.g. /tag +foo -bar)", nil},
+	{"refresh-claude",
+		"(chub) restart claude with --resume (settings reload, conversation kept)",
+		nil},
 }
 
 // MatchSlashCommands returns commands whose Name starts with prefix

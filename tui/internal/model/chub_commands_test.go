@@ -306,6 +306,39 @@ func TestSendComposed_TagRejectsEmptySpec(t *testing.T) {
 	}
 }
 
+// TestSendComposed_RoutesRefreshClaudeToRPC — typing "/refresh-claude"
+// short-circuits into the refresh_claude_session RPC for the focused
+// session and surfaces a non-empty toast so the user sees something
+// happened. (The wrapper restart itself is async and doesn't run in
+// this test — we're only asserting the TUI -> daemon hop.)
+func TestSendComposed_RoutesRefreshClaudeToRPC(t *testing.T) {
+	d, cl := startFakeDaemon(t)
+	m := Model{
+		client:   cl,
+		sessions: []Session{{ID: "s1", Name: "api"}},
+		focused:  0,
+		mode:     ModeMain,
+		compose:  views.NewCompose(),
+	}
+	m.compose.SetValue("/refresh-claude")
+	msg := runCmd(m.sendComposed())
+	done, ok := msg.(chubCommandDoneMsg)
+	if !ok {
+		t.Fatalf("expected chubCommandDoneMsg, got %T (%v)", msg, msg)
+	}
+	if done.toast == "" {
+		t.Fatalf("expected non-empty toast, got %q", done.toast)
+	}
+	d.waitForCall(t)
+	method, params := d.lastCall()
+	if method != "refresh_claude_session" {
+		t.Fatalf("method = %q, want refresh_claude_session", method)
+	}
+	if params["id"] != "s1" {
+		t.Fatalf("id param = %v, want s1", params["id"])
+	}
+}
+
 // Sanity: the fake daemon can be reached over a real Client.Call so the
 // test infra itself isn't silently broken.
 func TestFakeDaemon_BasicCall(t *testing.T) {
