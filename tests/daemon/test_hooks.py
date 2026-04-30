@@ -12,6 +12,7 @@ from chub.daemon.hooks import (
     _stringify,
     _tail_jsonl,
     claude_transcript_path,
+    watch_for_transcript,
 )
 from chub.daemon.persistence import Database
 from chub.daemon.registry import Registry
@@ -190,3 +191,64 @@ async def test_tailer_skips_blank_invalid_and_non_turn_records(tmp_path: Path) -
     assert len(rows) == 1
 
 
+async def test_watch_for_transcript_binds_new_jsonl(tmp_path: Path) -> None:
+    """watch_for_transcript should pick up a JSONL written after session creation
+    and call set_claude_session_id."""
+    # Fake home — point projects at tmp_path/projects/<encoded>.
+    cwd = "/proj/foo"
+    encoded = "proj-foo"
+    proj_dir = tmp_path / "projects" / encoded
+    proj_dir.mkdir(parents=True)
+
+    db = await Database.open(tmp_path / "s.db")
+    subs = _FakeSubs()
+    reg = Registry(hub_run_id="hr_t", db=db, subs=subs)  # type: ignore[arg-type]
+    s = await reg.register(
+        name="foo", kind=SessionKind.WRAPPED, cwd=cwd
+    )
+
+    # Monkey-patch claude_projects_dir to point at our tmp dir.
+    import chub.daemon.hooks as hooks_mod
+
+    orig = hooks_mod.claude_projects_dir
+    hooks_mod.claude_projects_dir = lambda c: proj_dir  # type: ignore[assignment]
+    try:
+        # Fire the watcher in the background; after a short delay write a
+        # JSONL — the watcher should detect it and call set_claude_session_id.
+        async def writer() -> None:
+            await asyncio.sleep(0.05)
+            (proj_dir / "abc1234.jsonl").write_text(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "message": {"role": "user", "content": "hello"},
+                    }
+                )
+                + "\n"
+            )
+
+        # Run the watcher with stop_after=1 inside _tail_jsonl by giving a
+        # very short timeout window — but we *do* want it to find the file
+        # and invoke set_claude_session_id, so use a short poll interval and
+        # just cancel after a moment.
+        watch_task = asyncio.create_task(
+            watch_for_transcript(reg, s, poll_interval=0.05, timeout=2.0)
+        )
+        await writer()
+        # Give the watcher a moment to detect, bind, then start tailing.
+        await asyncio.sleep(0.3)
+        watch_task.cancel()
+        try:
+            await watch_task
+        except asyncio.CancelledError:
+            pass
+
+        bound = await reg.get(s.id)
+        assert bound.claude_session_id == "abc1234"
+        # session_id_resolved should have been broadcast.
+        assert any(
+            m == "session_id_resolved" for m, _ in subs.broadcasts
+        )
+    finally:
+        hooks_mod.claude_projects_dir = orig  # type: ignore[assignment]
+        await db.close()

@@ -40,6 +40,12 @@ def claude_transcript_path(claude_session_id: str, cwd: str) -> Path:
     return Path.home() / ".claude" / "projects" / encoded / f"{claude_session_id}.jsonl"
 
 
+def claude_projects_dir(cwd: str) -> Path:
+    """Return ``~/.claude/projects/<encoded-cwd>/`` for the given cwd."""
+    encoded = cwd.replace("/", "-").lstrip("-")
+    return Path.home() / ".claude" / "projects" / encoded
+
+
 def _stringify(content: Any) -> str:
     """Generic stringifier used as a fallback for unstructured records."""
     if isinstance(content, str):
@@ -201,3 +207,62 @@ async def start_tailer(registry: Registry, s: Session) -> None:
         return
     path = claude_transcript_path(s.claude_session_id, s.cwd)
     await _tail_jsonl(registry, s.id, path)
+
+
+async def watch_for_transcript(
+    registry: Registry,
+    session: Session,
+    *,
+    poll_interval: float = 1.0,
+    timeout: float = 60.0,
+) -> None:
+    """Wait for Claude to create a JSONL for ``session``, then start tailing.
+
+    Wrapped/spawned sessions don't know their ``claude_session_id`` up
+    front — Claude only writes its transcript file once a real
+    ``SessionStart`` hook fires. We poll the projects dir for a JSONL
+    with mtime newer than ``session.created_at``; the first match wins.
+
+    Once found we set ``session.claude_session_id`` on the registry
+    (which broadcasts ``session_id_resolved``) and spawn the regular
+    tailer. If nothing shows up within ``timeout`` seconds we log and
+    give up — the user can still see the raw PTY for that session, we
+    just won't have a structured conversation feed.
+    """
+    proj_dir = claude_projects_dir(session.cwd)
+    deadline = now_ms() + int(timeout * 1000)
+    found: Path | None = None
+    while now_ms() < deadline:
+        if proj_dir.is_dir():
+            try:
+                # Only consider files modified after the session was
+                # created — older transcripts belong to previous claude
+                # invocations in the same cwd.
+                threshold_s = session.created_at / 1000.0
+                candidates = [
+                    f
+                    for f in proj_dir.iterdir()
+                    if f.suffix == ".jsonl" and f.stat().st_mtime >= threshold_s
+                ]
+            except OSError:
+                candidates = []
+            if candidates:
+                candidates.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+                found = candidates[0]
+                break
+        await asyncio.sleep(poll_interval)
+    if found is None:
+        log.info(
+            "watch_for_transcript: no JSONL appeared for session %s within %.0fs",
+            session.id,
+            timeout,
+        )
+        return
+    claude_session_id = found.stem
+    await registry.set_claude_session_id(session.id, claude_session_id)
+    log.info(
+        "watch_for_transcript: bound session %s to claude session %s",
+        session.id,
+        claude_session_id,
+    )
+    await _tail_jsonl(registry, session.id, found)

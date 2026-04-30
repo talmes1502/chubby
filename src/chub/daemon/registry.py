@@ -154,6 +154,32 @@ class Registry:
         await self._persist(s)
         await self._emit({"event": "session_tagged", "id": s.id, "tags": s.tags})
 
+    async def set_claude_session_id(
+        self, session_id: str, claude_session_id: str
+    ) -> None:
+        """Bind a Claude transcript session id to a chub session.
+
+        Used by ``watch_for_transcript`` once it has discovered the
+        JSONL file for a wrapped/spawned session. Persists the new id
+        and broadcasts ``session_id_resolved`` so the TUI can take
+        whatever action it wants on resolution.
+        """
+        async with self._lock:
+            s = self._by_id.get(session_id)
+            if s is None:
+                raise ChubError(
+                    ErrorCode.SESSION_NOT_FOUND, f"no session with id {session_id}"
+                )
+            s.claude_session_id = claude_session_id
+        await self._persist(s)
+        await self._emit(
+            {
+                "event": "session_id_resolved",
+                "id": s.id,
+                "claude_session_id": claude_session_id,
+            }
+        )
+
     async def update_status(self, session_id: str, status: SessionStatus) -> None:
         async with self._lock:
             s = self._by_id.get(session_id)

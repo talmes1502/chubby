@@ -76,6 +76,8 @@ def _build_registry(
     async def register_wrapped(
         params: dict[str, Any], ctx: CallContext
     ) -> dict[str, Any]:
+        from chub.daemon import hooks as hooks_mod
+
         p = RegisterWrappedParams.model_validate(params)
         s = await reg.register(
             name=p.name, kind=SessionKind.WRAPPED, cwd=p.cwd, pid=p.pid, tags=p.tags, color=p.color
@@ -83,6 +85,12 @@ def _build_registry(
         await reg.attach_wrapper(s.id, ctx.write)
         writer = LogWriter(run.dir / "logs", color=s.color, session_name=s.name)
         await reg.attach_log_writer(s.id, writer)
+        # Wrapped sessions don't know their Claude session id at registration
+        # time — Claude only writes its JSONL once it actually starts up.
+        # Watch the projects dir for a fresh transcript and bind it.
+        task = asyncio.create_task(hooks_mod.watch_for_transcript(reg, s))
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
         return RegisterWrappedResult(session=SessionDict(**s.to_dict())).model_dump()
 
     async def list_sessions(
