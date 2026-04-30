@@ -4709,7 +4709,6 @@ func renderTurns(turns []Turn, sessionColor string, innerWidth int) string {
 	userStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(sessionColor)).Bold(true).
 		Width(innerWidth)
-	asstStyle := lipgloss.NewStyle().Width(innerWidth)
 	var b strings.Builder
 	for i, t := range turns {
 		if i > 0 {
@@ -4717,9 +4716,15 @@ func renderTurns(turns []Turn, sessionColor string, innerWidth int) string {
 		}
 		switch t.Role {
 		case "user":
+			// User prompts are typed into the compose bar — usually plain
+			// text, sometimes paths. Keep the path-mention accent and
+			// skip glamour (running plain prose through it adds noise).
 			b.WriteString(userStyle.Render("▸ " + stylePathMentions(t.Text)))
 		default:
-			b.WriteString(asstStyle.Render(stylePathMentions(t.Text)))
+			// Claude's responses are markdown. Rendering them via glamour
+			// turns **bold**, [links](url), bullet lists, and fenced code
+			// into terminal-styled output that matches Claude's own UI.
+			b.WriteString(views.RenderMarkdown(t.Text, innerWidth))
 		}
 		b.WriteString("\n")
 	}
