@@ -40,7 +40,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "chub-tui: subscribe failed: %v\n", err)
 		os.Exit(2)
 	}
-	p := tea.NewProgram(model.New(c), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	// Note: no tea.WithMouseCellMotion() — mouse capture would block the
+	// terminal's native text-selection (and copy/paste). We don't have any
+	// mouse handlers, so dropping the option restores normal selection.
+	p := tea.NewProgram(model.New(c), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
