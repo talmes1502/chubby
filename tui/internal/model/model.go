@@ -35,12 +35,23 @@ type Session struct {
 const outputCap = 64 * 1024
 
 // Mode controls which modal pane is on top of the main two-pane layout.
-// Subsequent phases add ModeBroadcast, ModeGrep, ModeHistory, ModeReconnecting.
+// Subsequent phases add ModeGrep, ModeHistory, ModeReconnecting.
 type Mode int
 
 const (
 	ModeMain Mode = iota
+	ModeBroadcast
 )
+
+// broadcastState is held in the Model so the reducer can mutate it
+// cleanly. Tab cycles fields {0=list,1=text,2=send}; space toggles a
+// session checkbox; Enter on Send fires inject for each selected id.
+type broadcastState struct {
+	selected map[string]bool
+	field    int
+	cursor   int
+	text     string
+}
 
 // Model is the Bubble Tea state.
 type Model struct {
@@ -54,6 +65,8 @@ type Model struct {
 
 	mode    Mode
 	compose textinput.Model
+
+	bcast broadcastState
 }
 
 type tickMsg struct{}
@@ -62,6 +75,7 @@ type listMsg []Session
 type errMsg struct{ err error }
 type composeSentMsg struct{}
 type composeFailedMsg struct{ err error }
+type bcastDoneMsg struct{ n int }
 
 // New constructs a Model bound to an already-connected rpc.Client.
 func New(c *rpc.Client) Model {
@@ -70,6 +84,7 @@ func New(c *rpc.Client) Model {
 		output:  map[string]string{},
 		mode:    ModeMain,
 		compose: views.NewCompose(),
+		bcast:   broadcastState{selected: map[string]bool{}},
 	}
 }
 
@@ -156,6 +171,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case composeFailedMsg:
 		m.err = msg.err
 		return m, nil
+	case bcastDoneMsg:
+		m.mode = ModeMain
+		return m, m.refreshSessions()
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -166,6 +184,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
 		return m, tea.Quit
 	}
+	switch m.mode {
+	case ModeBroadcast:
+		return m.handleKeyBroadcast(msg)
+	default:
+		return m.handleKeyMain(msg)
+	}
+}
+
+func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "tab":
 		if len(m.sessions) > 0 {
@@ -176,6 +203,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.sessions) > 0 {
 			m.focused = (m.focused - 1 + len(m.sessions)) % len(m.sessions)
 		}
+		return m, nil
+	case "ctrl+b":
+		m.mode = ModeBroadcast
+		m.bcast = broadcastState{selected: map[string]bool{}}
 		return m, nil
 	case "enter":
 		return m, m.sendComposed()
@@ -188,6 +219,80 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.compose, cmd = m.compose.Update(msg)
 	return m, cmd
+}
+
+func (m Model) handleKeyBroadcast(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = ModeMain
+		return m, nil
+	case "tab":
+		m.bcast.field = (m.bcast.field + 1) % 3
+		return m, nil
+	case "shift+tab":
+		m.bcast.field = (m.bcast.field + 2) % 3
+		return m, nil
+	}
+	switch m.bcast.field {
+	case 0: // session list
+		switch msg.String() {
+		case "up", "k":
+			if m.bcast.cursor > 0 {
+				m.bcast.cursor--
+			}
+		case "down", "j":
+			if m.bcast.cursor < len(m.sessions)-1 {
+				m.bcast.cursor++
+			}
+		case " ", "x":
+			if m.bcast.cursor >= 0 && m.bcast.cursor < len(m.sessions) {
+				sid := m.sessions[m.bcast.cursor].ID
+				m.bcast.selected[sid] = !m.bcast.selected[sid]
+			}
+		}
+	case 1: // textarea
+		switch msg.String() {
+		case "enter":
+			m.bcast.text += "\n"
+		case "backspace":
+			if len(m.bcast.text) > 0 {
+				m.bcast.text = m.bcast.text[:len(m.bcast.text)-1]
+			}
+		default:
+			if msg.Type == tea.KeyRunes {
+				m.bcast.text += string(msg.Runes)
+			} else if msg.String() == " " {
+				m.bcast.text += " "
+			}
+		}
+	case 2: // send button
+		if msg.String() == "enter" {
+			return m, m.sendBroadcast()
+		}
+	}
+	return m, nil
+}
+
+// sendBroadcast injects the textarea contents into every selected session.
+func (m Model) sendBroadcast() tea.Cmd {
+	text := m.bcast.text
+	targets := make([]string, 0)
+	for sid, sel := range m.bcast.selected {
+		if sel {
+			targets = append(targets, sid)
+		}
+	}
+	c := m.client
+	return func() tea.Msg {
+		b64 := base64.StdEncoding.EncodeToString([]byte(text))
+		for _, sid := range targets {
+			_, _ = c.Call(context.Background(), "inject", map[string]any{
+				"session_id":  sid,
+				"payload_b64": b64,
+			})
+		}
+		return bcastDoneMsg{n: len(targets)}
+	}
 }
 
 // sendComposed parses an optional @name retarget prefix, resolves the
@@ -244,10 +349,15 @@ func (m Model) sendComposed() tea.Cmd {
 	}
 }
 
-// View renders the dual-pane layout plus the compose bar.
+// View renders the dual-pane layout plus the compose bar, or the
+// active modal pane when m.mode != ModeMain.
 func (m Model) View() string {
 	if m.err != nil {
 		return fmt.Sprintf("error: %v\npress ctrl+c to quit", m.err)
+	}
+	switch m.mode {
+	case ModeBroadcast:
+		return m.viewBroadcast()
 	}
 	leftW := 24
 	rightW := m.width - leftW - 2
@@ -271,6 +381,48 @@ func (m Model) View() string {
 	}
 	composeBar := views.RenderCompose(m.compose, target, color, m.width)
 	return lipgloss.JoinVertical(lipgloss.Left, main, composeBar)
+}
+
+func (m Model) viewBroadcast() string {
+	w := m.width
+	if w < 40 {
+		w = 40
+	}
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Bold(true).Render(
+		"Broadcast (Tab=switch field, Space=toggle, Esc=cancel)") + "\n\n")
+
+	listStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Width(w - 4)
+	if m.bcast.field == 0 {
+		listStyle = listStyle.BorderForeground(lipgloss.Color("12"))
+	}
+	var ll strings.Builder
+	for i, s := range m.sessions {
+		mark := "[ ]"
+		if m.bcast.selected[s.ID] {
+			mark = "[x]"
+		}
+		cursor := "  "
+		if i == m.bcast.cursor && m.bcast.field == 0 {
+			cursor = "▸ "
+		}
+		col := lipgloss.NewStyle().Foreground(lipgloss.Color(s.Color)).Render(s.Name)
+		ll.WriteString(fmt.Sprintf("%s%s %s\n", cursor, mark, col))
+	}
+	b.WriteString(listStyle.Render(ll.String()) + "\n")
+
+	textStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Width(w - 4).Height(6)
+	if m.bcast.field == 1 {
+		textStyle = textStyle.BorderForeground(lipgloss.Color("12"))
+	}
+	b.WriteString(textStyle.Render(m.bcast.text+"_") + "\n")
+
+	btnStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder())
+	if m.bcast.field == 2 {
+		btnStyle = btnStyle.BorderForeground(lipgloss.Color("12")).Bold(true)
+	}
+	b.WriteString(btnStyle.Render(" Send "))
+	return b.String()
 }
 
 func (m Model) focusedSession() *Session {
