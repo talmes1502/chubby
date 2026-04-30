@@ -100,11 +100,14 @@ class InjectParams(_Strict):
 
 class SpawnSessionParams(_Strict):
     name: str
-    # Empty string means "default to $HOME" — the daemon's spawn_session
-    # handler resolves it before launching the wrapper. Made optional so
-    # callers (TUI spawn modal, ``chub-claude --name x`` with no --cwd)
-    # don't have to invent a sensible default themselves.
-    cwd: str = ""
+    # Required and non-empty. Sessions are organized around a project
+    # cwd (rail grouping, JSONL location, hooks scope) so a "no project"
+    # session has no consistent meaning. The TUI spawn modal pre-fills
+    # cwd from the focused session or $HOME, and the CLI defaults to
+    # ``os.getcwd()`` — so users almost never have to type it. The
+    # daemon rejects an empty cwd to surface sloppy scripted invocations
+    # rather than silently defaulting.
+    cwd: str
     tags: list[str] = []
 
 

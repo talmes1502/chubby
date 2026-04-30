@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1421,12 +1422,87 @@ func splitChubCommand(s string) (cmd, arg string, ok bool) {
 	return "", "", false
 }
 
-// chubColorRE validates the /color argument: must be #RRGGBB.
+// chubColorRE matches a strict #RRGGBB hex literal.
 var chubColorRE = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 
+// chubPalette mirrors the daemon-side PALETTE in src/chub/daemon/colors.py.
+// Used by /color so users can say "/color 0" or "/color red" without
+// memorising hex codes. Order matches the daemon palette so palette
+// indexes line up.
+var chubPalette = []string{
+	"#5fafff", // 0  bright blue
+	"#ff8787", // 1  salmon
+	"#87d787", // 2  mint
+	"#ffaf5f", // 3  orange
+	"#d787d7", // 4  magenta
+	"#5fd7d7", // 5  cyan
+	"#d7d787", // 6  olive
+	"#af87ff", // 7  lavender
+	"#ff5faf", // 8  pink
+	"#87afff", // 9  periwinkle
+	"#d7af87", // 10 tan
+	"#87d7af", // 11 seafoam
+	"#ff5f5f", // 12 coral (~ red)
+	"#5fd75f", // 13 lime  (~ green)
+	"#d7d7d7", // 14 light grey
+	"#ffffaf", // 15 cream (~ yellow)
+}
+
+// chubColorNames maps friendly names to palette colours.
+var chubColorNames = map[string]string{
+	"blue":       "#5fafff",
+	"salmon":     "#ff8787",
+	"mint":       "#87d787",
+	"orange":     "#ffaf5f",
+	"magenta":    "#d787d7",
+	"purple":     "#d787d7",
+	"cyan":       "#5fd7d7",
+	"olive":      "#d7d787",
+	"lavender":   "#af87ff",
+	"pink":       "#ff5faf",
+	"periwinkle": "#87afff",
+	"tan":        "#d7af87",
+	"seafoam":    "#87d7af",
+	"red":        "#ff5f5f",
+	"coral":      "#ff5f5f",
+	"green":      "#5fd75f",
+	"lime":       "#5fd75f",
+	"grey":       "#d7d7d7",
+	"gray":       "#d7d7d7",
+	"white":      "#d7d7d7",
+	"cream":      "#ffffaf",
+	"yellow":     "#ffffaf",
+}
+
+// resolveChubColor turns a /color argument into a #RRGGBB hex.
+// Accepts: "" (error), "#RRGGBB", "0".."15" (palette index), or a
+// case-insensitive friendly name.
+func resolveChubColor(arg string) (string, error) {
+	a := strings.TrimSpace(arg)
+	if a == "" {
+		return "", fmt.Errorf("usage: /color <#RRGGBB | 0-15 | name (e.g. green, blue, pink)>")
+	}
+	if chubColorRE.MatchString(a) {
+		return a, nil
+	}
+	// Palette index?
+	if idx, err := strconv.Atoi(a); err == nil {
+		if idx < 0 || idx >= len(chubPalette) {
+			return "", fmt.Errorf("palette index out of range (0-%d): %d", len(chubPalette)-1, idx)
+		}
+		return chubPalette[idx], nil
+	}
+	// Friendly name?
+	if hex, ok := chubColorNames[strings.ToLower(a)]; ok {
+		return hex, nil
+	}
+	return "", fmt.Errorf("color %q not recognised — use #RRGGBB, an index 0-%d, or a name like green/blue/pink",
+		a, len(chubPalette)-1)
+}
+
 // doChubColor fires the recolor_session RPC for the focused session.
-// The arg must be a #RRGGBB hex string; anything else surfaces as an
-// error in the compose bar without contacting the daemon.
+// Accepts hex, palette index, or a friendly colour name (see
+// resolveChubColor).
 func (m Model) doChubColor(color string) tea.Cmd {
 	s := m.focusedSession()
 	if s == nil {
@@ -1435,11 +1511,12 @@ func (m Model) doChubColor(color string) tea.Cmd {
 	sid := s.ID
 	c := m.client
 	return func() tea.Msg {
-		if !chubColorRE.MatchString(color) {
-			return composeFailedMsg{fmt.Errorf("color must be #RRGGBB, got %q", color)}
+		hex, err := resolveChubColor(color)
+		if err != nil {
+			return composeFailedMsg{err}
 		}
 		if _, err := c.Call(context.Background(), "recolor_session",
-			map[string]any{"id": sid, "color": color}); err != nil {
+			map[string]any{"id": sid, "color": hex}); err != nil {
 			return composeFailedMsg{err}
 		}
 		return chubCommandDoneMsg{}

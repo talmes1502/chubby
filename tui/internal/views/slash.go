@@ -35,9 +35,10 @@ var SlashCommands = []SlashCommand{
 	{"init", "Initialize a CLAUDE.md", nil},
 	// chub-side commands — intercepted by the TUI; never sent to Claude.
 	// The hex codes mirror src/chub/daemon/colors.py PALETTE.
-	{"color", "(chub) recolor the focused session", []string{
+	{"color", "(chub) recolor the focused session — accepts hex / 0-15 / name", []string{
+		"blue", "green", "red", "orange", "pink", "cyan", "magenta",
+		"yellow", "purple", "lime", "mint", "salmon", "lavender",
 		"#5fafff", "#ff8787", "#87d787", "#ffaf5f", "#d787d7",
-		"#5fd7d7", "#d7d787", "#af87ff", "#ff5faf",
 	}},
 	{"rename", "(chub) rename the focused session", nil},
 	{"tag", "(chub) modify session tags (e.g. /tag +foo -bar)", nil},

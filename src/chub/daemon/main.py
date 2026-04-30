@@ -191,14 +191,26 @@ def _build_registry(
     async def spawn_session(
         params: dict[str, Any], ctx: CallContext
     ) -> dict[str, Any]:
-        p = SpawnSessionParams.model_validate(params)
-        # Empty cwd → default to $HOME. Belt-and-suspenders: the wrapper
-        # has its own fallback too, but resolving here means the session
-        # row in the registry shows a real path instead of "" which makes
-        # the TUI rail and `chub diag` output legible.
-        cwd = p.cwd
+        from pydantic import ValidationError
+        try:
+            p = SpawnSessionParams.model_validate(params)
+        except ValidationError as e:
+            # Translate pydantic missing-field errors into a clean
+            # INVALID_PAYLOAD instead of bubbling up as INTERNAL.
+            raise ChubError(
+                ErrorCode.INVALID_PAYLOAD, f"invalid spawn params: {e}"
+            ) from None
+        # Sessions are organized around a project cwd (rail grouping,
+        # JSONL location, hooks scope), so empty cwd has no consistent
+        # meaning. The TUI modal pre-fills $HOME and the CLI defaults to
+        # os.getcwd() — so this should only fire on sloppy scripted
+        # invocations. Surface it loudly rather than silently default.
+        cwd = p.cwd.strip()
         if not cwd:
-            cwd = os.environ.get("HOME") or "/"
+            raise ChubError(
+                ErrorCode.INVALID_PAYLOAD,
+                "cwd is required (try '--cwd ~' for $HOME)",
+            )
         proc_env = {
             **os.environ,
             "CHUB_NAME": p.name,

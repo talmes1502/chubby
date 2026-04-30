@@ -98,47 +98,41 @@ def _cwd_arg_from_call(call_args: tuple[Any, ...]) -> str:
     raise AssertionError(f"--cwd not found in argv: {parts!r}")
 
 
-async def test_spawn_session_empty_cwd_defaults_to_home(
+async def test_spawn_session_empty_cwd_rejected(
     short_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``spawn_session`` with ``cwd=""`` resolves to ``$HOME`` before
-    launching the wrapper. The wrapper itself has its own fallback, but
-    resolving here means the registry row and the wrapper argv agree."""
-    monkeypatch.setenv("HOME", "/tmp/fake-home-for-spawn-test")
+    """``spawn_session`` with ``cwd=""`` is rejected loudly so sloppy
+    scripted invocations surface instead of silently defaulting. The
+    TUI modal pre-fills cwd and the CLI defaults to ``os.getcwd()``,
+    so this should never fire from a real client."""
     captured = _capture_subprocess(monkeypatch)
 
     sock, stop, server_task = await _start_daemon(short_home, monkeypatch)
     try:
         out = await _rpc(sock, "spawn_session", {"name": "no_cwd", "cwd": ""})
-        # spawn_session waits up to 5s for the (faked) wrapper to register.
-        # Our _FakeProc never registers, so the call returns INTERNAL after
-        # the retry loop; what we care about is the captured cwd argument.
-        assert "result" in out or out["error"]["code"] == ErrorCode.INTERNAL.value
-        assert captured, "expected create_subprocess_exec to be called"
-        cwd_passed = _cwd_arg_from_call(captured[0])
-        assert cwd_passed == "/tmp/fake-home-for-spawn-test", (
-            f"empty cwd should resolve to $HOME, got {cwd_passed!r}"
-        )
+        assert "error" in out, f"expected error, got {out!r}"
+        assert out["error"]["code"] == ErrorCode.INVALID_PAYLOAD.value
+        assert "cwd is required" in out["error"]["message"]
+        # We must NOT have launched a subprocess.
+        assert not captured, "subprocess should not be launched on rejection"
     finally:
         stop.set()
         await server_task
 
 
-async def test_spawn_session_omitted_cwd_defaults_to_home(
+async def test_spawn_session_omitted_cwd_rejected(
     short_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``spawn_session`` with the ``cwd`` field absent (now allowed by
-    the schema) also resolves to ``$HOME``."""
-    monkeypatch.setenv("HOME", "/tmp/fake-home-for-spawn-omitted")
+    """The schema now requires ``cwd``; an omitted field surfaces a
+    pydantic validation error (mapped to INVALID_PAYLOAD)."""
     captured = _capture_subprocess(monkeypatch)
 
     sock, stop, server_task = await _start_daemon(short_home, monkeypatch)
     try:
         out = await _rpc(sock, "spawn_session", {"name": "no_cwd_field"})
-        assert "result" in out or out["error"]["code"] == ErrorCode.INTERNAL.value
-        assert captured, "expected create_subprocess_exec to be called"
-        cwd_passed = _cwd_arg_from_call(captured[0])
-        assert cwd_passed == "/tmp/fake-home-for-spawn-omitted"
+        assert "error" in out, f"expected error, got {out!r}"
+        assert out["error"]["code"] == ErrorCode.INVALID_PAYLOAD.value
+        assert not captured, "subprocess should not be launched on rejection"
     finally:
         stop.set()
         await server_task
