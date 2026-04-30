@@ -75,6 +75,24 @@ class PtySession:
                 raise
         self._closed.set()
 
+    def signal_child(self, sig: int = signal.SIGTERM) -> None:
+        """Send ``sig`` to the child process without setting ``closed``.
+
+        Used by the wrapper's restart loop to kill claude in-place so the
+        PTY pump's iter_output() drains EOF and returns. Unlike
+        ``terminate()``, this does NOT set the closed flag — the iterator
+        sets it once the read returns empty, and the wrapper's main loop
+        relies on that ordering to know when it's safe to launch a fresh
+        claude.
+        """
+        if self._proc is None:
+            return
+        try:
+            self._proc.kill(sig)
+        except OSError as e:
+            if e.errno != errno.ESRCH:
+                raise
+
     @property
     def closed(self) -> asyncio.Event:
         return self._closed

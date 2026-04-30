@@ -161,6 +161,21 @@ class WrapperClient:
         self.session_id = sid
         return sid
 
+    async def update_claude_pid(self, claude_pid: int) -> None:
+        """Tell the daemon the wrapper has a new claude child pid.
+
+        The chub session id is unchanged (the wrapper kept the same
+        connection across the restart); only the underlying claude pid
+        moved. Soft-fails when no session id is known yet — register
+        hasn't run.
+        """
+        if self.session_id is None:
+            return
+        await self._call(
+            "update_claude_pid",
+            {"session_id": self.session_id, "claude_pid": claude_pid},
+        )
+
     async def push_chunk(
         self, *, seq: int, data: bytes, role: str = "raw"
     ) -> None:
