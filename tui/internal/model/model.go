@@ -609,15 +609,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				role, _ := subP["role"].(string)
 				text, _ := subP["text"].(string)
 				ts, _ := subP["ts"].(float64)
-				turns := append(m.conversation[sid], Turn{
-					Role: role,
-					Text: text,
-					Ts:   int64(ts),
-				})
-				if len(turns) > turnsCap {
-					turns = turns[len(turns)-turnsCap:]
-				}
-				m.conversation[sid] = turns
+				// appendTranscriptTurn dedup-skips entries that match the
+				// last 5 turns (role+text). The daemon's tailer can replay
+				// JSONL turns from offset 0 immediately after we've
+				// canonically seeded the conversation via
+				// get_session_history; without dedup the user sees each
+				// recent turn twice.
+				m.appendTranscriptTurn(sid, role, text, int64(ts))
 				// Auto-detect file paths in the new turn so Ctrl+] can
 				// open the most-recent mention without re-rendering.
 				m.harvestPathsFromText(text)
@@ -3327,6 +3325,45 @@ func (m Model) focusedSession() *Session {
 		return nil
 	}
 	return &m.sessions[m.focused]
+}
+
+// transcriptDedupWindow is how many trailing turns we scan when
+// deciding whether a freshly-arrived transcript_message is a duplicate.
+// 5 is enough to absorb the daemon's tailer replay racing the
+// get_session_history seed without paying for a long scan on every
+// live event, and short enough that legitimately-repeated content
+// further back in the conversation still appends.
+const transcriptDedupWindow = 5
+
+// appendTranscriptTurn appends a live transcript turn to the per-
+// session conversation, deduping against the last few entries.
+//
+// Why dedup at all: when the TUI loads a session whose JSONL is being
+// tailed by the daemon, the tailer reads from offset 0 and broadcasts
+// every existing turn as a transcript_message event. The TUI ALSO
+// calls get_session_history and replaces m.conversation[sid] with the
+// loaded turns. If live events arrive after the replacement (the
+// common race), those turns get appended a second time and the user
+// sees duplicates. The historyTurnsMsg REPLACE path is the canonical
+// seed and is intentionally NOT deduped — only live events run through
+// here.
+func (m *Model) appendTranscriptTurn(sid, role, text string, ts int64) {
+	turns := m.conversation[sid]
+	n := len(turns)
+	start := n - transcriptDedupWindow
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i < n; i++ {
+		if turns[i].Role == role && turns[i].Text == text {
+			return
+		}
+	}
+	turns = append(turns, Turn{Role: role, Text: text, Ts: ts})
+	if len(turns) > turnsCap {
+		turns = turns[len(turns)-turnsCap:]
+	}
+	m.conversation[sid] = turns
 }
 
 // formatConversation renders turns as a single string for clipboard
