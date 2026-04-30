@@ -954,24 +954,26 @@ func (m Model) sendComposed() tea.Cmd {
 }
 
 // View renders the dual-pane layout plus the compose bar, or the
-// active modal pane when m.mode != ModeMain.
+// active modal pane when m.mode != ModeMain. Every mode is wrapped
+// with a one-line top header and a one-line context-aware status bar
+// at the bottom (see wrapWithChrome).
 func (m Model) View() string {
 	if m.err != nil {
 		return fmt.Sprintf("error: %v\npress ctrl+c to quit", m.err)
 	}
 	switch m.mode {
 	case ModeBroadcast:
-		return m.viewBroadcast()
+		return m.wrapWithChrome(m.viewBroadcast())
 	case ModeGrep:
-		return m.viewGrep()
+		return m.wrapWithChrome(m.viewGrep())
 	case ModeHistory:
-		return m.viewHistory()
+		return m.wrapWithChrome(m.viewHistory())
 	case ModeSpawn:
-		return m.viewSpawn()
+		return m.wrapWithChrome(m.viewSpawn())
 	case ModeHelp:
-		return m.viewHelp()
+		return m.wrapWithChrome(m.viewHelp())
 	case ModeReconnecting:
-		return m.viewReconnecting()
+		return m.wrapWithChrome(m.viewReconnecting())
 	case ModeSearch:
 		// Falls through to the main layout below; the rail renderer
 		// adds the search bar based on m.mode == ModeSearch.
@@ -982,7 +984,8 @@ func (m Model) View() string {
 		rightW = 20
 	}
 	composeH := 3
-	h := m.height - composeH - 2
+	// Reserve 2 extra rows for the top header and bottom status bar.
+	h := m.height - composeH - 2 - 2
 	if h < 5 {
 		h = 5
 	}
@@ -1009,7 +1012,28 @@ func (m Model) View() string {
 	}
 	composeBar := views.RenderCompose(m.compose, target, color, m.composeGhost(), m.width)
 	body := lipgloss.JoinVertical(lipgloss.Left, main, composeBar)
-	return m.overlayToasts(body)
+	return m.overlayToasts(m.wrapWithChrome(body))
+}
+
+// wrapWithChrome prepends the minimal top header and appends the
+// context-aware status bar to a rendered body. Used by every mode so
+// the chrome stays visible regardless of which modal is active.
+func (m Model) wrapWithChrome(body string) string {
+	composeHasText := m.compose.Value() != ""
+	idle := 0
+	for _, s := range m.sessions {
+		if s.Status == "awaiting_user" {
+			idle++
+		}
+	}
+	header := views.TopStatus("", len(m.sessions), idle, m.width)
+	status := views.StatusBarText(
+		views.StatusMode(m.mode),
+		composeHasText,
+		m.bcast.field,
+		m.width,
+	)
+	return lipgloss.JoinVertical(lipgloss.Left, header, body, status)
 }
 
 // overlayToasts renders the current toasts and appends them to the
