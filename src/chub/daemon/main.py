@@ -6,6 +6,7 @@ import asyncio
 import base64
 import logging
 import os
+import re
 import signal
 import sys
 from pathlib import Path
@@ -179,15 +180,31 @@ def _build_registry(
             "CHUB_NAME": p.name,
             "CHUB_HOME": str(paths.hub_home()),
         }
-        await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "chub.wrapper.main",
-            "--name", p.name, "--cwd", p.cwd, "--tags", ",".join(p.tags),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            env=proc_env,
-            start_new_session=True,
-        )
+        # Capture wrapper+claude stderr to a per-session file so we can later
+        # inspect why a wrapper exited (claude died on first-run dialog,
+        # auth failure, missing binary, etc.). Without this redirect we have
+        # zero visibility — the wrapper inherits DEVNULL and silent exits
+        # leave us guessing.
+        wrappers_dir = run.dir / "wrappers"
+        wrappers_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", p.name)
+        stderr_path = wrappers_dir / f"{safe_name}.stderr"
+        # Pass the file object directly: asyncio dups its fd into the child,
+        # so we can close our handle as soon as the spawn returns and the
+        # child still has its end. Append-mode so respawn doesn't truncate.
+        stderr_fp = open(stderr_path, "ab")
+        try:
+            await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "chub.wrapper.main",
+                "--name", p.name, "--cwd", p.cwd, "--tags", ",".join(p.tags),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=stderr_fp,
+                stderr=stderr_fp,
+                env=proc_env,
+                start_new_session=True,
+            )
+        finally:
+            stderr_fp.close()
         for _ in range(50):
             try:
                 s = await reg.get_by_name(p.name)

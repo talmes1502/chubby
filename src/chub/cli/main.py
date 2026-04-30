@@ -8,6 +8,7 @@ from chub.cli.commands import (
     attach,
     broadcast,
     detach,
+    diag,
     down,
     grep,
     history,
@@ -54,3 +55,4 @@ app.command(name="promote")(promote.run)
 app.command(name="detach")(detach.run)
 app.command(name="tui")(tui.run)
 app.command(name="purge")(purge.run)
+app.command(name="diag")(diag.run)

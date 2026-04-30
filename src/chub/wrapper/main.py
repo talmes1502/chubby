@@ -39,6 +39,18 @@ _TRUST_DISMISS_WINDOW_S = 5.0
 _TRUST_DISMISS_POLL_S = 0.2
 
 
+def _diag(msg: str) -> None:
+    """Append a timestamped diagnostic line to wrapper stderr.
+
+    Daemon-spawned wrappers have stderr redirected to a per-session file
+    (see ``spawn_session`` in chub.daemon.main). These breadcrumbs let
+    ``chub diag <name>`` answer "why did this session die?" without us
+    having to guess.
+    """
+    sys.stderr.write(f"[chub-claude {time.strftime('%H:%M:%S')}] {msg}\n")
+    sys.stderr.flush()
+
+
 def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--name", default=os.environ.get("CHUB_NAME"))
@@ -64,28 +76,39 @@ async def _run() -> int:
     if not name:
         sys.exit("chub-claude: --name or CHUB_NAME required")
 
+    _diag(f"starting: name={name} cwd={args.cwd} passthrough={passthrough}")
+
     sock = Path(os.environ.get("CHUB_SOCK", str(paths.sock_path())))
     client = WrapperClient(sock)
     try:
         await asyncio.wait_for(client._ensure(), timeout=2.0)
     except (FileNotFoundError, ConnectionRefusedError, TimeoutError):
+        _diag(f"chubd not reachable on {sock}; exec'ing plain claude")
         sys.stderr.write(
             f"chub-claude: chubd not running on {sock}; running plain claude\n"
         )
         _exec_claude_directly(passthrough)
         return 0
 
-    pty = PtySession(["claude", *passthrough], cwd=args.cwd)
-    await pty.start()
+    claude_argv = ["claude", *passthrough]
+    _diag(f"about to spawn claude argv={claude_argv}")
+    pty = PtySession(claude_argv, cwd=args.cwd)
+    try:
+        await pty.start()
+    except Exception as e:
+        _diag(f"pty.start() failed: {type(e).__name__}: {e}")
+        raise
+    _diag(f"claude pid={pty.pid}")
     _resize_tasks: set[asyncio.Task[None]] = set()
 
-    await client.register(
+    sid = await client.register(
         name=name,
         cwd=args.cwd,
         pid=pty.pid,
         tags=[t for t in args.tags.split(",") if t],
         claude_pid=pty.pid,
     )
+    _diag(f"registered with daemon, session id={sid}")
 
     seq = 0
     # Bounded sliding window of recent PTY output, fed by the main pump.
@@ -184,13 +207,28 @@ async def _run() -> int:
     on_winch()
 
     try:
-        await asyncio.gather(
+        results = await asyncio.gather(
             pump_pty_to_daemon_and_term(),
             pump_term_to_pty(),
             listen_for_inject(),
             auto_dismiss_trust_prompt(),
             return_exceptions=True,
         )
+        # Surface unexpected exceptions in the gather. ``return_exceptions``
+        # converts task failures into return values rather than tearing down
+        # the gather, so without this they'd vanish silently.
+        for label, r in zip(
+            ("pty_pump", "stdin_pump", "inject_listener", "trust_dismiss"),
+            results,
+        ):
+            if isinstance(r, BaseException) and not isinstance(
+                r, asyncio.CancelledError
+            ):
+                _diag(f"task {label} raised: {type(r).__name__}: {r}")
+        if pty.closed.is_set():
+            _diag("wrapper exiting: PTY EOF (claude exited)")
+        else:
+            _diag("wrapper exiting: gather returned (no PTY EOF)")
     finally:
         await client.session_ended()
         await client.close()
@@ -203,6 +241,19 @@ def main() -> None:
         sys.exit(asyncio.run(_run()))
     except KeyboardInterrupt:
         sys.exit(130)
+    except SystemExit:
+        raise
+    except BaseException as e:
+        # Last-resort breadcrumb so a crash in startup (e.g., missing
+        # claude binary, exec failure) actually shows up in the diag log.
+        import traceback
+
+        sys.stderr.write(
+            f"[chub-claude] fatal: {type(e).__name__}: {e}\n"
+            f"{traceback.format_exc()}\n"
+        )
+        sys.stderr.flush()
+        raise
 
 
 if __name__ == "__main__":
