@@ -36,15 +36,18 @@ const (
 var dimStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
 // StatusBarText returns the keybinding hint string appropriate for the
-// current mode, with extra context (compose-empty, broadcast field).
+// current mode, with extra context (compose-empty, broadcast field,
+// attach-confirm submode).
 //
 // composeHasText is only consulted for StatusModeMain.
 // broadcastField is only consulted for StatusModeBroadcast (0,1,2).
+// attachConfirm is only consulted for StatusModeAttach (true while the
+// "Detach N? (y/n)" prompt is up).
 //
 // The returned string is already truncated to width with a trailing
 // ellipsis if needed; pass width<=0 to skip truncation.
-func StatusBarText(mode StatusMode, composeHasText bool, broadcastField int, width int) string {
-	raw := rawStatusBar(mode, composeHasText, broadcastField)
+func StatusBarText(mode StatusMode, composeHasText bool, broadcastField int, attachConfirm bool, width int) string {
+	raw := rawStatusBar(mode, composeHasText, broadcastField, attachConfirm)
 	if width > 0 && lipgloss.Width(raw) > width {
 		raw = truncateWithEllipsis(raw, width)
 	}
@@ -53,7 +56,7 @@ func StatusBarText(mode StatusMode, composeHasText bool, broadcastField int, wid
 
 // rawStatusBar returns the un-styled, un-truncated status string.
 // Separated so tests can match keywords without dealing with ANSI.
-func rawStatusBar(mode StatusMode, composeHasText bool, broadcastField int) string {
+func rawStatusBar(mode StatusMode, composeHasText bool, broadcastField int, attachConfirm bool) string {
 	switch mode {
 	case StatusModeMain:
 		if composeHasText {
@@ -83,6 +86,9 @@ func rawStatusBar(mode StatusMode, composeHasText bool, broadcastField int) stri
 	case StatusModeNewFolder:
 		return "Enter to create · Esc cancel"
 	case StatusModeAttach:
+		if attachConfirm {
+			return "y confirm detach · n cancel"
+		}
 		return "↑↓ navigate · Space toggle · a all · n none · Enter attach · d detach selected · r rescan · Esc cancel"
 	case StatusModeEditor:
 		return "↑↓ scroll · g top · G bottom · Ctrl+X open externally · Esc close"

@@ -3428,6 +3428,7 @@ func (m Model) wrapWithChrome(body string) string {
 		views.StatusMode(m.mode),
 		composeHasText,
 		m.bcast.field,
+		m.attach.confirmDetachN > 0,
 		m.width,
 	)
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, status)
