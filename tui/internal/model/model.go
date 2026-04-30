@@ -49,6 +49,22 @@ type Session struct {
 	Tags   []string `json:"tags"`
 }
 
+// ActivePane identifies which of the two main-view panes (rail vs
+// conversation) currently receives arrow / paging input when compose
+// is empty. Tab toggles between them; Ctrl+Tab still exists as the
+// power-user "cycle focused session directly" shortcut.
+type ActivePane int
+
+const (
+	// PaneRail is the default — Up/Down walks the rail cursor,
+	// PgUp/PgDn moves it by 5 rows, Enter focuses the cursored
+	// session or toggles a folder header.
+	PaneRail ActivePane = iota
+	// PaneConversation routes arrow / paging keys to the per-session
+	// scroll helpers.
+	PaneConversation
+)
+
 // Mode controls which modal pane is on top of the main two-pane layout.
 // Subsequent phases add ModeGrep, ModeHistory, ModeReconnecting.
 type Mode int
@@ -290,6 +306,11 @@ type Model struct {
 	// rail (may be a group header or a session). Up/Down walks this;
 	// Tab/Shift+Tab walks m.focused (session-only).
 	railCursor int
+	// activePane decides where compose-empty arrow / paging keys go
+	// (D8). Tab toggles between PaneRail (default) and
+	// PaneConversation. The visual cue is the focused pane's border
+	// color in renderList / renderViewport.
+	activePane ActivePane
 
 	// completion tracks @-name autocomplete state in the compose bar.
 	completionIndex   int    // which match in the cycle is active
@@ -1051,6 +1072,21 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.tryComplete() {
 			return m, nil
 		}
+		// D8: bare Tab with no autocomplete to consume now toggles the
+		// active pane. Power users who want the legacy "cycle focused
+		// session directly" behavior have Ctrl+Tab / Shift+Tab.
+		if m.activePane == PaneRail {
+			m.activePane = PaneConversation
+		} else {
+			m.activePane = PaneRail
+		}
+		return m, nil
+	case "ctrl+\\":
+		// D8: legacy session-cycling power-user shortcut. Bubble Tea's
+		// keyboard reporting on most terminals can't distinguish
+		// Ctrl+Tab from plain Tab (both arrive as ASCII HT / 0x09), so
+		// the dedicated forward-cycle chord moved to Ctrl+\ which IS
+		// reliably reportable. Shift+Tab continues to cycle in reverse.
 		m.cycleFocusedSession(+1)
 		return m, nil
 	case "shift+tab":
@@ -1059,37 +1095,79 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		// Compose forwarding fallthrough is below; only intercept these
 		// when the compose bar is empty so the user can still type 'k'.
-		// D6: when compose is empty, up/k scroll the conversation rather
-		// than walk the rail. Tab / Shift+Tab still cycle sessions, so
-		// rail navigation isn't lost. D8 will narrow this further to
-		// "only when the conversation pane is the active pane."
+		// D8: dispatch by active pane — rail moves the cursor, conversation
+		// scrolls.
 		if m.compose.Value() == "" {
-			m.scrollUp(1)
+			if m.activePane == PaneRail {
+				m.moveRailCursor(-1)
+			} else {
+				m.scrollUp(1)
+			}
 			return m, nil
 		}
 	case "down", "j":
 		if m.compose.Value() == "" {
-			m.scrollDown(1)
+			if m.activePane == PaneRail {
+				m.moveRailCursor(+1)
+			} else {
+				m.scrollDown(1)
+			}
 			return m, nil
 		}
 	case "pgup", "ctrl+u":
 		if m.compose.Value() == "" {
-			m.scrollUp(m.halfViewportPage())
+			if m.activePane == PaneRail {
+				m.moveRailCursor(-5)
+			} else {
+				m.scrollUp(m.halfViewportPage())
+			}
 			return m, nil
 		}
 	case "pgdown", "ctrl+d":
 		if m.compose.Value() == "" {
-			m.scrollDown(m.halfViewportPage())
+			if m.activePane == PaneRail {
+				m.moveRailCursor(+5)
+			} else {
+				m.scrollDown(m.halfViewportPage())
+			}
 			return m, nil
 		}
 	case "home":
 		if m.compose.Value() == "" {
-			m.scrollToTop()
+			if m.activePane == PaneRail {
+				m.railCursor = 0
+				// Re-find a non-separator row at or after index 0.
+				rows := m.railRows()
+				for i, r := range rows {
+					if r.Kind != RailRowUnfiledSeparator {
+						m.railCursor = i
+						break
+					}
+				}
+				m.focusRailRow()
+			} else {
+				m.scrollToTop()
+			}
 			return m, nil
 		}
 	case "end":
 		if m.compose.Value() == "" {
-			m.scrollToBottom()
+			if m.activePane == PaneRail {
+				rows := m.railRows()
+				if len(rows) > 0 {
+					// Walk back from the last index to find a real row
+					// (skip separators).
+					for i := len(rows) - 1; i >= 0; i-- {
+						if rows[i].Kind != RailRowUnfiledSeparator {
+							m.railCursor = i
+							break
+						}
+					}
+					m.focusRailRow()
+				}
+			} else {
+				m.scrollToBottom()
+			}
 			return m, nil
 		}
 	case "G":
@@ -1099,7 +1177,20 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// we keep the compose-empty gate for parity with the other
 		// scroll keys.
 		if m.compose.Value() == "" {
-			m.scrollToBottom()
+			if m.activePane == PaneRail {
+				rows := m.railRows()
+				if len(rows) > 0 {
+					for i := len(rows) - 1; i >= 0; i-- {
+						if rows[i].Kind != RailRowUnfiledSeparator {
+							m.railCursor = i
+							break
+						}
+					}
+					m.focusRailRow()
+				}
+			} else {
+				m.scrollToBottom()
+			}
 			return m, nil
 		}
 	case " ":
@@ -1210,6 +1301,28 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.editor.visible = !m.editor.visible
 		return m, nil
 	case "enter":
+		// D8: rail-pane Enter (with empty compose) focuses the cursored
+		// session OR toggles a folder header's collapse. Conversation-
+		// pane Enter (or any non-empty compose) falls through to send.
+		if m.compose.Value() == "" && m.activePane == PaneRail {
+			rows := m.railRows()
+			if m.railCursor >= 0 && m.railCursor < len(rows) {
+				r := rows[m.railCursor]
+				switch r.Kind {
+				case RailRowFolder:
+					m.groupCollapsed[r.GroupName] = !m.groupCollapsed[r.GroupName]
+					_ = SaveTUIState(TUIState{
+						GroupsCollapsed: collapsedGroupNames(m.groupCollapsed),
+						RailCollapsed:   m.railCollapsed,
+					})
+					return m, nil
+				case RailRowSession:
+					m.focused = r.SessionIdx
+					return m, nil
+				}
+			}
+			return m, nil
+		}
 		return m, m.sendComposed()
 	case "shift+enter":
 		cur := m.compose.Value()
@@ -2908,8 +3021,13 @@ func (m Model) View() string {
 	if s := m.focusedSession(); s != nil {
 		focusedSID = s.ID
 	}
+	// D8: only the active pane gets the bright border. When the rail
+	// is collapsed (Ctrl+J) the conversation is the only pane left, so
+	// it always reads as active regardless of m.activePane.
+	convoActive := m.activePane == PaneConversation || m.railCollapsed
+	railActive := m.activePane == PaneRail && !m.railCollapsed
 	rightCol := renderViewport(m.focusedSession(), m.conversation, convoW, h, m.spinnerFrame,
-		m.scrollOffset[focusedSID], m.newSinceScroll[focusedSID])
+		m.scrollOffset[focusedSID], m.newSinceScroll[focusedSID], convoActive)
 	rightStack := lipgloss.JoinVertical(lipgloss.Left, rightCol, composeBar)
 	if m.slashPopupVisible() {
 		popup := views.RenderSlashPopup(m.slashPopupCmds, m.slashPopupCursor, convoW)
@@ -2933,7 +3051,7 @@ func (m Model) View() string {
 			focusedID = s.ID
 		}
 		searchHeader := m.searchHeaderText()
-		left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h, m.spinnerFrame)
+		left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h, m.spinnerFrame, railActive)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, rightStack, editorCol)
 	case !railVisible && editorVisible:
 		body = lipgloss.JoinHorizontal(lipgloss.Top, rightStack, editorCol)
@@ -2944,7 +3062,7 @@ func (m Model) View() string {
 			focusedID = s.ID
 		}
 		searchHeader := m.searchHeaderText()
-		left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h, m.spinnerFrame)
+		left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h, m.spinnerFrame, railActive)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, rightStack)
 	default:
 		body = rightStack
@@ -3198,10 +3316,14 @@ func (m Model) viewHistory() string {
 func (m Model) viewHelp() string {
 	body := `chubby-tui keys
 
-  Tab / Shift+Tab    cycle focused session
-  Up / Down k / j    walk session list
-  Space              toggle group collapse
-  Enter              send composed message to focused session
+  Tab                switch active pane (rail / conversation)
+  Ctrl+\             cycle focused session forward
+  Shift+Tab          cycle focused session (reverse)
+  Up/Down/PgUp/PgDn  scroll active pane
+  Home/End           jump to top/bottom of active pane
+  Space              toggle folder collapse
+  Enter              rail-pane: focus session / toggle folder
+                     conversation-pane: send composed message
   @name <msg>        one-shot redirect: send to <name>, then snap back
   Tab (in compose)   autocomplete @name or /command
   /<name>            Claude slash command (Tab completes; e.g. /model sonnet)
@@ -3928,13 +4050,24 @@ func statusGlyph(status string, frame int) string {
 	}
 }
 
+// activePaneBorderColor / inactivePaneBorderColor are the lipgloss
+// color codes used for the focused vs unfocused border of the rail
+// and conversation panes (D8). 12 is the bright-blue accent already
+// used elsewhere for "active" highlights; 240 is the dim grey we use
+// for chrome we don't want competing for attention.
+const (
+	activePaneBorderColor   = lipgloss.Color("12")
+	inactivePaneBorderColor = lipgloss.Color("240")
+)
+
 // renderList draws the grouped left rail. rows is the flattened
 // header+session list from BuildRailRows; cursor is the highlighted
 // row; focusedID is the currently-focused session's ID (gets the ▣
 // marker even if it's not the cursor row); searchHeader (optional) is
 // rendered just below the "Sessions" title so the user sees the active
-// filter.
-func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[string]bool, searchHeader string, w, h, spinnerFrame int) string {
+// filter; active toggles the border color so the user sees which pane
+// owns arrow / paging keys (D8).
+func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[string]bool, searchHeader string, w, h, spinnerFrame int, active bool) string {
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Render(" Sessions") + "\n")
 	if searchHeader != "" {
@@ -3979,7 +4112,15 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 			b.WriteString(lipgloss.NewStyle().Width(w).Render(line) + "\n")
 		}
 	}
-	return lipgloss.NewStyle().Width(w).Height(h).Border(lipgloss.RoundedBorder()).Render(b.String())
+	borderColor := inactivePaneBorderColor
+	if active {
+		borderColor = activePaneBorderColor
+	}
+	return lipgloss.NewStyle().
+		Width(w).Height(h).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Render(b.String())
 }
 
 // renderSessionBanner builds the colored top-of-viewport header:
@@ -4039,12 +4180,16 @@ type viewportRender struct {
 // badge bottom-right inside the frame; the banner also gets a
 // "scrolled up" hint so the state is obvious without looking at the
 // badge.
-func renderViewport(s *Session, conversation map[string][]Turn, w, h, spinnerFrame, scrollOffset, newCount int) string {
-	r := renderViewportFull(s, conversation, w, h, spinnerFrame, scrollOffset, newCount)
+func renderViewport(s *Session, conversation map[string][]Turn, w, h, spinnerFrame, scrollOffset, newCount int, active bool) string {
+	r := renderViewportFull(s, conversation, w, h, spinnerFrame, scrollOffset, newCount, active)
 	return r.view
 }
 
-func renderViewportFull(s *Session, conversation map[string][]Turn, w, h, spinnerFrame, scrollOffset, newCount int) viewportRender {
+func renderViewportFull(s *Session, conversation map[string][]Turn, w, h, spinnerFrame, scrollOffset, newCount int, active bool) viewportRender {
+	borderColor := inactivePaneBorderColor
+	if active {
+		borderColor = activePaneBorderColor
+	}
 	if s == nil {
 		dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 		bold := lipgloss.NewStyle().Bold(true)
@@ -4058,12 +4203,14 @@ func renderViewportFull(s *Session, conversation map[string][]Turn, w, h, spinne
 		return viewportRender{
 			view: lipgloss.NewStyle().Width(w).Height(h).
 				Border(lipgloss.RoundedBorder()).
+				BorderForeground(borderColor).
 				Padding(1, 2).
 				Render(body),
 		}
 	}
 	frame := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
 		Width(w).Height(h)
 	header := renderSessionBanner(s, spinnerFrame, scrollOffset > 0)
 	if s.Status == "dead" {
