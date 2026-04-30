@@ -16,10 +16,14 @@ class CallContext:
     ``connection_id`` uniquely identifies the connection within the running
     server (used to bind a session to its wrapper transport). ``write`` lets
     the handler push server-initiated frames back to the originating peer.
+    ``on_close`` registers a coroutine callback to fire when the originating
+    connection closes — used by handlers (e.g. ``register_wrapped``) to
+    schedule cleanup that depends on the wrapper's transport staying alive.
     """
 
     connection_id: int
     write: Callable[[bytes], Awaitable[None]]
+    on_close: Callable[[Callable[[], Awaitable[None]]], None]
 
 
 Handler = Callable[

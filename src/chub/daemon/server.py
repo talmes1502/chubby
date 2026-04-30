@@ -84,7 +84,12 @@ class Server:
             async with write_lock:
                 await frame.write_frame(writer, payload)
 
-        ctx = CallContext(connection_id=conn_id, write=_safe_write)
+        close_callbacks: list[Callable[[], Awaitable[None]]] = []
+        ctx = CallContext(
+            connection_id=conn_id,
+            write=_safe_write,
+            on_close=close_callbacks.append,
+        )
         task = asyncio.current_task()
         if task is not None:
             self._connections.add(task)
@@ -102,6 +107,11 @@ class Server:
         except (ConnectionResetError, BrokenPipeError):
             pass
         finally:
+            for cb in close_callbacks:
+                try:
+                    await cb()
+                except Exception:
+                    log.exception("close callback raised")
             if task is not None:
                 self._connections.discard(task)
             self._write_locks.pop(conn_id, None)

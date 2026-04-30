@@ -12,7 +12,7 @@ def _stub_ctx() -> CallContext:
     async def _noop(_b: bytes) -> None:
         return None
 
-    return CallContext(connection_id=0, write=_noop)
+    return CallContext(connection_id=0, write=_noop, on_close=lambda _cb: None)
 
 
 async def test_register_and_invoke() -> None:

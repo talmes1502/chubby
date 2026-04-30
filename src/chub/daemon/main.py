@@ -83,6 +83,25 @@ def _build_registry(
             name=p.name, kind=SessionKind.WRAPPED, cwd=p.cwd, pid=p.pid, tags=p.tags, color=p.color
         )
         await reg.attach_wrapper(s.id, ctx.write)
+
+        # When the wrapper's connection closes (daemon-side EOF, wrapper crash
+        # before session_ended, etc.), mark the session DEAD and detach the
+        # writer. Without this hook, future inject calls land on a zombie
+        # entry that's still ``wrapped`` + ``idle`` and the user is stuck
+        # with WRAPPER_UNREACHABLE on a session that looks alive.
+        sid = s.id
+
+        async def on_wrapper_disconnect() -> None:
+            try:
+                cur = await reg.get(sid)
+            except ChubError:
+                return
+            if cur.status is not SessionStatus.DEAD:
+                await reg.update_status(sid, SessionStatus.DEAD)
+            await reg.detach_wrapper(sid)
+
+        ctx.on_close(on_wrapper_disconnect)
+
         writer = LogWriter(run.dir / "logs", color=s.color, session_name=s.name)
         await reg.attach_log_writer(s.id, writer)
         # Wrapped sessions don't know their Claude session id at registration
@@ -130,6 +149,11 @@ def _build_registry(
             raise ChubError(
                 ErrorCode.INJECTION_NOT_SUPPORTED,
                 "session is read-only; restart via chub-claude",
+            )
+        if s.status is SessionStatus.DEAD:
+            raise ChubError(
+                ErrorCode.SESSION_DEAD,
+                "session is dead; respawn it before injecting",
             )
         await reg.inject(p.session_id, base64.b64decode(p.payload_b64))
         return {}
