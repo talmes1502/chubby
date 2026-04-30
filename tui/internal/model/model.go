@@ -20,6 +20,19 @@ import (
 	"github.com/USER/chub/tui/internal/views"
 )
 
+// Turn is a single transcript entry — a user prompt or an assistant
+// response. Text is already stripped of tool block boilerplate by the
+// daemon: it's just the user-readable text plus compact tool summaries.
+type Turn struct {
+	Role string
+	Text string
+	Ts   int64
+}
+
+// turnsCap is the per-session retention cap. Beyond this we trim the
+// oldest entries so the model stays bounded for long sessions.
+const turnsCap = 500
+
 // Session mirrors the SessionDict schema returned by chubd's list_sessions.
 type Session struct {
 	ID     string   `json:"id"`
@@ -30,9 +43,6 @@ type Session struct {
 	Cwd    string   `json:"cwd"`
 	Tags   []string `json:"tags"`
 }
-
-// outputCap is the rolling per-session live buffer size in bytes.
-const outputCap = 64 * 1024
 
 // Mode controls which modal pane is on top of the main two-pane layout.
 // Subsequent phases add ModeGrep, ModeHistory, ModeReconnecting.
@@ -107,10 +117,15 @@ type Model struct {
 	client   *rpc.Client
 	sessions []Session
 	focused  int
-	output   map[string]string
-	width    int
-	height   int
-	err      error
+	// conversation holds the structured transcript per session id, fed by
+	// transcript_message events from the daemon. This replaces the old raw
+	// PTY byte buffer (m.output): the previous viewport was unreadable
+	// because Bubble Tea's lipgloss frame doesn't honor cursor positioning
+	// escapes that Claude emits constantly.
+	conversation map[string][]Turn
+	width        int
+	height       int
+	err          error
 
 	mode    Mode
 	compose textinput.Model
@@ -165,7 +180,7 @@ type spawnFailedMsg struct{ err error }
 func New(c *rpc.Client) Model {
 	return Model{
 		client:         c,
-		output:         map[string]string{},
+		conversation:   map[string][]Turn{},
 		mode:           ModeMain,
 		compose:        views.NewCompose(),
 		bcast:          broadcastState{selected: map[string]bool{}},
@@ -258,19 +273,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			subM, _ := ev.Params["event_method"].(string)
 			subP, _ := ev.Params["event_params"].(map[string]any)
 			switch subM {
-			case "output_chunk":
+			case "transcript_message":
 				sid, _ := subP["session_id"].(string)
-				b64, _ := subP["data_b64"].(string)
-				if data, err := base64.StdEncoding.DecodeString(b64); err == nil {
-					// Strip cursor/mode/OSC escapes — Bubble Tea's lipgloss
-					// viewport renders them as gibberish. SGR (color) is kept.
-					data = views.StripCursorEscapes(data)
-					cur := m.output[sid] + string(data)
-					if len(cur) > outputCap {
-						cur = cur[len(cur)-outputCap:]
-					}
-					m.output[sid] = cur
+				role, _ := subP["role"].(string)
+				text, _ := subP["text"].(string)
+				ts, _ := subP["ts"].(float64)
+				turns := append(m.conversation[sid], Turn{
+					Role: role,
+					Text: text,
+					Ts:   int64(ts),
+				})
+				if len(turns) > turnsCap {
+					turns = turns[len(turns)-turnsCap:]
 				}
+				m.conversation[sid] = turns
 			case "session_status_changed":
 				sid, _ := subP["session_id"].(string)
 				newStatus, _ := subP["status"].(string)
@@ -921,7 +937,7 @@ func (m Model) View() string {
 		searchHeader = "/ " + q
 	}
 	left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h)
-	right := renderViewport(m.focusedSession(), m.output, rightW, h)
+	right := renderViewport(m.focusedSession(), m.conversation, rightW, h)
 	main := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
 	target := "(no session)"
@@ -1390,15 +1406,55 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 	return lipgloss.NewStyle().Width(w).Height(h).Border(lipgloss.RoundedBorder()).Render(b.String())
 }
 
-func renderViewport(s *Session, output map[string]string, w, h int) string {
+// renderViewport draws the focused session's structured conversation:
+// the session name as a header line, then user prompts marked with a
+// coloured arrow and assistant responses in the default fg, separated
+// by blank lines. The previous implementation rendered the raw PTY
+// byte stream, which was unreadable inside lipgloss because Claude's
+// cursor-positioning escapes don't compose with lipgloss frames.
+func renderViewport(s *Session, conversation map[string][]Turn, w, h int) string {
 	if s == nil {
 		return lipgloss.NewStyle().Width(w).Height(h).Border(lipgloss.RoundedBorder()).
 			Render("(no session)")
 	}
-	body := output[s.ID]
-	style := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(s.Color)).
+	frame := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		Width(w).Height(h)
-	return style.Render(s.Name + "\n\n" + body)
+	header := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(s.Color)).
+		Bold(true).
+		Render(s.Name)
+	turns := conversation[s.ID]
+	if len(turns) == 0 {
+		body := header + "\n\n" +
+			lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
+				Render("(no messages yet — type below to send)")
+		return frame.Render(body)
+	}
+	// Inner width: account for the rounded-border (1 col on each side).
+	inner := w - 2
+	if inner < 10 {
+		inner = 10
+	}
+	userStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(s.Color)).Bold(true).
+		Width(inner)
+	asstStyle := lipgloss.NewStyle().Width(inner)
+
+	var b strings.Builder
+	b.WriteString(header)
+	b.WriteString("\n\n")
+	for i, t := range turns {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		switch t.Role {
+		case "user":
+			b.WriteString(userStyle.Render("▸ " + t.Text))
+		default:
+			b.WriteString(asstStyle.Render(t.Text))
+		}
+		b.WriteString("\n")
+	}
+	return frame.Render(b.String())
 }
