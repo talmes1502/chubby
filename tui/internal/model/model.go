@@ -187,6 +187,12 @@ type Model struct {
 	// recent slash-completion Tab. If the user edits past that point,
 	// the next Tab restarts the cycle from 0.
 	slashCompletionLast string
+
+	// historyLoaded tracks which session ids we've already requested
+	// transcript history for, so we only fire the RPC once per session
+	// per TUI session. Without this guard the per-tick refresh would
+	// re-load history every 2 seconds.
+	historyLoaded map[string]bool
 }
 
 type tickMsg struct{}
@@ -213,6 +219,10 @@ type spawnDoneMsg struct{}
 type spawnFailedMsg struct{ err error }
 type renameDoneMsg struct{}
 type respawnDoneMsg struct{}
+type historyTurnsMsg struct {
+	sid   string
+	turns []Turn
+}
 
 // New constructs a Model bound to an already-connected rpc.Client.
 func New(c *rpc.Client) Model {
@@ -225,6 +235,7 @@ func New(c *rpc.Client) Model {
 		grep:           grepState{query: views.NewGrepQuery()},
 		groupCollapsed: LoadCollapsedGroups(),
 		search:         searchState{query: views.NewSearchQuery()},
+		historyLoaded:  map[string]bool{},
 	}
 }
 
@@ -267,6 +278,36 @@ func (m Model) refreshSessions() tea.Cmd {
 	}
 }
 
+// loadHistory fetches the bound JSONL turns for a session via the daemon
+// and feeds them into the conversation map. Soft-fails on RPC error so
+// the viewport just stays empty until live events arrive — there's no
+// useful UI for "history fetch failed."
+func (m Model) loadHistory(sid string) tea.Cmd {
+	c := m.client
+	return func() tea.Msg {
+		raw, err := c.Call(context.Background(), "get_session_history",
+			map[string]any{"session_id": sid, "limit": 500})
+		if err != nil {
+			return nil
+		}
+		var r struct {
+			Turns []struct {
+				Role string `json:"role"`
+				Text string `json:"text"`
+				Ts   int64  `json:"ts"`
+			} `json:"turns"`
+		}
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return nil
+		}
+		turns := make([]Turn, 0, len(r.Turns))
+		for _, t := range r.Turns {
+			turns = append(turns, Turn{Role: t.Role, Text: t.Text, Ts: t.Ts})
+		}
+		return historyTurnsMsg{sid: sid, turns: turns}
+	}
+}
+
 func (m Model) listenEvents() tea.Cmd {
 	c := m.client
 	return func() tea.Msg {
@@ -304,7 +345,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focused = 0
 		}
 		m.syncRailCursorToFocus()
-		return m, m.listenEvents()
+		// First time we see each session, lazily load its prior transcript
+		// from the daemon so the viewport stays populated across `chub down`
+		// + `chub up` cycles. Live transcript_message events still append
+		// on top of whatever we load here.
+		cmds := []tea.Cmd{m.listenEvents()}
+		for _, s := range m.sessions {
+			if !m.historyLoaded[s.ID] {
+				m.historyLoaded[s.ID] = true
+				cmds = append(cmds, m.loadHistory(s.ID))
+			}
+		}
+		return m, tea.Batch(cmds...)
 	case evMsg:
 		ev := rpc.Event(msg)
 		if ev.Method == "event" {
@@ -350,6 +402,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "session_added", "session_renamed",
 				"session_recolored", "session_tagged":
 				return m, tea.Batch(m.refreshSessions(), m.listenEvents())
+			case "session_id_resolved":
+				// The daemon just bound a JSONL to this session — the
+				// FIRST listMsg arrived before any JSONL existed, so the
+				// initial loadHistory returned empty. Re-fetch now.
+				sid, _ := subP["session_id"].(string)
+				if sid != "" {
+					m.historyLoaded[sid] = true
+					return m, tea.Batch(m.refreshSessions(), m.listenEvents(), m.loadHistory(sid))
+				}
 			}
 		}
 		return m, m.listenEvents()
@@ -394,6 +455,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.refreshSessions()
 	case respawnDoneMsg:
 		return m, m.refreshSessions()
+	case historyTurnsMsg:
+		// Replace any partially-live conversation with the loaded history.
+		// If live events arrived during the load, they're discarded — the
+		// JSONL is the canonical source. New live events after this will
+		// append normally.
+		m.conversation[msg.sid] = msg.turns
+		return m, nil
 	case grepDebounceMsg:
 		if msg.token != m.grep.debounceToken {
 			return m, nil
