@@ -58,7 +58,28 @@ const (
 	ModeSpawn
 	ModeSearch
 	ModeHelp
+	ModeRename
 )
+
+// renameTarget says whether ModeRename is editing a session name or a
+// group label (the first tag across a set of sessions).
+type renameTarget int
+
+const (
+	RenameSession renameTarget = iota
+	RenameGroup
+)
+
+// renameState backs ModeRename: a single textinput plus the ids the
+// rename applies to. For RenameSession that's a single session id; for
+// RenameGroup it's every session whose first tag is the old group
+// name. oldName is what we display in the modal header.
+type renameState struct {
+	input    textinput.Model
+	target   renameTarget
+	sessions []string
+	oldName  string
+}
 
 // broadcastState is held in the Model so the reducer can mutate it
 // cleanly. Tab cycles fields {0=list,1=text,2=send}; space toggles a
@@ -144,6 +165,7 @@ type Model struct {
 	history historyState
 	spawn   spawnState
 	search  searchState
+	rename  renameState
 
 	toasts []toast
 
@@ -189,6 +211,7 @@ type reconnectAttemptMsg struct{}
 type reconnectedMsg struct{}
 type spawnDoneMsg struct{}
 type spawnFailedMsg struct{ err error }
+type renameDoneMsg struct{}
 
 // New constructs a Model bound to an already-connected rpc.Client.
 func New(c *rpc.Client) Model {
@@ -365,6 +388,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spawnFailedMsg:
 		m.spawn.err = msg.err
 		return m, nil
+	case renameDoneMsg:
+		m.mode = ModeMain
+		return m, m.refreshSessions()
 	case grepDebounceMsg:
 		if msg.token != m.grep.debounceToken {
 			return m, nil
@@ -411,6 +437,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleKeyHistory(msg)
 	case ModeSpawn:
 		return m.handleKeySpawn(msg)
+	case ModeRename:
+		return m.handleKeyRename(msg)
 	case ModeSearch:
 		return m.handleKeySearch(msg)
 	case ModeHelp:
@@ -505,6 +533,8 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.search.query.Focus()
 		m.mode = ModeSearch
 		return m, nil
+	case "ctrl+r":
+		return m.enterRenameMode()
 	case "?":
 		// Only intercept '?' as the help key when compose is empty,
 		// otherwise the user can't type a literal '?' mid-prompt.
@@ -788,6 +818,108 @@ func (m Model) doSpawn(name, cwd string, tags []string) tea.Cmd {
 	}
 }
 
+// enterRenameMode inspects the rail row under the cursor and opens
+// ModeRename with the appropriate target. Does nothing (and stays in
+// ModeMain) if the rail is empty or the cursor is out of range.
+func (m Model) enterRenameMode() (tea.Model, tea.Cmd) {
+	rows := m.railRows()
+	if m.railCursor < 0 || m.railCursor >= len(rows) {
+		return m, nil
+	}
+	row := rows[m.railCursor]
+	input := textinput.New()
+	input.Prompt = "▸ "
+	input.CharLimit = 0
+	switch row.Kind {
+	case RailRowSession:
+		s := row.Session
+		input.SetValue(s.Name)
+		input.CursorEnd()
+		input.Focus()
+		m.rename = renameState{
+			input:    input,
+			target:   RenameSession,
+			sessions: []string{s.ID},
+			oldName:  s.Name,
+		}
+	case RailRowHeader:
+		ids := []string{}
+		for _, s := range m.sessions {
+			if GroupKey(s) == row.GroupName {
+				ids = append(ids, s.ID)
+			}
+		}
+		input.SetValue(row.GroupName)
+		input.CursorEnd()
+		input.Focus()
+		m.rename = renameState{
+			input:    input,
+			target:   RenameGroup,
+			sessions: ids,
+			oldName:  row.GroupName,
+		}
+	default:
+		return m, nil
+	}
+	m.mode = ModeRename
+	return m, nil
+}
+
+func (m Model) handleKeyRename(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = ModeMain
+		return m, nil
+	case "enter":
+		newName := strings.TrimSpace(m.rename.input.Value())
+		if newName == "" || newName == m.rename.oldName {
+			m.mode = ModeMain
+			return m, nil
+		}
+		if m.rename.target == RenameSession {
+			return m, m.doRenameSession(m.rename.sessions[0], newName)
+		}
+		// RenameGroup: bulk retag all sessions in the group.
+		return m, m.doRenameGroup(m.rename.sessions, m.rename.oldName, newName)
+	}
+	var cmd tea.Cmd
+	m.rename.input, cmd = m.rename.input.Update(msg)
+	return m, cmd
+}
+
+func (m Model) doRenameSession(sid, newName string) tea.Cmd {
+	c := m.client
+	return func() tea.Msg {
+		_, err := c.Call(context.Background(), "rename_session",
+			map[string]any{"id": sid, "name": newName})
+		if err != nil {
+			return errMsg{err}
+		}
+		return renameDoneMsg{}
+	}
+}
+
+func (m Model) doRenameGroup(sids []string, oldGroup, newGroup string) tea.Cmd {
+	c := m.client
+	return func() tea.Msg {
+		// For each session: add the new tag; remove the old tag. The
+		// daemon's set_session_tags RPC handles both adds and removes
+		// in one call.
+		for _, sid := range sids {
+			_, err := c.Call(context.Background(), "set_session_tags",
+				map[string]any{
+					"id":     sid,
+					"add":    []string{newGroup},
+					"remove": []string{oldGroup},
+				})
+			if err != nil {
+				return errMsg{err}
+			}
+		}
+		return renameDoneMsg{}
+	}
+}
+
 func (m Model) handleKeyHistory(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -1029,6 +1161,8 @@ func (m Model) View() string {
 		return m.wrapWithChrome(m.viewHistory())
 	case ModeSpawn:
 		return m.wrapWithChrome(m.viewSpawn())
+	case ModeRename:
+		return m.wrapWithChrome(m.viewRename())
 	case ModeHelp:
 		return m.wrapWithChrome(m.viewHelp())
 	case ModeReconnecting:
@@ -1286,6 +1420,7 @@ func (m Model) viewHelp() string {
 
   Ctrl+N             new session in focused cwd
   Ctrl+K             search session list
+  Ctrl+R             rename focused session OR group (rail cursor)
   Ctrl+B             broadcast modal
   Ctrl+G             grep transcripts (current run)
   Ctrl+H             history panel (past hub-runs)
@@ -1333,6 +1468,46 @@ func (m Model) viewSpawn() string {
 			Render("error: "+m.spawn.err.Error()) + "\n\n")
 	}
 	b.WriteString(dim.Render("Tab to switch field · Enter to spawn · Esc to cancel"))
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		Width(cw).
+		Padding(0, 1).
+		Render(b.String())
+	wh, hh := m.width, m.height
+	if wh < 1 {
+		wh = w
+	}
+	if hh < 1 {
+		hh = 10
+	}
+	return lipgloss.Place(wh, hh, lipgloss.Center, lipgloss.Center, box)
+}
+
+// viewRename renders the centered rename modal, used for both the
+// session and group targets.
+func (m Model) viewRename() string {
+	w := m.width
+	if w < 50 {
+		w = 50
+	}
+	cw := w - 12
+	if cw < 30 {
+		cw = 30
+	}
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	title := "Rename session"
+	if m.rename.target == RenameGroup {
+		title = "Rename group"
+	}
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Bold(true).Render(title) + "\n\n")
+	b.WriteString(dim.Render("  old: ") + m.rename.oldName + "\n")
+	b.WriteString("  new: " + m.rename.input.View() + "\n\n")
+	if m.rename.target == RenameGroup {
+		b.WriteString(dim.Render(fmt.Sprintf(
+			"Will retag %d sessions", len(m.rename.sessions))) + "\n")
+	}
+	b.WriteString(dim.Render("Enter to apply · Esc cancel"))
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		Width(cw).

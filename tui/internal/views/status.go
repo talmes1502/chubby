@@ -25,6 +25,7 @@ const (
 	StatusModeSpawn
 	StatusModeSearch
 	StatusModeHelp
+	StatusModeRename
 )
 
 // dimStyle is the shared dim foreground used for both the status bar
@@ -74,6 +75,8 @@ func rawStatusBar(mode StatusMode, composeHasText bool, broadcastField int) stri
 		return "Tab switch field · Enter spawn · Esc cancel · ~ expands home"
 	case StatusModeSearch:
 		return "type to filter · Enter keep · Esc clear"
+	case StatusModeRename:
+		return "Enter to apply · Esc cancel"
 	case StatusModeHelp:
 		return "(any key dismisses)"
 	case StatusModeReconnecting:
