@@ -567,6 +567,24 @@ func (m Model) handleKeyBroadcast(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				sid := m.sessions[m.bcast.cursor].ID
 				m.bcast.selected[sid] = !m.bcast.selected[sid]
 			}
+		case "a":
+			// Select all live, non-readonly sessions (the only ones broadcast can target).
+			for _, s := range m.sessions {
+				if s.Status != "dead" && s.Kind != "readonly" {
+					m.bcast.selected[s.ID] = true
+				}
+			}
+		case "n":
+			// Deselect everything.
+			m.bcast.selected = map[string]bool{}
+		case "i":
+			// Invert selection (over the broadcast-eligible set).
+			for _, s := range m.sessions {
+				if s.Status == "dead" || s.Kind == "readonly" {
+					continue
+				}
+				m.bcast.selected[s.ID] = !m.bcast.selected[s.ID]
+			}
 		}
 	case 1: // textarea
 		switch msg.String() {
@@ -1027,7 +1045,7 @@ func (m Model) viewBroadcast() string {
 	}
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Render(
-		"Broadcast (Tab=switch field, Space=toggle, Esc=cancel)") + "\n\n")
+		"Broadcast (Tab=switch field, Space=toggle, a=all, n=none, i=invert, Esc=cancel)") + "\n\n")
 
 	listStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Width(w - 4)
 	if m.bcast.field == 0 {
