@@ -3632,10 +3632,11 @@ func (m Model) viewHelp() string {
   /refresh-claude    (chubby) restart claude with --resume (picks up settings changes)
 
   Ctrl+N             new session in focused cwd
-  Ctrl+F             new folder (Phase A: explicit user folders)
-  Ctrl+A             attach existing claude sessions (multi-select picker)
+  Ctrl+F             new folder
+  Ctrl+A             attach existing claude sessions (multi-select picker;
+                     d on selected → detach from chubby with confirm)
   Ctrl+K             search session list
-  Ctrl+R             rename focused session, group, OR folder (rail cursor)
+  Ctrl+R             rename focused session OR folder (rail cursor)
   Ctrl+P             respawn focused dead session
   Ctrl+B             broadcast modal
   Ctrl+G             grep transcripts (current run)
