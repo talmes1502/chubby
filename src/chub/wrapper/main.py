@@ -3,9 +3,9 @@ chubd, mirrors I/O bidirectionally, and listens for server-pushed
 ``inject_to_pty`` events. Falls back to exec'ing ``claude`` directly if chubd
 is unreachable, so it stays useful even when the daemon is down.
 
-V1 limitation: the daemon-call lock and the inbound read loop share the same
-``WrapperClient`` connection; under load a ``push_chunk`` and an inbound
-``inject_to_pty`` can race. Tracked in plan Phase 14 polish.
+The wrapper client uses split read/write tasks (Phase 14.2) so concurrent
+``push_chunk`` calls and inbound ``inject_to_pty`` events do not contend on a
+single connection lock.
 """
 
 from __future__ import annotations
@@ -22,9 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from chub.daemon import paths
-from chub.proto import frame
 from chub.proto.errors import ChubError
-from chub.proto.rpc import Event, decode_message
 from chub.wrapper.client import WrapperClient
 from chub.wrapper.pty import PtySession
 
@@ -109,27 +107,15 @@ async def _run() -> int:
             await pty.write_user(chunk)
 
     async def listen_for_inject() -> None:
-        # Reuse the WrapperClient's connection: it owns the framed stream.
+        # Consume server-pushed events from the client's inbound queue.
+        # The client's reader task does the framing/decoding for us.
+        events = await client.events()
         while True:
-            await client._ensure()
-            reader = client._reader
-            if reader is None:
-                await asyncio.sleep(0.5)
-                continue
             try:
-                raw = await frame.read_frame(reader)
-            except (ConnectionResetError, BrokenPipeError):
-                client._reader = client._writer = None
-                await asyncio.sleep(0.5)
-                continue
-            if raw is None:
-                await asyncio.sleep(0.5)
-                continue
-            try:
-                msg = decode_message(raw)
-            except ChubError:
-                continue
-            if isinstance(msg, Event) and msg.method == "inject_to_pty":
+                msg = await events.get()
+            except asyncio.CancelledError:
+                raise
+            if msg.method == "inject_to_pty":
                 payload = base64.b64decode(msg.params["payload_b64"])
                 if not payload.endswith(b"\n") and not payload.endswith(b"\r"):
                     payload += b"\r"
