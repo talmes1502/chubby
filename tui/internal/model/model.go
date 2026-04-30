@@ -147,6 +147,22 @@ type spawnState struct {
 	group textinput.Model
 	field int // 0=name, 1=cwd, 2=group
 	err   error
+
+	// Tab path completion in the cwd field (Phase B).
+	// pathCompletionIndex advances on each repeated Tab; pathCompletionLast
+	// is the last value Tab produced — if the user has edited the field
+	// since, we reset the cycle so a fresh prefix re-anchors at idx 0.
+	pathCompletionIndex int
+	pathCompletionLast  string
+
+	// Ctrl+P recent cwds picker (Phase B).
+	// recentCwds is fetched lazily on first Ctrl+P and cached for the
+	// lifetime of the modal. recentCwdIndex cycles through them; we
+	// don't reset it on edits because the user explicitly opted into the
+	// list — typing in between Ctrl+P presses still keeps the cycle.
+	recentCwds       []string
+	recentCwdIndex   int
+	recentCwdsLoaded bool
 }
 
 // attachState backs ModeAttach: a multi-select picker over the
@@ -293,6 +309,15 @@ type reconnectAttemptMsg struct{}
 type reconnectedMsg struct{}
 type spawnDoneMsg struct{}
 type spawnFailedMsg struct{ err error }
+
+// spawnRecentCwdsLoadedMsg lands when the spawn modal's first Ctrl+P
+// finishes its recent_cwds RPC. We cache the list on the modal and set
+// the cwd field to the first entry. Subsequent Ctrl+P presses don't
+// re-issue the RPC — they just advance through the cached slice.
+type spawnRecentCwdsLoadedMsg struct {
+	cwds []string
+	err  error
+}
 type renameDoneMsg struct{}
 type respawnDoneMsg struct{}
 type historyTurnsMsg struct {
@@ -628,6 +653,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.refreshSessions()
 	case spawnFailedMsg:
 		m.spawn.err = msg.err
+		return m, nil
+	case spawnRecentCwdsLoadedMsg:
+		// Stay in the spawn modal regardless. If the RPC failed or the
+		// list is empty, surface it inline; the user can dismiss with
+		// Esc or just keep typing.
+		if msg.err != nil {
+			m.spawn.err = msg.err
+			return m, nil
+		}
+		if len(msg.cwds) == 0 {
+			m.spawn.err = fmt.Errorf("no recent cwds yet — type a path or Tab to complete")
+			return m, nil
+		}
+		m.spawn.err = nil
+		// First load: cache + jump to entry 0. Subsequent presses
+		// already had the list cached, so we advance the index here.
+		if !m.spawn.recentCwdsLoaded {
+			m.spawn.recentCwds = msg.cwds
+			m.spawn.recentCwdsLoaded = true
+			m.spawn.recentCwdIndex = 0
+		} else {
+			m.spawn.recentCwdIndex = (m.spawn.recentCwdIndex + 1) % len(m.spawn.recentCwds)
+		}
+		picked := m.spawn.recentCwds[m.spawn.recentCwdIndex]
+		m.spawn.cwd.SetValue(picked)
+		m.spawn.cwd.SetCursor(len(picked))
 		return m, nil
 	case renameDoneMsg:
 		m.mode = ModeMain
@@ -1120,6 +1171,25 @@ func (m Model) handleKeySpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeMain
 		return m, nil
 	case "tab":
+		// In the cwd field, Tab tries directory-name completion first.
+		// Only if there's nothing to complete do we fall through to the
+		// existing Tab=cycle-field behavior — this matches the bash/zsh
+		// muscle memory users already have for path completion.
+		if m.spawn.field == 1 {
+			cur := m.spawn.cwd.Value()
+			if cur != m.spawn.pathCompletionLast {
+				m.spawn.pathCompletionIndex = 0
+			}
+			if newVal, ok, total := tryPathComplete(cur, m.spawn.pathCompletionIndex); ok {
+				m.spawn.cwd.SetValue(newVal)
+				m.spawn.cwd.SetCursor(len(newVal))
+				m.spawn.pathCompletionLast = newVal
+				if total > 1 {
+					m.spawn.pathCompletionIndex++
+				}
+				return m, nil
+			}
+		}
 		m.spawn.field = (m.spawn.field + 1) % 3
 		m.refocusSpawn()
 		return m, nil
@@ -1127,6 +1197,12 @@ func (m Model) handleKeySpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.spawn.field = (m.spawn.field + 2) % 3
 		m.refocusSpawn()
 		return m, nil
+	case "ctrl+p":
+		// Recent cwds picker — cwd field only. First press fetches via
+		// RPC; subsequent presses cycle through the cached list.
+		if m.spawn.field == 1 {
+			return m, m.spawnCwdRecentNext()
+		}
 	case "enter":
 		name := strings.TrimSpace(m.spawn.name.Value())
 		if name == "" {
@@ -1246,6 +1322,44 @@ func prettyHomePath(p string) string {
 		return "~" + p[len(home):]
 	}
 	return p
+}
+
+// spawnCwdRecentNext powers Ctrl+P in the spawn modal's cwd field.
+//
+// First press: not-yet-loaded → fire the recent_cwds RPC and on response
+// the Update handler caches the list, sets the field to the first
+// entry, and seeds recentCwdIndex.
+//
+// Subsequent presses: list is cached locally, so we synthesize the
+// "next index" advance as a tea.Msg rather than mutating m here — the
+// reducer is the canonical place to update m.spawn.cwd so the cursor
+// state stays consistent. We don't bother with an RPC re-fetch on
+// repeat presses; the cached list is fresh enough for one modal session.
+func (m Model) spawnCwdRecentNext() tea.Cmd {
+	if m.spawn.recentCwdsLoaded {
+		// Synthetic "advance" path: emit a loaded msg with the cached
+		// slice. The Update handler bumps the index; if the list is
+		// empty we surface a soft err there.
+		cached := m.spawn.recentCwds
+		return func() tea.Msg {
+			return spawnRecentCwdsLoadedMsg{cwds: cached}
+		}
+	}
+	c := m.client
+	return func() tea.Msg {
+		raw, err := c.Call(context.Background(), "recent_cwds",
+			map[string]any{"limit": 20})
+		if err != nil {
+			return spawnRecentCwdsLoadedMsg{err: err}
+		}
+		var r struct {
+			Cwds []string `json:"cwds"`
+		}
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return spawnRecentCwdsLoadedMsg{err: err}
+		}
+		return spawnRecentCwdsLoadedMsg{cwds: r.Cwds}
+	}
 }
 
 func (m Model) doSpawn(name, cwd string, tags []string) tea.Cmd {
@@ -2528,6 +2642,9 @@ func (m Model) viewHelp() string {
   /movetofolder X    (chubby) move focused session to folder X (creates if new)
   /removefromfolder  (chubby) remove focused session from its folder
 
+  Tab (in cwd)       complete directory path; cycle on repeat
+  Ctrl+P (in cwd)    cycle recent cwds
+
   ?                  this help
   q / Ctrl+C         quit`
 	box := lipgloss.NewStyle().
@@ -2570,7 +2687,8 @@ func (m Model) viewSpawn() string {
 		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("9")).
 			Render("error: "+m.spawn.err.Error()) + "\n\n")
 	}
-	b.WriteString(dim.Render("Tab to switch field · Enter to spawn · Esc to cancel"))
+	b.WriteString(dim.Render(
+		"Tab switch field/path · Ctrl+P recent · Enter spawn · Esc cancel"))
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		Width(cw).
