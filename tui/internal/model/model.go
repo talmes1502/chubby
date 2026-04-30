@@ -209,6 +209,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				sid, _ := subP["session_id"].(string)
 				b64, _ := subP["data_b64"].(string)
 				if data, err := base64.StdEncoding.DecodeString(b64); err == nil {
+					// Strip cursor/mode/OSC escapes — Bubble Tea's lipgloss
+					// viewport renders them as gibberish. SGR (color) is kept.
+					data = views.StripCursorEscapes(data)
 					cur := m.output[sid] + string(data)
 					if len(cur) > outputCap {
 						cur = cur[len(cur)-outputCap:]
