@@ -42,6 +42,7 @@ const (
 	ModeMain Mode = iota
 	ModeBroadcast
 	ModeGrep
+	ModeHistory
 )
 
 // broadcastState is held in the Model so the reducer can mutate it
@@ -63,6 +64,18 @@ type grepState struct {
 	debounceToken int
 }
 
+// historyState backs the three-column miller view: hub-runs on the
+// left, sessions in the selected run in the middle, and the log
+// preview on the right. Tab cycles columns.
+type historyState struct {
+	runs        []map[string]any
+	runCursor   int
+	runSessions []Session
+	sessCursor  int
+	column      int // 0=runs, 1=sessions, 2=preview
+	preview     string
+}
+
 // Model is the Bubble Tea state.
 type Model struct {
 	client   *rpc.Client
@@ -76,8 +89,9 @@ type Model struct {
 	mode    Mode
 	compose textinput.Model
 
-	bcast broadcastState
-	grep  grepState
+	bcast   broadcastState
+	grep    grepState
+	history historyState
 }
 
 type tickMsg struct{}
@@ -91,6 +105,11 @@ type grepDebounceMsg struct{ token int }
 type grepResultsMsg struct {
 	token   int
 	matches []map[string]any
+}
+type historyRunsMsg []map[string]any
+type historyRunSessionsMsg struct {
+	sessions []Session
+	preview  string
 }
 
 // New constructs a Model bound to an already-connected rpc.Client.
@@ -205,6 +224,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.grep.cursor = 0
 		}
 		return m, nil
+	case historyRunsMsg:
+		m.history.runs = []map[string]any(msg)
+		if len(m.history.runs) > 0 {
+			return m, m.loadHubRun(m.history.runs[0])
+		}
+		return m, nil
+	case historyRunSessionsMsg:
+		m.history.runSessions = msg.sessions
+		m.history.preview = msg.preview
+		if m.history.sessCursor >= len(m.history.runSessions) {
+			m.history.sessCursor = 0
+		}
+		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -220,6 +252,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleKeyBroadcast(msg)
 	case ModeGrep:
 		return m.handleKeyGrep(msg)
+	case ModeHistory:
+		return m.handleKeyHistory(msg)
 	default:
 		return m.handleKeyMain(msg)
 	}
@@ -241,6 +275,10 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeBroadcast
 		m.bcast = broadcastState{selected: map[string]bool{}}
 		return m, nil
+	case "ctrl+h":
+		m.mode = ModeHistory
+		m.history = historyState{}
+		return m, m.loadHubRuns()
 	case "/":
 		// "/" enters grep palette only when the compose bar is empty,
 		// so a literal slash typed mid-prompt still goes to the buffer.
@@ -358,6 +396,102 @@ func (m Model) handleKeyGrep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmd, debounce)
 }
 
+func (m Model) handleKeyHistory(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = ModeMain
+		return m, nil
+	case "tab":
+		m.history.column = (m.history.column + 1) % 3
+		return m, nil
+	case "shift+tab":
+		m.history.column = (m.history.column + 2) % 3
+		return m, nil
+	}
+	switch m.history.column {
+	case 0:
+		switch msg.String() {
+		case "up", "k":
+			if m.history.runCursor > 0 {
+				m.history.runCursor--
+			}
+		case "down", "j":
+			if m.history.runCursor < len(m.history.runs)-1 {
+				m.history.runCursor++
+			}
+		case "enter":
+			if m.history.runCursor < len(m.history.runs) {
+				return m, m.loadHubRun(m.history.runs[m.history.runCursor])
+			}
+		}
+	case 1:
+		switch msg.String() {
+		case "up", "k":
+			if m.history.sessCursor > 0 {
+				m.history.sessCursor--
+			}
+		case "down", "j":
+			if m.history.sessCursor < len(m.history.runSessions)-1 {
+				m.history.sessCursor++
+			}
+		case "enter":
+			if m.history.sessCursor < len(m.history.runSessions) &&
+				m.history.runCursor < len(m.history.runs) {
+				runID, _ := m.history.runs[m.history.runCursor]["id"].(string)
+				name := m.history.runSessions[m.history.sessCursor].Name
+				return m, m.loadLogPreview(runID, name)
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m Model) loadHubRuns() tea.Cmd {
+	c := m.client
+	return func() tea.Msg {
+		raw, err := c.Call(context.Background(), "list_hub_runs", nil)
+		if err != nil {
+			return errMsg{err}
+		}
+		var r struct {
+			Runs []map[string]any `json:"runs"`
+		}
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return errMsg{err}
+		}
+		return historyRunsMsg(r.Runs)
+	}
+}
+
+func (m Model) loadHubRun(run map[string]any) tea.Cmd {
+	id, _ := run["id"].(string)
+	c := m.client
+	return func() tea.Msg {
+		raw, err := c.Call(context.Background(), "get_hub_run", map[string]any{"id": id})
+		if err != nil {
+			return errMsg{err}
+		}
+		var r struct {
+			Run      map[string]any `json:"run"`
+			Sessions []Session      `json:"sessions"`
+		}
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return errMsg{err}
+		}
+		return historyRunSessionsMsg{sessions: r.Sessions, preview: ""}
+	}
+}
+
+// loadLogPreview reads ${CHUB_HOME}/runs/<runID>/logs/<name>.log directly.
+// Reading off disk is fine because the TUI runs on the same host as chubd.
+func (m Model) loadLogPreview(runID, sessionName string) tea.Cmd {
+	sessions := m.history.runSessions
+	return func() tea.Msg {
+		preview := views.ReadLogTail(runID, sessionName)
+		return historyRunSessionsMsg{sessions: sessions, preview: preview}
+	}
+}
+
 // doGrep is the actual FTS RPC. token is checked in the reducer to
 // invalidate stale results when the user keeps typing.
 func (m Model) doGrep(query string, token int) tea.Cmd {
@@ -470,6 +604,8 @@ func (m Model) View() string {
 		return m.viewBroadcast()
 	case ModeGrep:
 		return m.viewGrep()
+	case ModeHistory:
+		return m.viewHistory()
 	}
 	leftW := 24
 	rightW := m.width - leftW - 2
@@ -572,6 +708,66 @@ func (m Model) viewGrep() string {
 	}
 	b.WriteString(resStyle.Render(rs.String()))
 	return b.String()
+}
+
+func (m Model) viewHistory() string {
+	w := m.width
+	if w < 60 {
+		w = 60
+	}
+	colW := (w - 6) / 3
+	h := m.height - 4
+	if h < 8 {
+		h = 8
+	}
+	var runsCol strings.Builder
+	runsCol.WriteString(lipgloss.NewStyle().Bold(true).Render(" Hub runs") + "\n")
+	for i, r := range m.history.runs {
+		cursor := "  "
+		if i == m.history.runCursor {
+			cursor = "▸ "
+		}
+		id, _ := r["id"].(string)
+		ts, _ := r["started_at"].(float64)
+		t := time.UnixMilli(int64(ts)).Format("01-02 15:04")
+		short := id
+		if len(short) > 8 {
+			short = short[:8]
+		}
+		runsCol.WriteString(fmt.Sprintf("%s%s %s\n", cursor, t, short))
+	}
+
+	var sessCol strings.Builder
+	sessCol.WriteString(lipgloss.NewStyle().Bold(true).Render(" Sessions") + "\n")
+	for i, s := range m.history.runSessions {
+		cursor := "  "
+		if i == m.history.sessCursor {
+			cursor = "▸ "
+		}
+		col := lipgloss.NewStyle().Foreground(lipgloss.Color(s.Color)).Render(s.Name)
+		sessCol.WriteString(fmt.Sprintf("%s%s\n", cursor, col))
+	}
+
+	var prevCol strings.Builder
+	prevCol.WriteString(lipgloss.NewStyle().Bold(true).Render(" Log preview") + "\n")
+	prevCol.WriteString(m.history.preview)
+
+	border := func(s string, focused bool) string {
+		st := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+			Width(colW).Height(h)
+		if focused {
+			st = st.BorderForeground(lipgloss.Color("12"))
+		}
+		return st.Render(s)
+	}
+	cols := lipgloss.JoinHorizontal(lipgloss.Top,
+		border(runsCol.String(), m.history.column == 0),
+		border(sessCol.String(), m.history.column == 1),
+		border(prevCol.String(), m.history.column == 2),
+	)
+	header := lipgloss.NewStyle().Bold(true).Render(
+		"History (Tab=switch col, Enter=open, Esc=close)")
+	return lipgloss.JoinVertical(lipgloss.Left, header, cols)
 }
 
 func (m Model) focusedSession() *Session {
