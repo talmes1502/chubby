@@ -23,6 +23,7 @@ from chub.cli.commands import (
     respawn,
     send,
     spawn,
+    start,
     tag,
     tui,
     up,
@@ -32,6 +33,7 @@ from chub.cli.commands import list as list_cmd
 app = typer.Typer(no_args_is_help=True, add_completion=False, rich_markup_mode=None)
 app.command(name="up")(up.run)
 app.command(name="down")(down.run)
+app.command(name="start")(start.run)
 app.command(name="ping")(ping.run)
 app.command(name="list")(list_cmd.run)
 app.command(name="rename")(rename.run)
