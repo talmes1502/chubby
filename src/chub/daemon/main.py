@@ -8,6 +8,7 @@ import logging
 import os
 import signal
 import sys
+from pathlib import Path
 from typing import Any
 
 from chub import __version__
@@ -24,6 +25,8 @@ from chub.daemon.session import SessionKind, SessionStatus
 from chub.daemon.subscriptions import SubscriptionHub
 from chub.proto.errors import ChubError, ErrorCode
 from chub.proto.schema import (
+    AttachExistingReadonlyParams,
+    AttachExistingReadonlyResult,
     AttachTmuxParams,
     AttachTmuxResult,
     DetachSessionParams,
@@ -276,6 +279,50 @@ def _build_registry(
         task.add_done_callback(background_tasks.discard)
         return AttachTmuxResult(session=SessionDict(**s.to_dict())).model_dump()
 
+    async def attach_existing_readonly(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        """Register a running raw ``claude`` PID as a readonly session.
+
+        Heuristic JSONL discovery: look in ``~/.claude/projects/<encoded-cwd>/``
+        (where ``encoded-cwd = cwd.replace("/", "-")``, leading dash stripped)
+        and pick the most recently modified ``*.jsonl``. The session id is the
+        filename stem. If no transcript is found we still register the session
+        so the user can see the raw process — we just won't tail anything.
+        """
+        from chub.daemon import hooks as hooks_mod
+
+        p = AttachExistingReadonlyParams.model_validate(params)
+        name = p.name or f"{os.path.basename(p.cwd.rstrip('/'))}-{p.pid}"
+
+        # Discover most-recent JSONL transcript for this cwd.
+        encoded = p.cwd.replace("/", "-").lstrip("-")
+        proj_dir = Path.home() / ".claude" / "projects" / encoded
+        claude_session_id: str | None = None
+        if proj_dir.is_dir():
+            try:
+                jsonls = [f for f in proj_dir.iterdir() if f.suffix == ".jsonl"]
+            except OSError:
+                jsonls = []
+            if jsonls:
+                jsonls.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+                claude_session_id = jsonls[0].stem
+
+        s = await reg.register(
+            name=name,
+            kind=SessionKind.READONLY,
+            cwd=p.cwd,
+            pid=p.pid,
+            claude_session_id=claude_session_id,
+        )
+        if claude_session_id is not None:
+            task = asyncio.create_task(hooks_mod.start_tailer(reg, s))
+            background_tasks.add(task)
+            task.add_done_callback(background_tasks.discard)
+        return AttachExistingReadonlyResult(
+            session=SessionDict(**s.to_dict())
+        ).model_dump()
+
     async def detach_session(
         params: dict[str, Any], ctx: CallContext
     ) -> dict[str, Any]:
@@ -382,6 +429,7 @@ def _build_registry(
     h.register("set_session_tags", set_session_tags)
     h.register("scan_candidates", scan_candidates)
     h.register("attach_tmux", attach_tmux)
+    h.register("attach_existing_readonly", attach_existing_readonly)
     h.register("detach_session", detach_session)
     h.register("promote_session", promote_session)
     h.register("purge", purge)

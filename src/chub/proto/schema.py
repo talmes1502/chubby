@@ -132,6 +132,16 @@ class RegisterReadonlyResult(_Strict):
     session: SessionDict
 
 
+class AttachExistingReadonlyParams(_Strict):
+    pid: int
+    cwd: str
+    name: str | None = None
+
+
+class AttachExistingReadonlyResult(_Strict):
+    session: SessionDict
+
+
 class MarkIdleParams(_Strict):
     claude_session_id: str
 

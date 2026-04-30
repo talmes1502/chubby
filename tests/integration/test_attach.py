@@ -43,6 +43,26 @@ class FakeClient:
                     "ended_at": None,
                 }
             }
+        if method == "attach_existing_readonly":
+            FakeClient.attach_calls.append({**params, "_method": method})
+            return {
+                "session": {
+                    "id": f"s_ro_{params['pid']}",
+                    "hub_run_id": "hr_x",
+                    "name": params["name"],
+                    "color": "#abcdef",
+                    "kind": "readonly",
+                    "cwd": params["cwd"],
+                    "created_at": 0,
+                    "last_activity_at": 0,
+                    "status": "idle",
+                    "pid": params["pid"],
+                    "claude_session_id": None,
+                    "tmux_target": None,
+                    "tags": [],
+                    "ended_at": None,
+                }
+            }
         raise AssertionError(f"unexpected method {method}")
 
     async def close(self) -> None:
@@ -168,6 +188,48 @@ def test_attach_no_args_is_error(fake_client: type[FakeClient]) -> None:
     runner = CliRunner()
     result = runner.invoke(app, ["attach"])
     assert result.exit_code != 0
+
+
+def test_attach_as_readonly_registers_promote_candidates(
+    fake_client: type[FakeClient],
+) -> None:
+    fake_client.candidates = [
+        _candidate(
+            21,
+            cwd="/work/a",
+            tmux_target=None,
+            classification="promote_required",
+        ),
+        _candidate(
+            22,
+            cwd="/work/b",
+            tmux_target=None,
+            classification="promote_required",
+        ),
+        # Tmux candidate should be skipped by --as-readonly.
+        _candidate(23, cwd="/work/c", tmux_target="ws:0.0"),
+    ]
+    runner = CliRunner()
+    result = runner.invoke(app, ["attach", "--as-readonly"])
+    assert result.exit_code == 0, result.stdout
+    methods = [c.get("_method") for c in fake_client.attach_calls]
+    assert methods == ["attach_existing_readonly", "attach_existing_readonly"]
+    pids = sorted(c["pid"] for c in fake_client.attach_calls)
+    assert pids == [21, 22]
+    # Auto-named as <basename(cwd)>-<pid>.
+    names = sorted(c["name"] for c in fake_client.attach_calls)
+    assert names == ["a-21", "b-22"]
+
+
+def test_attach_as_readonly_no_candidates(fake_client: type[FakeClient]) -> None:
+    fake_client.candidates = [
+        _candidate(11, cwd="/work/a", tmux_target="ws:0.0"),
+    ]
+    runner = CliRunner()
+    result = runner.invoke(app, ["attach", "--as-readonly"])
+    assert result.exit_code == 0, result.stdout
+    assert "no promote_required" in result.stdout
+    assert fake_client.attach_calls == []
 
 
 def test_attach_pick_interactive(fake_client: type[FakeClient]) -> None:

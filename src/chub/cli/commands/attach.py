@@ -4,6 +4,8 @@ Modes:
 - ``chub attach --list``               : print candidates as JSON
 - ``chub attach --pick``               : interactive picker
 - ``chub attach --all``                : attach to every tmux-attachable candidate
+- ``chub attach --as-readonly``        : bulk-register every promote_required
+                                          candidate as a readonly session
 - ``chub attach tmux:session:0.0``     : attach to a specific tmux pane
 """
 
@@ -28,6 +30,11 @@ def run(
     list_: bool = typer.Option(False, "--list", "-l"),
     name: str | None = typer.Option(None, "--name"),
     all_: bool = typer.Option(False, "--all"),
+    as_readonly: bool = typer.Option(
+        False,
+        "--as-readonly",
+        help="register every promote_required candidate as a readonly session",
+    ),
 ) -> None:
     async def go() -> None:
         c = Client(paths.sock_path())
@@ -37,6 +44,22 @@ def run(
             cs = [x for x in cs if not x.get("already_attached")]
             if list_:
                 typer.echo(json.dumps(cs, indent=2))
+                return
+            if as_readonly:
+                ro_cs = [x for x in cs if x["classification"] == "promote_required"]
+                if not ro_cs:
+                    typer.echo("no promote_required candidates")
+                    return
+                for x in ro_cs:
+                    nm = name or f"{os.path.basename(x['cwd'].rstrip('/'))}-{x['pid']}"
+                    r = await c.call(
+                        "attach_existing_readonly",
+                        {"pid": x["pid"], "cwd": x["cwd"], "name": nm},
+                    )
+                    s = r["session"]
+                    cs_id = s.get("claude_session_id")
+                    suffix = f" (transcript={cs_id})" if cs_id else " (no transcript)"
+                    typer.echo(f"attached readonly {s['name']} pid={x['pid']}{suffix}")
                 return
             if pick or all_:
                 tmux_cs = [x for x in cs if x["classification"] == "tmux_full"]
