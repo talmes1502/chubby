@@ -51,6 +51,9 @@ var SlashCommands = []SlashCommand{
 	{"removefromfolder",
 		"(chubby) remove focused session from its folder",
 		nil},
+	{"detach",
+		"(chubby) pop the focused session into a new terminal window",
+		nil},
 }
 
 // MatchSlashCommands returns commands whose Name starts with prefix

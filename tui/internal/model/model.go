@@ -390,6 +390,14 @@ type Model struct {
 	// non-thinking status change so the timer resets cleanly between
 	// turns.
 	thinkingStartedAt map[string]time.Time
+
+	// startupFocusName, when non-empty, is the session name that
+	// /detach passed via CHUBBY_FOCUS_SESSION. Resolved on the FIRST
+	// listMsg by scanning m.sessions for a Name match, then cleared so
+	// later list refreshes don't re-snap the user's focus. Pairs with
+	// CHUBBY_DETACHED=1 (which sets railCollapsed) to give the
+	// detached-window experience: one session visible, no rail noise.
+	startupFocusName string
 }
 
 // sessionUsage holds the running token totals + rolling samples for
@@ -508,7 +516,18 @@ type attachDoneMsg struct {
 }
 
 // New constructs a Model bound to an already-connected rpc.Client.
+//
+// Honours two env vars set by `chubby tui --focus <name> --detached`
+// (the /detach slash command's spawn path):
+//   - CHUBBY_FOCUS_SESSION=<name>: stash a startup-focus name resolved
+//     against the first listMsg's session slice.
+//   - CHUBBY_DETACHED=1: collapse the rail at startup so the detached
+//     window opens straight into a single-session view.
 func New(c *rpc.Client) Model {
+	railCollapsed := LoadRailCollapsed()
+	if os.Getenv("CHUBBY_DETACHED") == "1" {
+		railCollapsed = true
+	}
 	return Model{
 		client:         c,
 		conversation:   map[string][]Turn{},
@@ -517,7 +536,7 @@ func New(c *rpc.Client) Model {
 		bcast:          broadcastState{selected: map[string]bool{}},
 		grep:           grepState{query: views.NewGrepQuery()},
 		groupCollapsed: LoadCollapsedGroups(),
-		railCollapsed:  LoadRailCollapsed(),
+		railCollapsed:  railCollapsed,
 		folders:        LoadFolders(),
 		search:         searchState{query: views.NewSearchQuery()},
 		historyLoaded:     map[string]bool{},
@@ -525,6 +544,7 @@ func New(c *rpc.Client) Model {
 		newSinceScroll:    map[string]int{},
 		lastUsage:         map[string]sessionUsage{},
 		thinkingStartedAt: map[string]time.Time{},
+		startupFocusName:  os.Getenv("CHUBBY_FOCUS_SESSION"),
 	}
 }
 
@@ -664,6 +684,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessions = []Session(msg)
 		if m.focused >= len(m.sessions) {
 			m.focused = 0
+		}
+		// /detach passes CHUBBY_FOCUS_SESSION=<name>; we resolve it on
+		// the first list because it's the first time we have the
+		// name->index mapping. We clear the field so a later refresh
+		// (e.g. a rename) doesn't yank focus away from wherever the
+		// user has since moved it.
+		if m.startupFocusName != "" {
+			for i, s := range m.sessions {
+				if s.Name == m.startupFocusName {
+					m.focused = i
+					break
+				}
+			}
+			m.startupFocusName = ""
 		}
 		m.syncRailCursorToFocus()
 		// First time we see each session, lazily load its prior transcript
@@ -2417,6 +2451,9 @@ func (m Model) sendComposed() tea.Cmd {
 		case "/removefromfolder":
 			_ = arg // takes no args; ignore any tail.
 			return m.doChubRemoveFromFolder()
+		case "/detach":
+			_ = arg // /detach takes no args; ignore any tail.
+			return m.doChubDetach()
 		}
 	}
 	target := ""
@@ -2492,6 +2529,7 @@ func splitChubCommand(s string) (cmd, arg string, ok bool) {
 		"/removefromfolder",
 		"/movetofolder",
 		"/refresh-claude",
+		"/detach",
 		"/color",
 		"/rename",
 		"/tag",
@@ -2731,6 +2769,36 @@ func (m Model) doChubRemoveFromFolder() tea.Cmd {
 			return composeFailedMsg{err}
 		}
 		return chubCommandDoneMsg{}
+	}
+}
+
+// openDetachedFn is the package-level indirection for the views-side
+// terminal-spawn helper so detach_test.go can swap it for a stub
+// without actually launching a new Terminal window.
+var openDetachedFn = views.OpenDetachedWindow
+
+// doChubDetach pops the focused session into a fresh GUI terminal
+// window running `chubby tui --focus <name> --detached`. The new
+// process connects to the same daemon over the same socket, so the
+// detached window shows a live mirror of the session — exiting the
+// detached window leaves the session running in the main TUI.
+//
+// We surface a chubCommandDoneMsg with a toast on success so the user
+// gets the standard "compose cleared" feedback path; spawn errors
+// (e.g. no GUI terminal on Linux) come back as composeFailedMsg.
+func (m Model) doChubDetach() tea.Cmd {
+	s := m.focusedSession()
+	if s == nil {
+		return func() tea.Msg {
+			return composeFailedMsg{fmt.Errorf("no session focused")}
+		}
+	}
+	name := s.Name
+	return func() tea.Msg {
+		if err := openDetachedFn(name); err != nil {
+			return composeFailedMsg{fmt.Errorf("detach failed: %w", err)}
+		}
+		return chubCommandDoneMsg{toast: fmt.Sprintf("opened %s in a new window", name)}
 	}
 }
 
@@ -3417,6 +3485,7 @@ func (m Model) viewHelp() string {
 
   /movetofolder X    (chubby) move focused session to folder X (creates if new)
   /removefromfolder  (chubby) remove focused session from its folder
+  /detach            pop focused session into a new terminal window
 
   Tab (in cwd)       complete directory path; cycle on repeat
   Ctrl+P (in cwd)    cycle recent cwds

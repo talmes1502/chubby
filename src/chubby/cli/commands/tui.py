@@ -68,10 +68,24 @@ def run(
     force_download: bool = typer.Option(
         False, "--force-download", help="redownload the binary even if cached"
     ),
+    focus: str | None = typer.Option(
+        None, "--focus", help="Pre-focus this session at startup"
+    ),
+    detached: bool = typer.Option(
+        False, "--detached", help="Start with rail collapsed (compact view)"
+    ),
 ) -> None:
     bin_path = CACHE / f"chubby-tui-{__version__}"
     local_dev = _local_dev_bin()
     env = _build_env()
+    # The Go binary doesn't parse flags itself — these typer options
+    # are forwarded to it via env vars (same channel as CHUBBY_SOCK).
+    # The flags still pass through sys.argv unchanged because the Go
+    # binary simply ignores extra argv entries.
+    if focus:
+        env["CHUBBY_FOCUS_SESSION"] = focus
+    if detached:
+        env["CHUBBY_DETACHED"] = "1"
     if not force_download and not bin_path.exists() and local_dev is not None:
         os.execvpe(str(local_dev), [str(local_dev), *sys.argv[2:]], env)
         return
