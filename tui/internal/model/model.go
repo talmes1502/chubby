@@ -630,6 +630,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.sessions) == 0 && m.mode == ModeMain {
 				cmds = append(cmds, m.autoSpawnDefault())
 			}
+			// One-time D10c migration: map legacy auto-grouped sessions
+			// (first tag / cwd basename) into explicit folders so users
+			// don't lose their cluster layout when the rail flattens.
+			// Sentinel-guarded inside the helper so subsequent launches
+			// no-op even if the user never restarts the TUI.
+			cmds = append(cmds, runMigrationCmd(m.sessions, m.folders))
 		}
 		// If a session is now thinking but the spinner tick has gone
 		// quiet (because nothing was thinking last tick), re-arm it so
@@ -775,6 +781,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spawnDoneMsg:
 		m.mode = ModeMain
 		return m, m.refreshSessions()
+	case MigrationDoneMsg:
+		// Reload folders so any newly-assigned sessions show up in the
+		// rail immediately. Surface a transient toast only when the
+		// migration actually moved at least one session — silence on
+		// no-op (idempotent re-runs land here too via the sentinel
+		// short-circuit, returning N=0).
+		m.folders = LoadFolders()
+		if msg.N > 0 {
+			m.toasts = append(m.toasts, toast{
+				sessionName: fmt.Sprintf("migrated %d sessions into folders", msg.N),
+				color:       "10",
+				expiresAt:   time.Now().Add(5 * time.Second),
+			})
+		}
+		return m, nil
 	case spawnFailedMsg:
 		m.spawn.err = msg.err
 		return m, nil
