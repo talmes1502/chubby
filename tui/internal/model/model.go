@@ -193,13 +193,19 @@ type spawnState struct {
 // index to whether it's currently checked. notice surfaces transient
 // post-attach feedback ("attached N sessions", or "select at least
 // one with Space"); err captures scan-time RPC failures.
+//
+// confirmDetachN is set when the user presses 'd' to start a bulk
+// detach: any further 'y'/'Y' confirms and fires release_session for
+// every selected already-attached candidate. 'n'/'N'/Esc cancels. The
+// number is purely for the prompt copy ("Detach N sessions? (y/n)").
 type attachState struct {
-	candidates []map[string]any // raw rows from scan_candidates RPC
-	selected   map[int]bool     // candidate index → selected
-	cursor     int
-	loading    bool
-	err        error
-	notice     string // post-attach feedback like "attached 3 sessions"
+	candidates     []map[string]any // raw rows from scan_candidates RPC
+	selected       map[int]bool     // candidate index → selected
+	cursor         int
+	loading        bool
+	err            error
+	notice         string // post-attach feedback like "attached 3 sessions"
+	confirmDetachN int    // >0 = pending 'd' confirm prompt
 }
 
 // editorState backs the right-side file viewer pane (Phase C). The
@@ -507,14 +513,15 @@ type attachScannedMsg struct {
 	err        error
 }
 
-// attachDoneMsg is emitted after the user confirms a multi-select pick
-// and we've issued one attach_tmux / attach_existing_readonly per
-// selected candidate. n is the number of successful attaches; on
-// partial failure err is the first error encountered (we stop after
-// the first failure to keep the trace coherent).
+// attachDoneMsg is emitted after a multi-select picker action — either
+// attach (Enter) or detach ('d' + 'y'). n is the number of successful
+// operations; detached=true means this was a release_session pass
+// rather than an attach pass (drives the toast wording). err captures
+// the last error seen during the loop.
 type attachDoneMsg struct {
-	n   int
-	err error
+	n        int
+	err      error
+	detached bool
 }
 
 // New constructs a Model bound to an already-connected rpc.Client.
@@ -1050,7 +1057,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.attach.err = msg.err
 			return m, nil
 		}
-		m.attach.notice = fmt.Sprintf("attached %d sessions", msg.n)
+		verb := "attached"
+		if msg.detached {
+			verb = "detached"
+		}
+		m.attach.notice = fmt.Sprintf("%s %d sessions", verb, msg.n)
 		m.mode = ModeMain
 		return m, m.refreshSessions()
 	case grepDebounceMsg:
@@ -2108,11 +2119,26 @@ func (m Model) doRenameFolder(oldName, newName string) tea.Cmd {
 }
 
 // handleKeyAttach is the reducer for ModeAttach: navigate the candidate
-// list, toggle selections, and either confirm (Enter) or cancel (Esc).
-// 'a' selects every candidate that isn't already attached (so Space-on-
-// each isn't required for the common "attach everything I have running"
-// flow); 'n' clears; 'r' rescans.
+// list, toggle selections, and either attach (Enter), bulk-detach (d),
+// or cancel (Esc). 'a' selects every candidate that isn't already
+// attached; 'n' clears; 'r' rescans.
 func (m Model) handleKeyAttach(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Handle the 'd' bulk-detach confirm prompt first — when active,
+	// only y/n/esc are meaningful. Everything else is a no-op so a stray
+	// keystroke can't accidentally proceed.
+	if m.attach.confirmDetachN > 0 {
+		switch msg.String() {
+		case "y", "Y":
+			n := m.attach.confirmDetachN
+			m.attach.confirmDetachN = 0
+			return m, m.doDetachSelected(n)
+		case "n", "N", "esc":
+			m.attach.confirmDetachN = 0
+			m.attach.notice = "detach cancelled"
+			return m, nil
+		}
+		return m, nil
+	}
 	switch msg.String() {
 	case "esc":
 		m.mode = ModeMain
@@ -2150,6 +2176,25 @@ func (m Model) handleKeyAttach(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.attach.candidates = nil
 		m.attach.selected = map[int]bool{}
 		return m, m.scanAttachCandidates()
+	case "d":
+		// Bulk-detach the selected items that are CURRENTLY chubby-
+		// managed. Skip non-attached selections silently; they're not
+		// detachable. Show a confirm prompt with the actionable count.
+		n := 0
+		for i, c := range m.attach.candidates {
+			if !m.attach.selected[i] {
+				continue
+			}
+			if attached, _ := c["already_attached"].(bool); attached {
+				n++
+			}
+		}
+		if n == 0 {
+			m.attach.notice = "nothing to detach (none of the selected are chubby-managed)"
+			return m, nil
+		}
+		m.attach.confirmDetachN = n
+		return m, nil
 	case "enter":
 		if len(m.attach.selected) == 0 {
 			m.attach.notice = "select at least one with Space"
@@ -2172,6 +2217,82 @@ func (m Model) handleKeyAttach(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.doAttachSelected()
 	}
 	return m, nil
+}
+
+// doDetachSelected fires release_session for every selected candidate
+// that's currently chubby-managed (already_attached=true). The
+// candidate's session id isn't in scan_candidates output, so we resolve
+// by pid via a list_sessions lookup. The 'expectedN' is the count we
+// promised the user in the confirm prompt — used for the result toast.
+func (m Model) doDetachSelected(expectedN int) tea.Cmd {
+	type pick struct {
+		pid int
+	}
+	var picks []pick
+	for i, c := range m.attach.candidates {
+		if !m.attach.selected[i] {
+			continue
+		}
+		attached, _ := c["already_attached"].(bool)
+		if !attached {
+			continue
+		}
+		pidF, _ := c["pid"].(float64)
+		picks = append(picks, pick{pid: int(pidF)})
+	}
+	c := m.client
+	return func() tea.Msg {
+		// Resolve session ids by pid via list_sessions.
+		raw, err := c.Call(context.Background(), "list_sessions", map[string]any{})
+		if err != nil {
+			return attachDoneMsg{err: err}
+		}
+		var r struct {
+			Sessions []Session `json:"sessions"`
+		}
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return attachDoneMsg{err: err}
+		}
+		// Map pid → session id. Sessions don't include pid in the JSON we
+		// expose via SessionDict today (the field exists on the daemon
+		// side but isn't surfaced to clients); fall back to scanning by
+		// cwd if needed. For now: use cwd as the join key — scan
+		// candidates carry cwd, and list_sessions sessions carry cwd.
+		_ = picks
+		// Simpler join: candidate cwd → session.id where session.cwd matches.
+		byCwd := map[string]string{}
+		for _, s := range r.Sessions {
+			if s.Status != "dead" {
+				byCwd[s.Cwd] = s.ID
+			}
+		}
+		released := 0
+		var lastErr error
+		for i, cand := range m.attach.candidates {
+			if !m.attach.selected[i] {
+				continue
+			}
+			attached, _ := cand["already_attached"].(bool)
+			if !attached {
+				continue
+			}
+			cwd, _ := cand["cwd"].(string)
+			sid := byCwd[cwd]
+			if sid == "" {
+				continue
+			}
+			if _, err := c.Call(context.Background(), "release_session",
+				map[string]any{"id": sid}); err != nil {
+				lastErr = err
+				continue
+			}
+			released++
+		}
+		if released == 0 && lastErr != nil {
+			return attachDoneMsg{err: lastErr}
+		}
+		return attachDoneMsg{n: released, detached: true}
+	}
 }
 
 // scanAttachCandidates fires the daemon's scan_candidates RPC and
@@ -3708,6 +3829,17 @@ func (m Model) viewAttach() string {
 		}
 	}
 
+	if m.attach.confirmDetachN > 0 {
+		// Bright prompt — the user is about to release sessions, surface
+		// it loudly. Plural-aware copy reads naturally on N=1 too.
+		noun := "session"
+		if m.attach.confirmDetachN != 1 {
+			noun = "sessions"
+		}
+		warn := lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
+		b.WriteString("\n" + warn.Render(fmt.Sprintf(
+			"Detach %d %s? (y/n)", m.attach.confirmDetachN, noun)))
+	}
 	if m.attach.notice != "" {
 		b.WriteString("\n" + dim.Render(m.attach.notice))
 	}

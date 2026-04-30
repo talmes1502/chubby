@@ -83,7 +83,7 @@ func rawStatusBar(mode StatusMode, composeHasText bool, broadcastField int) stri
 	case StatusModeNewFolder:
 		return "Enter to create · Esc cancel"
 	case StatusModeAttach:
-		return "↑↓ navigate · Space toggle · a all · n none · Enter attach · r rescan · Esc cancel"
+		return "↑↓ navigate · Space toggle · a all · n none · Enter attach · d detach selected · r rescan · Esc cancel"
 	case StatusModeEditor:
 		return "↑↓ scroll · g top · G bottom · Ctrl+X open externally · Esc close"
 	case StatusModeHelp:
