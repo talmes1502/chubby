@@ -13,11 +13,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import collections
 import os
 import shutil
 import signal
 import struct
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,16 @@ from chub.daemon import paths
 from chub.proto.errors import ChubError
 from chub.wrapper.client import WrapperClient
 from chub.wrapper.pty import PtySession
+
+# Phrase Claude prints in its first-run "Quick safety check: Is this a
+# project you created or one you trust?" dialog. We match the unique
+# substring "trust this folder" and accept the default ("Yes") by
+# pressing Enter. We deliberately do NOT match a bare "trust" token —
+# Claude could conceivably show another trust-related dialog whose
+# default is "No", and pressing Enter on that would be wrong.
+_TRUST_PROMPT_NEEDLE = b"trust this folder"
+_TRUST_DISMISS_WINDOW_S = 5.0
+_TRUST_DISMISS_POLL_S = 0.2
 
 
 def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
@@ -76,6 +88,11 @@ async def _run() -> int:
     )
 
     seq = 0
+    # Bounded sliding window of recent PTY output, fed by the main pump.
+    # auto_dismiss_trust_prompt scans this for the trust-dialog needle.
+    # 64 chunks * 4 KiB max chunk = ~256 KiB worst case, in practice far
+    # less; we only keep the tail because the prompt appears very early.
+    recent_output: collections.deque[bytes] = collections.deque(maxlen=64)
 
     async def pump_pty_to_daemon_and_term() -> None:
         nonlocal seq
@@ -84,12 +101,37 @@ async def _run() -> int:
                 os.write(sys.stdout.fileno(), chunk)
             except OSError:
                 pass
+            recent_output.append(chunk)
             seq += 1
             try:
                 await client.push_chunk(seq=seq, data=chunk)
             except ChubError:
                 # Daemon disappeared; keep running, buffer dropped (V1).
                 pass
+
+    async def auto_dismiss_trust_prompt() -> None:
+        """Watch the PTY output for Claude's first-run "trust this folder?"
+        dialog and accept the default ("Yes") by pressing Enter.
+
+        Daemon-spawned wrappers run with stdin=DEVNULL, so without this the
+        dialog blocks forever, claude eventually exits, the wrapper sees
+        PTY EOF, and the session ends up DEAD. This bails out after
+        ``_TRUST_DISMISS_WINDOW_S`` seconds either way: if the dialog
+        didn't appear by then, the user is past the first-run gate.
+
+        Disabled when ``CHUB_NO_AUTO_TRUST=1`` is set in the environment.
+        """
+        if os.environ.get("CHUB_NO_AUTO_TRUST") == "1":
+            return
+        deadline = time.monotonic() + _TRUST_DISMISS_WINDOW_S
+        while time.monotonic() < deadline:
+            await asyncio.sleep(_TRUST_DISMISS_POLL_S)
+            if pty.closed.is_set():
+                return
+            joined = b"".join(recent_output).lower()
+            if _TRUST_PROMPT_NEEDLE in joined:
+                await pty.write_user(b"\r")
+                return
 
     async def pump_term_to_pty() -> None:
         loop = asyncio.get_running_loop()
@@ -146,6 +188,7 @@ async def _run() -> int:
             pump_pty_to_daemon_and_term(),
             pump_term_to_pty(),
             listen_for_inject(),
+            auto_dismiss_trust_prompt(),
             return_exceptions=True,
         )
     finally:
