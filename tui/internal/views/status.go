@@ -28,6 +28,7 @@ const (
 	StatusModeRename
 	StatusModeAttach
 	StatusModeNewFolder
+	StatusModeEditor
 )
 
 // dimStyle is the shared dim foreground used for both the status bar
@@ -58,7 +59,7 @@ func rawStatusBar(mode StatusMode, composeHasText bool, broadcastField int) stri
 		if composeHasText {
 			return "Enter send · Shift+Enter newline · @name redirect · Tab complete · Esc clear"
 		}
-		return "Tab cycle · /cmd or @name (Tab completes) · Ctrl+B broadcast · / grep · Ctrl+H history · Ctrl+N new · Ctrl+F new folder · Ctrl+A attach · Ctrl+P respawn · Ctrl+R rename · Ctrl+K search · Ctrl+Y copy · ? help · q quit · Ctrl+J toggle rail"
+		return "Tab cycle · /cmd or @name (Tab completes) · Ctrl+B broadcast · / grep · Ctrl+H history · Ctrl+N new · Ctrl+F new folder · Ctrl+A attach · Ctrl+P respawn · Ctrl+R rename · Ctrl+K search · Ctrl+Y copy · Ctrl+O file · ? help · q quit · Ctrl+J toggle rail"
 	case StatusModeBroadcast:
 		switch broadcastField {
 		case 0:
@@ -83,6 +84,8 @@ func rawStatusBar(mode StatusMode, composeHasText bool, broadcastField int) stri
 		return "Enter to create · Esc cancel"
 	case StatusModeAttach:
 		return "↑↓ navigate · Space toggle · a all · n none · Enter attach · r rescan · Esc cancel"
+	case StatusModeEditor:
+		return "↑↓ scroll · g top · G bottom · Ctrl+X open externally · Esc close"
 	case StatusModeHelp:
 		return "(any key dismisses)"
 	case StatusModeReconnecting:

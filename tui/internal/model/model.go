@@ -65,6 +65,12 @@ const (
 	ModeRename
 	ModeAttach
 	ModeNewFolder
+	// ModeEditor: the right-side file viewer pane is taking input —
+	// either a path-prompt textinput (Ctrl+O just pressed) or
+	// scroll/external-open commands. The "pane is visible" bit is held
+	// independently in editorState.visible: a user can leave ModeEditor
+	// (Esc back to ModeMain) while the pane stays on-screen.
+	ModeEditor
 )
 
 // renameTarget says whether ModeRename is editing a session name or a
@@ -179,6 +185,49 @@ type attachState struct {
 	notice     string // post-attach feedback like "attached 3 sessions"
 }
 
+// editorState backs the right-side file viewer pane (Phase C). The
+// pane's visibility is independent of the active Mode: it stays on
+// screen even after the user Escs back to ModeMain so the file is
+// still visible while they read the conversation. ModeEditor controls
+// where keys go (path prompt or scroll/open commands); editor.visible
+// controls whether the pane occupies its own column at render time.
+//
+// pathInput is the textinput shown when inPathPrompt is true (Ctrl+O
+// just pressed and the user hasn't submitted yet). After submit we set
+// inPathPrompt=false and the pane displays the file with scroll bound
+// to scrollOffset.
+//
+// content is the raw bytes (capped at editorMaxBytes); highlighted is
+// the chroma-rendered ANSI string. We cache the highlighted string per
+// load so re-renders on every tick don't re-tokenise.
+//
+// recentPaths is the deduped, most-recent-first set of paths detected
+// in conversation rendering — Ctrl+] opens the head entry.
+type editorState struct {
+	visible      bool
+	path         string
+	content      string
+	highlighted  string
+	lang         string
+	scrollOffset int
+	err          error
+	truncated    bool
+	pathInput    textinput.Model
+	inPathPrompt bool
+	recentPaths  []string
+}
+
+// editorMaxBytes is the per-file load cap. Anything larger is loaded
+// up to this many bytes and a "(truncated — open externally)" note is
+// shown in the title; we still render the prefix so the user gets
+// something useful for huge log files.
+const editorMaxBytes = 2 * 1024 * 1024
+
+// editorRecentPathsCap caps the recent-paths slice. The Ctrl+]
+// shortcut only ever consumes the head entry; we keep more for
+// debugging / future palette use.
+const editorRecentPathsCap = 50
+
 // historyState backs the three-column miller view: hub-runs on the
 // left, sessions in the selected run in the middle, and the log
 // preview on the right. Tab cycles columns.
@@ -217,6 +266,7 @@ type Model struct {
 	rename    renameState
 	attach    attachState
 	newFolder newFolderState
+	editor    editorState
 
 	toasts []toast
 
@@ -325,6 +375,24 @@ type historyTurnsMsg struct {
 	turns []Turn
 }
 type copiedMsg struct{ count int }
+
+// editorFileLoadedMsg lands when an asynchronous file-read completes.
+// path is the absolute path the user typed (resolved); content is the
+// raw bytes (already truncated to editorMaxBytes by the loader if
+// applicable); highlighted/lang come from views.HighlightFile;
+// truncated reports whether the file was capped. err non-nil means the
+// read failed (file not found, permission denied, etc.) — the reducer
+// surfaces it inline in the editor pane and stays in inPathPrompt=true
+// so the user can fix the path.
+type editorFileLoadedMsg struct {
+	path         string
+	content      string
+	highlighted  string
+	lang         string
+	truncated    bool
+	err          error
+	scrollOffset int // initial scroll position; non-zero when path had ":<line>"
+}
 
 // autoSpawnedMsg is emitted when the empty-startup auto-spawn succeeds.
 // The reducer surfaces a transient toast and triggers a session refresh.
@@ -550,6 +618,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					turns = turns[len(turns)-turnsCap:]
 				}
 				m.conversation[sid] = turns
+				// Auto-detect file paths in the new turn so Ctrl+] can
+				// open the most-recent mention without re-rendering.
+				m.harvestPathsFromText(text)
 			case "session_status_changed":
 				sid, _ := subP["session_id"].(string)
 				newStatus, _ := subP["status"].(string)
@@ -708,6 +779,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// JSONL is the canonical source. New live events after this will
 		// append normally.
 		m.conversation[msg.sid] = msg.turns
+		// Seed recentPaths from the loaded transcript so Ctrl+] works
+		// even before any live messages land.
+		for _, p := range extractPathsFromTurns(msg.turns) {
+			m.editor.recentPaths = pushRecentPath(m.editor.recentPaths, p)
+		}
+		return m, nil
+	case editorFileLoadedMsg:
+		if msg.err != nil {
+			m.editor.err = msg.err
+			// Stay in path-prompt so the user can edit the path and try
+			// again — the visible pane shows the error inline.
+			m.editor.visible = true
+			m.editor.inPathPrompt = true
+			m.mode = ModeEditor
+			return m, nil
+		}
+		m.editor.err = nil
+		m.editor.path = msg.path
+		m.editor.content = msg.content
+		m.editor.highlighted = msg.highlighted
+		m.editor.lang = msg.lang
+		m.editor.truncated = msg.truncated
+		m.editor.scrollOffset = msg.scrollOffset
+		m.editor.inPathPrompt = false
+		m.editor.visible = true
+		m.mode = ModeEditor
+		// Record the path in the recent-paths slice (most-recent-first,
+		// deduped) so Ctrl+] can re-open it later. We do this for every
+		// successful load so manually-typed paths are also remembered.
+		m.editor.recentPaths = pushRecentPath(m.editor.recentPaths, msg.path)
 		return m, nil
 	case copiedMsg:
 		// Reuse the toast mechanism (the awaiting_user popup) for a brief
@@ -808,6 +909,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleKeySearch(msg)
 	case ModeAttach:
 		return m.handleKeyAttach(msg)
+	case ModeEditor:
+		return m.handleKeyEditor(msg)
 	case ModeHelp:
 		// Any key dismisses the overlay.
 		m.mode = ModeMain
@@ -976,6 +1079,30 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "ctrl+y":
 		return m, m.copyConversation()
+	case "ctrl+o":
+		// Open the file viewer with a path prompt pre-filled with the
+		// focused session's cwd (with trailing slash) so the user just
+		// types a relative filename. If the focused session has no cwd,
+		// we still open the prompt — the user can paste an absolute
+		// path.
+		return m.openEditorPathPrompt()
+	case "ctrl+]":
+		// Open the most-recent path detected in the conversation. If
+		// there's nothing yet, fall back to the path prompt so the user
+		// understands why nothing happened.
+		if len(m.editor.recentPaths) == 0 {
+			return m.openEditorPathPrompt()
+		}
+		path := m.editor.recentPaths[0]
+		return m, m.loadEditorFile(path)
+	case "ctrl+e":
+		// Toggle editor pane visibility. If nothing's loaded yet,
+		// route to the path prompt so the toggle is never a no-op.
+		if m.editor.path == "" {
+			return m.openEditorPathPrompt()
+		}
+		m.editor.visible = !m.editor.visible
+		return m, nil
 	case "enter":
 		return m, m.sendComposed()
 	case "shift+enter":
@@ -2313,6 +2440,245 @@ func (m Model) doChubRemoveFromFolder() tea.Cmd {
 	}
 }
 
+// pathRE matches an absolute file path with an extension, optionally
+// followed by ":<line>". Anchored to be robust against trailing
+// punctuation in the conversation. Restricted to absolute paths so we
+// don't match arbitrary slash-containing words ("model/utils") that
+// aren't on the user's filesystem.
+var pathRE = regexp.MustCompile(`(/[\w\-./]+\.[a-zA-Z0-9]{1,8})(:\d+)?`)
+
+// pushRecentPath inserts path at the head of the recent-paths slice,
+// deduping (existing copies are removed) and capping at
+// editorRecentPathsCap. Returns the new slice.
+func pushRecentPath(slice []string, path string) []string {
+	if path == "" {
+		return slice
+	}
+	out := make([]string, 0, len(slice)+1)
+	out = append(out, path)
+	for _, p := range slice {
+		if p == path {
+			continue
+		}
+		out = append(out, p)
+		if len(out) >= editorRecentPathsCap {
+			break
+		}
+	}
+	return out
+}
+
+// harvestPathsFromText scans a single turn's text for path mentions
+// and pushes each match onto the recentPaths slice. Newer paths land
+// at the head — the most-recently-spoken file is the one Ctrl+]
+// opens.
+func (m *Model) harvestPathsFromText(text string) {
+	matches := pathRE.FindAllStringSubmatch(text, -1)
+	for _, mm := range matches {
+		path := mm[1]
+		m.editor.recentPaths = pushRecentPath(m.editor.recentPaths, path)
+	}
+}
+
+// extractPathsFromTurns walks the conversation and returns every
+// absolute path mention, in order of appearance (most-recent turn
+// first because callers want the head to be "most recent"). Strips
+// trailing ":<line>" suffixes so the slice contains plain paths
+// suitable for opening — the line number is re-extracted at open time
+// via splitPathLine.
+func extractPathsFromTurns(turns []Turn) []string {
+	var out []string
+	// Walk newest-first so the "most recent" path ends up at index 0
+	// after dedupe in pushRecentPath.
+	for i := len(turns) - 1; i >= 0; i-- {
+		matches := pathRE.FindAllStringSubmatch(turns[i].Text, -1)
+		for _, m := range matches {
+			path := m[1]
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+// splitPathLine separates a "/foo/bar.py:42" string into ("/foo/bar.py",
+// 42). When the input has no ":<line>" suffix it returns (input, 0).
+func splitPathLine(s string) (string, int) {
+	m := pathRE.FindStringSubmatch(s)
+	if m == nil {
+		return s, 0
+	}
+	if m[2] == "" {
+		return m[1], 0
+	}
+	// m[2] is ":<digits>"
+	line, err := strconv.Atoi(m[2][1:])
+	if err != nil {
+		return m[1], 0
+	}
+	return m[1], line
+}
+
+// openEditorPathPrompt enters ModeEditor with the path-input focused,
+// pre-filled with the focused session's cwd + "/". If no session is
+// focused we leave the field empty so the user pastes an absolute
+// path.
+func (m Model) openEditorPathPrompt() (tea.Model, tea.Cmd) {
+	t := textinput.New()
+	t.Prompt = "▸ "
+	t.CharLimit = 0
+	if s := m.focusedSession(); s != nil && s.Cwd != "" {
+		init := s.Cwd
+		if !strings.HasSuffix(init, "/") {
+			init += "/"
+		}
+		t.SetValue(init)
+		t.CursorEnd()
+	}
+	t.Focus()
+	m.editor.pathInput = t
+	m.editor.inPathPrompt = true
+	m.editor.visible = true
+	m.editor.err = nil
+	m.mode = ModeEditor
+	return m, nil
+}
+
+// loadEditorFile resolves path (relative paths are joined onto the
+// focused session's cwd) and reads it asynchronously, capping at
+// editorMaxBytes. The result is delivered via editorFileLoadedMsg —
+// the reducer applies it on the main goroutine so all model mutations
+// stay there. line, when non-zero, is stashed into scrollOffset so
+// the file opens at that line.
+func (m Model) loadEditorFile(path string) tea.Cmd {
+	// Strip optional :<line> suffix.
+	rawPath, line := splitPathLine(path)
+	resolved := rawPath
+	if !filepath.IsAbs(resolved) {
+		base := ""
+		if s := m.focusedSession(); s != nil {
+			base = s.Cwd
+		}
+		if base == "" {
+			home, _ := os.UserHomeDir()
+			base = home
+		}
+		resolved = filepath.Join(base, resolved)
+	}
+	resolved = views.ExpandHome(resolved)
+	scroll := 0
+	if line > 1 {
+		scroll = line - 1
+	}
+	return func() tea.Msg {
+		f, err := os.Open(resolved)
+		if err != nil {
+			return editorFileLoadedMsg{path: resolved, err: err}
+		}
+		defer f.Close()
+		// Read up to editorMaxBytes+1 so we can detect truncation
+		// without allocating the whole file when it's much larger.
+		buf := make([]byte, editorMaxBytes+1)
+		n, _ := f.Read(buf)
+		truncated := n > editorMaxBytes
+		if truncated {
+			n = editorMaxBytes
+		}
+		content := string(buf[:n])
+		highlighted, lang := views.HighlightFile(resolved, content)
+		return editorFileLoadedMsg{
+			path:         resolved,
+			content:      content,
+			highlighted:  highlighted,
+			lang:         lang,
+			truncated:    truncated,
+			scrollOffset: scroll,
+		}
+	}
+}
+
+// handleKeyEditor is the reducer for ModeEditor: path-prompt typing +
+// submit, scroll commands, external-editor open, and Esc-close.
+func (m Model) handleKeyEditor(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.editor.inPathPrompt {
+		switch msg.String() {
+		case "esc":
+			m.editor.inPathPrompt = false
+			m.mode = ModeMain
+			// Keep the pane visible only if a file was already loaded.
+			if m.editor.path == "" {
+				m.editor.visible = false
+			}
+			return m, nil
+		case "enter":
+			path := strings.TrimSpace(m.editor.pathInput.Value())
+			if path == "" {
+				return m, nil
+			}
+			return m, m.loadEditorFile(path)
+		}
+		var cmd tea.Cmd
+		m.editor.pathInput, cmd = m.editor.pathInput.Update(msg)
+		return m, cmd
+	}
+	// Viewing mode: scroll, external open, close.
+	switch msg.String() {
+	case "esc":
+		m.editor.visible = false
+		m.mode = ModeMain
+		return m, nil
+	case "up", "k":
+		if m.editor.scrollOffset > 0 {
+			m.editor.scrollOffset--
+		}
+		return m, nil
+	case "down", "j":
+		m.editor.scrollOffset++
+		return m, nil
+	case "pgup":
+		m.editor.scrollOffset -= 10
+		if m.editor.scrollOffset < 0 {
+			m.editor.scrollOffset = 0
+		}
+		return m, nil
+	case "pgdown":
+		m.editor.scrollOffset += 10
+		return m, nil
+	case "g":
+		m.editor.scrollOffset = 0
+		return m, nil
+	case "G":
+		// Jump to the bottom: count the highlighted line slice.
+		lines := strings.Count(m.editor.highlighted, "\n")
+		m.editor.scrollOffset = lines
+		return m, nil
+	case "ctrl+x":
+		// Open in external GUI editor. We bind to Ctrl+X (per the
+		// plan) because Bubble Tea's Ctrl+Shift+O reporting is
+		// inconsistent across terminals.
+		ed := views.DetectExternalEditor()
+		if ed == nil {
+			m.editor.err = fmt.Errorf(
+				"no GUI editor found — set $CHUBBY_EDITOR or install pycharm/code/cursor/subl")
+			return m, nil
+		}
+		if err := ed.OpenFile(m.editor.path, m.editor.scrollOffset+1); err != nil {
+			m.editor.err = err
+			return m, nil
+		}
+		m.toasts = append(m.toasts, toast{
+			sessionName: fmt.Sprintf("opened in %s", ed.Cmd),
+			color:       "10",
+			expiresAt:   time.Now().Add(2 * time.Second),
+		})
+		return m, nil
+	case "ctrl+o":
+		// Re-open the path prompt while the editor is up so the user
+		// can swap files without leaving the pane.
+		return m.openEditorPathPrompt()
+	}
+	return m, nil
+}
+
 // View renders the dual-pane layout plus the compose bar, or the
 // active modal pane when m.mode != ModeMain. Every mode is wrapped
 // with a one-line top header and a one-line context-aware status bar
@@ -2345,10 +2711,6 @@ func (m Model) View() string {
 		// adds the search bar based on m.mode == ModeSearch.
 	}
 	leftW := 24
-	rightW := m.width - leftW - 2
-	if rightW < 20 {
-		rightW = 20
-	}
 	composeH := 3
 	// Reserve 2 extra rows for the top header and bottom status bar.
 	h := m.height - composeH - 2 - 2
@@ -2361,6 +2723,58 @@ func (m Model) View() string {
 	if h < 5 {
 		h = 5
 	}
+
+	// Decide the column widths. Three rendering shapes (rail/editor
+	// independent on/off):
+	//   rail+editor:  rail / convo+compose / editor
+	//   editor only:  convo+compose / editor (50/50)
+	//   rail only:    rail / convo+compose
+	//   neither:      full-width convo
+	railVisible := !m.railCollapsed
+	editorVisible := m.editor.visible
+	available := m.width
+	if available < 1 {
+		available = 1
+	}
+	var convoW, editorW int
+	switch {
+	case railVisible && editorVisible:
+		// Reserve rail; split the rest 50/50.
+		rest := available - leftW - 2
+		if rest < 40 {
+			rest = 40
+		}
+		editorW = rest / 2
+		if editorW < 20 {
+			editorW = 20
+		}
+		convoW = rest - editorW
+		if convoW < 20 {
+			convoW = 20
+		}
+	case !railVisible && editorVisible:
+		// 50/50.
+		rest := available - 2
+		editorW = rest / 2
+		if editorW < 20 {
+			editorW = 20
+		}
+		convoW = rest - editorW
+		if convoW < 20 {
+			convoW = 20
+		}
+	case railVisible && !editorVisible:
+		convoW = available - leftW - 2
+		if convoW < 20 {
+			convoW = 20
+		}
+	default:
+		convoW = available - 2
+		if convoW < 20 {
+			convoW = 20
+		}
+	}
+
 	target := "(no session)"
 	color := "#888"
 	if s := m.focusedSession(); s != nil {
@@ -2368,19 +2782,11 @@ func (m Model) View() string {
 		color = s.Color
 	}
 
-	// Decide the column width the compose bar + viewport share. Matches
-	// Claude Code's design — the input bar is flush with the conversation
-	// column rather than spanning the full terminal width.
-	var convoW int
-	if m.railCollapsed {
-		convoW = m.width - 2
-		if convoW < 20 {
-			convoW = 20
-		}
-	} else {
-		convoW = rightW
-	}
-
+	// Render the conversation viewport and harvest any path mentions
+	// before applying styling — the harvest also feeds m.editor.recentPaths
+	// indirectly through View, but View can't mutate m. Tests drive the
+	// path-detection via UpdateRecentPaths() called from the message
+	// handlers instead.
 	composeBar := views.RenderCompose(m.compose, target, color, m.composeGhost(), convoW)
 	rightCol := renderViewport(m.focusedSession(), m.conversation, convoW, h, m.spinnerFrame)
 	rightStack := lipgloss.JoinVertical(lipgloss.Left, rightCol, composeBar)
@@ -2389,28 +2795,84 @@ func (m Model) View() string {
 		rightStack = lipgloss.JoinVertical(lipgloss.Left, rightStack, popup)
 	}
 
+	editorCol := ""
+	if editorVisible {
+		// Total editor pane height matches the conversation+compose
+		// stack so the columns align visually.
+		editorH := h + composeH
+		editorCol = m.renderEditorPane(editorW, editorH)
+	}
+
 	var body string
-	if m.railCollapsed {
-		body = rightStack
-	} else {
+	switch {
+	case railVisible && editorVisible:
 		rows := m.railRows()
 		focusedID := ""
 		if s := m.focusedSession(); s != nil {
 			focusedID = s.ID
 		}
-		searchHeader := ""
-		if m.mode == ModeSearch {
-			searchHeader = m.search.query.View()
-		} else if q := m.search.query.Value(); q != "" {
-			searchHeader = "/ " + q
+		searchHeader := m.searchHeaderText()
+		left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h, m.spinnerFrame)
+		body = lipgloss.JoinHorizontal(lipgloss.Top, left, rightStack, editorCol)
+	case !railVisible && editorVisible:
+		body = lipgloss.JoinHorizontal(lipgloss.Top, rightStack, editorCol)
+	case railVisible && !editorVisible:
+		rows := m.railRows()
+		focusedID := ""
+		if s := m.focusedSession(); s != nil {
+			focusedID = s.ID
 		}
-		// The left rail's height matches the viewport so the rail stays
-		// aligned with the conversation column; the compose+popup hangs
-		// off the right column only, matching Claude Code's design.
+		searchHeader := m.searchHeaderText()
 		left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h, m.spinnerFrame)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, rightStack)
+	default:
+		body = rightStack
 	}
 	return m.overlayToasts(m.wrapWithChrome(body))
+}
+
+// searchHeaderText returns the compact search-bar text rendered just
+// below the rail's "Sessions" title — either the live textinput when
+// ModeSearch is active or a "/ <query>" snippet when a filter is
+// already applied.
+func (m Model) searchHeaderText() string {
+	if m.mode == ModeSearch {
+		return m.search.query.View()
+	}
+	if q := m.search.query.Value(); q != "" {
+		return "/ " + q
+	}
+	return ""
+}
+
+// renderEditorPane composes the editor column: the path-prompt
+// textinput (when inPathPrompt) or the highlighted file body.
+func (m Model) renderEditorPane(w, h int) string {
+	if m.editor.inPathPrompt {
+		dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+		title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).
+			Render("Open file")
+		body := title + "\n\n" + m.editor.pathInput.View() + "\n\n"
+		if m.editor.err != nil {
+			body += lipgloss.NewStyle().Foreground(lipgloss.Color("9")).
+				Render("error: "+m.editor.err.Error()) + "\n\n"
+		}
+		body += dim.Render("Enter to load · Esc to cancel")
+		return lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			Width(w - 2).Height(h - 2).
+			Padding(0, 1).
+			Render(body)
+	}
+	pane := views.EditorPaneState{
+		Path:         m.editor.path,
+		Highlighted:  m.editor.highlighted,
+		Lang:         m.editor.lang,
+		ScrollOffset: m.editor.scrollOffset,
+		Err:          m.editor.err,
+		Truncated:    m.editor.truncated,
+	}
+	return views.RenderEditor(pane, w, h)
 }
 
 // wrapWithChrome prepends the minimal top header and appends the
@@ -2638,6 +3100,11 @@ func (m Model) viewHelp() string {
   Ctrl+H             history panel (past hub-runs)
   Ctrl+J             toggle rail (full-width conversation)
   Ctrl+Y             copy focused session's conversation to clipboard
+
+  Ctrl+O             open file viewer (path prompt)
+  Ctrl+]             open most-recent path mentioned in conversation
+  Ctrl+E             toggle editor pane
+  Ctrl+X (in editor) open file in external editor (PyCharm/VSCode/...)
 
   /movetofolder X    (chubby) move focused session to folder X (creates if new)
   /removefromfolder  (chubby) remove focused session from its folder
@@ -3222,6 +3689,9 @@ func renderViewport(s *Session, conversation map[string][]Turn, w, h, spinnerFra
 // with a coloured arrow, assistant responses in the default fg,
 // separated by blank lines. Pass innerWidth to fit inside a bordered
 // frame (subtract 2 for the rounded border).
+//
+// File-path mentions get a cyan-underline accent so the user can spot
+// the things Ctrl+] would jump to.
 func renderTurns(turns []Turn, sessionColor string, innerWidth int) string {
 	if innerWidth < 10 {
 		innerWidth = 10
@@ -3237,11 +3707,37 @@ func renderTurns(turns []Turn, sessionColor string, innerWidth int) string {
 		}
 		switch t.Role {
 		case "user":
-			b.WriteString(userStyle.Render("▸ " + t.Text))
+			b.WriteString(userStyle.Render("▸ " + stylePathMentions(t.Text)))
 		default:
-			b.WriteString(asstStyle.Render(t.Text))
+			b.WriteString(asstStyle.Render(stylePathMentions(t.Text)))
 		}
 		b.WriteString("\n")
 	}
+	return b.String()
+}
+
+// pathStyle highlights inline path mentions: cyan + underline so the
+// reader can spot a Ctrl+] target without it overpowering the prose.
+var pathStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.Color("14")).
+	Underline(true)
+
+// stylePathMentions wraps every regex-matched path in pathStyle. We
+// run this on the plain text before lipgloss layout so the styling
+// composes with the user/assistant outer style. Non-matching segments
+// pass through unchanged.
+func stylePathMentions(s string) string {
+	idx := pathRE.FindAllStringIndex(s, -1)
+	if len(idx) == 0 {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	for _, ix := range idx {
+		b.WriteString(s[last:ix[0]])
+		b.WriteString(pathStyle.Render(s[ix[0]:ix[1]]))
+		last = ix[1]
+	}
+	b.WriteString(s[last:])
 	return b.String()
 }
