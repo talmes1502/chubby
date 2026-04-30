@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -223,6 +224,7 @@ type historyTurnsMsg struct {
 	sid   string
 	turns []Turn
 }
+type copiedMsg struct{ count int }
 
 // New constructs a Model bound to an already-connected rpc.Client.
 func New(c *rpc.Client) Model {
@@ -462,6 +464,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// append normally.
 		m.conversation[msg.sid] = msg.turns
 		return m, nil
+	case copiedMsg:
+		// Reuse the toast mechanism (the awaiting_user popup) for a brief
+		// "copied N messages" confirmation. Bright green to distinguish
+		// from the awaiting_user toasts which use the session's color.
+		m.toasts = append(m.toasts, toast{
+			sessionName: fmt.Sprintf("copied %d messages", msg.count),
+			color:       "10",
+			expiresAt:   time.Now().Add(2 * time.Second),
+		})
+		return m, nil
 	case grepDebounceMsg:
 		if msg.token != m.grep.debounceToken {
 			return m, nil
@@ -643,6 +655,8 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.grep.cursor = 0
 			return m, nil
 		}
+	case "ctrl+y":
+		return m, m.copyConversation()
 	case "enter":
 		return m, m.sendComposed()
 	case "shift+enter":
@@ -1548,6 +1562,7 @@ func (m Model) viewHelp() string {
   Ctrl+B             broadcast modal
   Ctrl+G             grep transcripts (current run)
   Ctrl+H             history panel (past hub-runs)
+  Ctrl+Y             copy focused session's conversation to clipboard
 
   ?                  this help
   q / Ctrl+C         quit`
@@ -1665,6 +1680,47 @@ func (m Model) focusedSession() *Session {
 		return nil
 	}
 	return &m.sessions[m.focused]
+}
+
+// formatConversation renders turns as a single string for clipboard
+// export: turns separated by blank lines, user prompts prefixed with
+// "▸ " to mirror the in-TUI viewport. Pure (no I/O) so tests can
+// assert against it without touching the system clipboard.
+func formatConversation(turns []Turn) string {
+	var b strings.Builder
+	for i, t := range turns {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		if t.Role == "user" {
+			b.WriteString("▸ ")
+		}
+		b.WriteString(t.Text)
+	}
+	return b.String()
+}
+
+// copyConversation returns a tea.Cmd that copies the focused session's
+// conversation to the system clipboard. Returns nil (no-op) when there
+// is no focused session or it has no turns. On success, emits
+// copiedMsg{count} so the reducer can show a transient toast.
+func (m Model) copyConversation() tea.Cmd {
+	s := m.focusedSession()
+	if s == nil {
+		return nil
+	}
+	turns := m.conversation[s.ID]
+	if len(turns) == 0 {
+		return nil
+	}
+	payload := formatConversation(turns)
+	count := len(turns)
+	return func() tea.Msg {
+		if err := clipboard.WriteAll(payload); err != nil {
+			return errMsg{err}
+		}
+		return copiedMsg{count: count}
+	}
 }
 
 // railRows returns the visible left-rail rows for the current model
