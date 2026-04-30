@@ -21,6 +21,7 @@ from pathlib import Path
 import typer
 
 from chubby import __version__
+from chubby.daemon import paths
 
 CACHE = Path.home() / ".cache" / "chubby" / "tui"
 # Local-dev fallbacks in priority order. The "chubby" repo dir is the
@@ -46,6 +47,23 @@ def _local_dev_bin() -> Path | None:
     return None
 
 
+def _build_env() -> dict[str, str]:
+    """Inject the canonical socket path so the Go binary can't disagree
+    with the Python daemon about where the socket lives. Belt-and-suspenders:
+    also pass CHUBBY_HOME so any leftover ``CHUB_HOME`` in the environment
+    can't accidentally route the TUI to a stale legacy socket directory."""
+    env = os.environ.copy()
+    env["CHUBBY_SOCK"] = str(paths.sock_path())
+    env["CHUBBY_HOME"] = str(paths.hub_home())
+    # Drop the legacy fallback so the Go binary's chubbyEnv() doesn't
+    # latch onto a CHUB_HOME from the user's shell that points at a
+    # different (possibly stale) directory than what the Python side
+    # is actually using.
+    env.pop("CHUB_HOME", None)
+    env.pop("CHUB_SOCK", None)
+    return env
+
+
 def run(
     force_download: bool = typer.Option(
         False, "--force-download", help="redownload the binary even if cached"
@@ -53,8 +71,9 @@ def run(
 ) -> None:
     bin_path = CACHE / f"chubby-tui-{__version__}"
     local_dev = _local_dev_bin()
+    env = _build_env()
     if not force_download and not bin_path.exists() and local_dev is not None:
-        os.execv(str(local_dev), [str(local_dev), *sys.argv[2:]])
+        os.execvpe(str(local_dev), [str(local_dev), *sys.argv[2:]], env)
         return
     if force_download or not bin_path.exists():
         CACHE.mkdir(parents=True, exist_ok=True)
@@ -69,4 +88,4 @@ def run(
                 f"and place it at {bin_path}, or `brew install USER/chubby/chubby-tui`."
             ) from e
         bin_path.chmod(0o755)
-    os.execv(str(bin_path), [str(bin_path), *sys.argv[2:]])
+    os.execvpe(str(bin_path), [str(bin_path), *sys.argv[2:]], env)
