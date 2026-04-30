@@ -230,3 +230,22 @@ class GetSessionHistoryParams(_Strict):
 
 class GetSessionHistoryResult(_Strict):
     turns: list[dict[str, Any]]  # [{role, text, ts}, ...]
+
+
+# --- /refresh-claude — restart claude under the same wrapper ------------------
+
+
+class UpdateClaudePidParams(_Strict):
+    """Sent by the wrapper after a restart_claude cycle: the chub session
+    id is unchanged but the underlying claude pid moved."""
+
+    session_id: str
+    claude_pid: int
+
+
+class RefreshClaudeSessionParams(_Strict):
+    """Sent by the TUI when the user types ``/refresh-claude``: the
+    daemon forwards a ``restart_claude`` event over the wrapper's writer,
+    the wrapper SIGTERMs claude and re-launches with --resume."""
+
+    id: str

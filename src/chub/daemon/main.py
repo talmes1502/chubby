@@ -45,6 +45,7 @@ from chub.proto.schema import (
     PurgeParams,
     PushOutputParams,
     RecolorSessionParams,
+    RefreshClaudeSessionParams,
     RegisterReadonlyParams,
     RegisterReadonlyResult,
     RegisterWrappedParams,
@@ -57,7 +58,9 @@ from chub.proto.schema import (
     SetHubRunNoteParams,
     SetSessionTagsParams,
     SpawnSessionParams,
+    UpdateClaudePidParams,
 )
+from chub.proto.rpc import Event, encode_message
 
 log = logging.getLogger("chubd")
 
@@ -499,6 +502,74 @@ def _build_registry(
                 reg._buffers.pop(s.id, None)
         return {}
 
+    async def update_claude_pid(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        """Wrapper-side restart finished: refresh the daemon's view of the
+        claude pid for an existing session and re-arm watch_for_transcript.
+
+        The chub session id is stable — same wrapper, same row, same
+        connection. Only the claude pid moved. Re-watching against the
+        new pid lets us re-bind the JSONL via ``~/.claude/sessions/<pid>.json``.
+        With ``claude --resume <sid>`` the JSONL is the SAME file so the
+        binding is effectively idempotent, but we re-run the watcher so
+        the daemon's per-pid mapping is current.
+        """
+        from chub.daemon import hooks as hooks_mod
+
+        p = UpdateClaudePidParams.model_validate(params)
+        s = await reg.get(p.session_id)
+        # Mutate the in-memory pid; persistence is handled when the
+        # transcript watcher rebinds (or via update_status next time).
+        s.pid = p.claude_pid
+        # Re-run the transcript watcher to rebind. The previous
+        # claude_session_id is preserved on `s` so a quick lookup of
+        # ~/.claude/sessions/<new_pid>.json will return the same UUID
+        # (claude --resume keeps it).
+        task = asyncio.create_task(
+            hooks_mod.watch_for_transcript(reg, s, claude_pid=p.claude_pid)
+        )
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+        return {}
+
+    async def refresh_claude_session(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        """Push a ``restart_claude`` event over the wrapper's writer.
+
+        The wrapper handles the actual SIGTERM + ``claude --resume <sid>``
+        relaunch. We just bridge the TUI request to the wrapper; we don't
+        wait for the wrapper to come back (that arrives later as an
+        ``update_claude_pid`` call from the wrapper itself).
+        """
+        p = RefreshClaudeSessionParams.model_validate(params)
+        s = await reg.get(p.id)
+        if s.kind not in (SessionKind.WRAPPED, SessionKind.SPAWNED):
+            raise ChubError(
+                ErrorCode.INVALID_PAYLOAD,
+                "/refresh-claude only applies to wrapped or spawned sessions",
+            )
+        if s.claude_session_id is None:
+            raise ChubError(
+                ErrorCode.INVALID_PAYLOAD,
+                "session has no bound claude session id yet; wait a moment and retry",
+            )
+        write = reg._wrapper_writers.get(p.id)
+        if write is None:
+            raise ChubError(
+                ErrorCode.WRAPPER_UNREACHABLE, "wrapper not connected"
+            )
+        await write(
+            encode_message(
+                Event(
+                    method="restart_claude",
+                    params={"session_id": p.id},
+                )
+            )
+        )
+        return {}
+
     async def subscribe_events(
         params: dict[str, Any], ctx: CallContext
     ) -> dict[str, Any]:
@@ -538,6 +609,8 @@ def _build_registry(
     h.register("detach_session", detach_session)
     h.register("promote_session", promote_session)
     h.register("purge", purge)
+    h.register("update_claude_pid", update_claude_pid)
+    h.register("refresh_claude_session", refresh_claude_session)
     return h
 
 
