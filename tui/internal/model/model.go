@@ -2001,15 +2001,37 @@ func (m Model) View() string {
 	if h < 5 {
 		h = 5
 	}
-	var main string
+	target := "(no session)"
+	color := "#888"
+	if s := m.focusedSession(); s != nil {
+		target = "@" + s.Name
+		color = s.Color
+	}
+
+	// Decide the column width the compose bar + viewport share. Matches
+	// Claude Code's design — the input bar is flush with the conversation
+	// column rather than spanning the full terminal width.
+	var convoW int
 	if m.railCollapsed {
-		// Single full-width pane: viewport spans the entire terminal
-		// (minus the small lipgloss frame allowance JoinVertical adds).
-		fullW := m.width - 2
-		if fullW < 20 {
-			fullW = 20
+		convoW = m.width - 2
+		if convoW < 20 {
+			convoW = 20
 		}
-		main = renderViewport(m.focusedSession(), m.conversation, fullW, h, m.spinnerFrame)
+	} else {
+		convoW = rightW
+	}
+
+	composeBar := views.RenderCompose(m.compose, target, color, m.composeGhost(), convoW)
+	rightCol := renderViewport(m.focusedSession(), m.conversation, convoW, h, m.spinnerFrame)
+	rightStack := lipgloss.JoinVertical(lipgloss.Left, rightCol, composeBar)
+	if m.slashPopupVisible() {
+		popup := views.RenderSlashPopup(m.slashPopupCmds, m.slashPopupCursor, convoW)
+		rightStack = lipgloss.JoinVertical(lipgloss.Left, rightStack, popup)
+	}
+
+	var body string
+	if m.railCollapsed {
+		body = rightStack
 	} else {
 		rows := m.railRows()
 		focusedID := ""
@@ -2022,22 +2044,11 @@ func (m Model) View() string {
 		} else if q := m.search.query.Value(); q != "" {
 			searchHeader = "/ " + q
 		}
+		// The left rail's height matches the viewport so the rail stays
+		// aligned with the conversation column; the compose+popup hangs
+		// off the right column only, matching Claude Code's design.
 		left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h, m.spinnerFrame)
-		right := renderViewport(m.focusedSession(), m.conversation, rightW, h, m.spinnerFrame)
-		main = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
-	}
-
-	target := "(no session)"
-	color := "#888"
-	if s := m.focusedSession(); s != nil {
-		target = "@" + s.Name
-		color = s.Color
-	}
-	composeBar := views.RenderCompose(m.compose, target, color, m.composeGhost(), m.width)
-	body := lipgloss.JoinVertical(lipgloss.Left, main, composeBar)
-	if m.slashPopupVisible() {
-		popup := views.RenderSlashPopup(m.slashPopupCmds, m.slashPopupCursor, m.width)
-		body = lipgloss.JoinVertical(lipgloss.Left, body, popup)
+		body = lipgloss.JoinHorizontal(lipgloss.Top, left, rightStack)
 	}
 	return m.overlayToasts(m.wrapWithChrome(body))
 }
