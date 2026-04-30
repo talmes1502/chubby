@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -62,6 +63,7 @@ const (
 	ModeSearch
 	ModeHelp
 	ModeRename
+	ModeAttach
 )
 
 // renameTarget says whether ModeRename is editing a session name or a
@@ -133,6 +135,20 @@ type spawnState struct {
 	err   error
 }
 
+// attachState backs ModeAttach: a multi-select picker over the
+// daemon's scan_candidates RPC results. selected maps a candidate
+// index to whether it's currently checked. notice surfaces transient
+// post-attach feedback ("attached N sessions", or "select at least
+// one with Space"); err captures scan-time RPC failures.
+type attachState struct {
+	candidates []map[string]any // raw rows from scan_candidates RPC
+	selected   map[int]bool     // candidate index → selected
+	cursor     int
+	loading    bool
+	err        error
+	notice     string // post-attach feedback like "attached 3 sessions"
+}
+
 // historyState backs the three-column miller view: hub-runs on the
 // left, sessions in the selected run in the middle, and the log
 // preview on the right. Tab cycles columns.
@@ -169,6 +185,7 @@ type Model struct {
 	spawn   spawnState
 	search  searchState
 	rename  renameState
+	attach  attachState
 
 	toasts []toast
 
@@ -271,6 +288,26 @@ type autoSpawnedMsg struct{ name, cwd string }
 // non-name-collision RPC error). The reducer falls back to opening the
 // spawn modal so the user can pick something else.
 type autoSpawnFallbackMsg struct{ err error }
+
+// attachScannedMsg carries the result of the scan_candidates RPC kicked
+// off when ModeAttach opens (or on rescan via 'r'). err is the
+// transport-level error; candidates is the raw map slice from the
+// JSON-RPC reply (we keep the dynamic shape so extra daemon-side
+// fields surface untouched).
+type attachScannedMsg struct {
+	candidates []map[string]any
+	err        error
+}
+
+// attachDoneMsg is emitted after the user confirms a multi-select pick
+// and we've issued one attach_tmux / attach_existing_readonly per
+// selected candidate. n is the number of successful attaches; on
+// partial failure err is the first error encountered (we stop after
+// the first failure to keep the trace coherent).
+type attachDoneMsg struct {
+	n   int
+	err error
+}
 
 // New constructs a Model bound to an already-connected rpc.Client.
 func New(c *rpc.Client) Model {
@@ -605,6 +642,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.spawn.err = msg.err
 		}
 		return m, nil
+	case attachScannedMsg:
+		m.attach.loading = false
+		m.attach.err = msg.err
+		m.attach.candidates = msg.candidates
+		if m.attach.cursor >= len(m.attach.candidates) {
+			m.attach.cursor = 0
+		}
+		return m, nil
+	case attachDoneMsg:
+		if msg.err != nil {
+			m.attach.err = msg.err
+			return m, nil
+		}
+		m.attach.notice = fmt.Sprintf("attached %d sessions", msg.n)
+		m.mode = ModeMain
+		return m, m.refreshSessions()
 	case grepDebounceMsg:
 		if msg.token != m.grep.debounceToken {
 			return m, nil
@@ -655,6 +708,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleKeyRename(msg)
 	case ModeSearch:
 		return m.handleKeySearch(msg)
+	case ModeAttach:
+		return m.handleKeyAttach(msg)
 	case ModeHelp:
 		// Any key dismisses the overlay.
 		m.mode = ModeMain
@@ -755,6 +810,13 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+	case "ctrl+a":
+		m.attach = attachState{
+			selected: map[int]bool{},
+			loading:  true,
+		}
+		m.mode = ModeAttach
+		return m, m.scanAttachCandidates()
 	case "ctrl+b":
 		m.mode = ModeBroadcast
 		m.bcast = broadcastState{selected: map[string]bool{}}
@@ -1290,6 +1352,151 @@ func (m Model) doRenameGroup(sids []string, oldGroup, newGroup string) tea.Cmd {
 	}
 }
 
+// handleKeyAttach is the reducer for ModeAttach: navigate the candidate
+// list, toggle selections, and either confirm (Enter) or cancel (Esc).
+// 'a' selects every candidate that isn't already attached (so Space-on-
+// each isn't required for the common "attach everything I have running"
+// flow); 'n' clears; 'r' rescans.
+func (m Model) handleKeyAttach(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = ModeMain
+		return m, nil
+	case "up", "k":
+		if m.attach.cursor > 0 {
+			m.attach.cursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.attach.cursor < len(m.attach.candidates)-1 {
+			m.attach.cursor++
+		}
+		return m, nil
+	case " ", "x":
+		if m.attach.cursor >= 0 && m.attach.cursor < len(m.attach.candidates) {
+			m.attach.selected[m.attach.cursor] = !m.attach.selected[m.attach.cursor]
+		}
+		return m, nil
+	case "a":
+		// Select every candidate that isn't already attached. Already-
+		// attached rows would error or no-op on the daemon side; we just
+		// skip them at the source.
+		for i, c := range m.attach.candidates {
+			if attached, _ := c["already_attached"].(bool); !attached {
+				m.attach.selected[i] = true
+			}
+		}
+		return m, nil
+	case "n":
+		m.attach.selected = map[int]bool{}
+		return m, nil
+	case "r":
+		m.attach.loading = true
+		m.attach.candidates = nil
+		m.attach.selected = map[int]bool{}
+		return m, m.scanAttachCandidates()
+	case "enter":
+		if len(m.attach.selected) == 0 {
+			m.attach.notice = "select at least one with Space"
+			return m, nil
+		}
+		// Trim away selections that point past the candidates slice (a
+		// concurrent rescan could shrink it). Defensive — Enter on stale
+		// state shouldn't blow up.
+		any := false
+		for i := range m.attach.selected {
+			if m.attach.selected[i] && i >= 0 && i < len(m.attach.candidates) {
+				any = true
+				break
+			}
+		}
+		if !any {
+			m.attach.notice = "select at least one with Space"
+			return m, nil
+		}
+		return m, m.doAttachSelected()
+	}
+	return m, nil
+}
+
+// scanAttachCandidates fires the daemon's scan_candidates RPC and
+// returns the result as an attachScannedMsg. The candidates payload is
+// kept as []map[string]any so unknown fields propagate to the renderer
+// untouched.
+func (m Model) scanAttachCandidates() tea.Cmd {
+	c := m.client
+	return func() tea.Msg {
+		raw, err := c.Call(context.Background(), "scan_candidates", map[string]any{})
+		if err != nil {
+			return attachScannedMsg{err: err}
+		}
+		var r struct {
+			Candidates []map[string]any `json:"candidates"`
+		}
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return attachScannedMsg{err: err}
+		}
+		return attachScannedMsg{candidates: r.Candidates}
+	}
+}
+
+// doAttachSelected snapshots the currently-selected candidates and
+// issues one attach_tmux / attach_existing_readonly RPC per pick. Each
+// session is auto-named "<basename(cwd)>-<pid>" so the rail row gets a
+// recognisable label without prompting; the user can /rename later.
+//
+// On the first error we stop and report what we got, mirroring the rest
+// of the codebase's "fail loud, fail early" RPC pattern.
+func (m Model) doAttachSelected() tea.Cmd {
+	var picks []map[string]any
+	for i, c := range m.attach.candidates {
+		if m.attach.selected[i] && i >= 0 && i < len(m.attach.candidates) {
+			picks = append(picks, c)
+		}
+	}
+	c := m.client
+	return func() tea.Msg {
+		attached := 0
+		for _, cand := range picks {
+			classification, _ := cand["classification"].(string)
+			cwd, _ := cand["cwd"].(string)
+			pidF, _ := cand["pid"].(float64)
+			pid := int(pidF)
+			tmuxTarget, _ := cand["tmux_target"].(string)
+			// Auto-name: <basename(cwd)>-<pid>. Fallback "session" when cwd
+			// is empty or pathologically short.
+			base := filepath.Base(cwd)
+			if base == "" || base == "/" || base == "." {
+				base = "session"
+			}
+			name := fmt.Sprintf("%s-%d", base, pid)
+
+			switch classification {
+			case "tmux_full":
+				if _, err := c.Call(context.Background(), "attach_tmux", map[string]any{
+					"name":        name,
+					"cwd":         cwd,
+					"pid":         pid,
+					"tmux_target": tmuxTarget,
+					"tags":        []string{},
+				}); err != nil {
+					return attachDoneMsg{n: attached, err: err}
+				}
+			case "promote_required":
+				if _, err := c.Call(context.Background(), "attach_existing_readonly", map[string]any{
+					"pid":  pid,
+					"cwd":  cwd,
+					"name": name,
+				}); err != nil {
+					return attachDoneMsg{n: attached, err: err}
+				}
+			}
+			attached++
+		}
+		return attachDoneMsg{n: attached}
+	}
+}
+
 func (m Model) handleKeyHistory(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -1771,6 +1978,8 @@ func (m Model) View() string {
 		return m.wrapWithChrome(m.viewHelp())
 	case ModeReconnecting:
 		return m.wrapWithChrome(m.viewReconnecting())
+	case ModeAttach:
+		return m.wrapWithChrome(m.viewAttach())
 	case ModeSearch:
 		// Falls through to the main layout below; the rail renderer
 		// adds the search bar based on m.mode == ModeSearch.
@@ -2048,6 +2257,7 @@ func (m Model) viewHelp() string {
   /refresh-claude    (chubby) restart claude with --resume (picks up settings changes)
 
   Ctrl+N             new session in focused cwd
+  Ctrl+A             attach existing claude sessions (multi-select picker)
   Ctrl+K             search session list
   Ctrl+R             rename focused session OR group (rail cursor)
   Ctrl+P             respawn focused dead session
@@ -2151,6 +2361,101 @@ func (m Model) viewRename() string {
 	}
 	if hh < 1 {
 		hh = 10
+	}
+	return lipgloss.Place(wh, hh, lipgloss.Center, lipgloss.Center, box)
+}
+
+// viewAttach renders the multi-select attach picker: a list of
+// scan_candidates rows with a checkbox, the cursor highlight, and a
+// per-row classification glyph. Already-attached rows are dimmed and
+// skipped by 'a'. The bottom-of-modal notice line surfaces transient
+// feedback ("attached N sessions") or scan errors.
+func (m Model) viewAttach() string {
+	w := m.width
+	if w < 60 {
+		w = 60
+	}
+	var b strings.Builder
+	bold := lipgloss.NewStyle().Bold(true)
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	red := lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	green := lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	yellow := lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
+	cursorRow := lipgloss.NewStyle().Background(lipgloss.Color("237"))
+
+	b.WriteString(bold.Render("Attach existing Claude sessions") + "\n")
+	switch {
+	case m.attach.loading:
+		b.WriteString(dim.Render("Loading...") + "\n")
+	case m.attach.err != nil:
+		b.WriteString(red.Render("scan failed: "+m.attach.err.Error()) + "\n")
+	case len(m.attach.candidates) == 0:
+		b.WriteString(dim.Render("(no candidates)") + "\n")
+	default:
+		b.WriteString("\n")
+		for i, c := range m.attach.candidates {
+			classification, _ := c["classification"].(string)
+			cwd, _ := c["cwd"].(string)
+			pidF, _ := c["pid"].(float64)
+			pid := int(pidF)
+			tmuxTarget, _ := c["tmux_target"].(string)
+			alreadyAttached, _ := c["already_attached"].(bool)
+
+			cursorMark := "  "
+			if i == m.attach.cursor {
+				cursorMark = "▸ "
+			}
+			box := "[ ]"
+			if m.attach.selected[i] {
+				box = "[x]"
+			}
+
+			var classGlyph string
+			switch {
+			case alreadyAttached:
+				classGlyph = dim.Render("• already attached")
+			case classification == "tmux_full":
+				suffix := ""
+				if tmuxTarget != "" {
+					suffix = "  (" + tmuxTarget + ")"
+				}
+				classGlyph = green.Render("✓ tmux") + dim.Render(suffix)
+			case classification == "promote_required":
+				classGlyph = yellow.Render("⚠ readonly only")
+			default:
+				classGlyph = dim.Render("· " + classification)
+			}
+
+			label := fmt.Sprintf("claude pid %d  %s", pid, cwd)
+			if alreadyAttached {
+				label = dim.Render(label)
+			}
+			line := fmt.Sprintf("%s%s %s   %s", cursorMark, box, label, classGlyph)
+			if i == m.attach.cursor {
+				line = cursorRow.Render(line)
+			}
+			b.WriteString(line + "\n")
+		}
+	}
+
+	if m.attach.notice != "" {
+		b.WriteString("\n" + dim.Render(m.attach.notice))
+	}
+	if m.attach.err != nil && !m.attach.loading {
+		b.WriteString("\n" + red.Render("error: "+m.attach.err.Error()))
+	}
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		Padding(0, 1).
+		Width(w - 4).
+		Render(b.String())
+	wh, hh := m.width, m.height
+	if wh < 1 {
+		wh = w
+	}
+	if hh < 1 {
+		hh = 20
 	}
 	return lipgloss.Place(wh, hh, lipgloss.Center, lipgloss.Center, box)
 }
