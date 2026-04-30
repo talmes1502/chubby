@@ -81,7 +81,7 @@ func TestBuildRailRows_CollapsedSkipsSessions(t *testing.T) {
 		{ID: "1", Name: "a", Tags: []string{"g1"}},
 		{ID: "2", Name: "b", Tags: []string{"g2"}},
 	}
-	rows := BuildRailRows(sessions, sessions, map[string]bool{"g1": true})
+	rows := BuildRailRows(sessions, sessions, map[string]bool{"g1": true}, FoldersState{})
 	// Expect: [header g1, header g2, session b]
 	if len(rows) != 3 {
 		t.Fatalf("expected 3 rows, got %d: %+v", len(rows), rows)
@@ -105,7 +105,7 @@ func TestBuildRailRows_SessionIdxPointsToOriginal(t *testing.T) {
 	}
 	// Pretend "b" is filtered out.
 	visible := []Session{all[0], all[2]}
-	rows := BuildRailRows(visible, all, map[string]bool{})
+	rows := BuildRailRows(visible, all, map[string]bool{}, FoldersState{})
 	got := []int{}
 	for _, r := range rows {
 		if r.Kind == RailRowSession {

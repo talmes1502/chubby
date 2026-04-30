@@ -193,7 +193,14 @@ type Model struct {
 
 	// groupCollapsed tracks which group headers are collapsed in the
 	// left rail. Persisted to ~/.claude/hub/tui-state.json on change.
+	// Keys may be either auto-group names or user-folder names — they
+	// share the same map so the same Space-toggle code works for both.
 	groupCollapsed map[string]bool
+	// folders is the user-created folder state (Phase A). Persisted to
+	// ~/.claude/chubby/folders.json. Sessions assigned to a folder
+	// render under it; unassigned sessions fall through to the legacy
+	// auto-grouping logic.
+	folders FoldersState
 	// railCollapsed hides the left rail entirely; viewport takes full
 	// width. Toggled with Ctrl+J. Persisted in tui-state.json.
 	railCollapsed bool
@@ -320,6 +327,7 @@ func New(c *rpc.Client) Model {
 		grep:           grepState{query: views.NewGrepQuery()},
 		groupCollapsed: LoadCollapsedGroups(),
 		railCollapsed:  LoadRailCollapsed(),
+		folders:        LoadFolders(),
 		search:         searchState{query: views.NewSearchQuery()},
 		historyLoaded:  map[string]bool{},
 	}
@@ -794,13 +802,15 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case " ":
-		// Space toggles a group header collapse, but only when compose
-		// is empty (otherwise space goes to the textinput).
+		// Space toggles a group/folder header collapse, but only when
+		// compose is empty (otherwise space goes to the textinput).
+		// Folders and auto-groups share the same collapsed map; the
+		// renderer reads it the same way for both.
 		if m.compose.Value() == "" {
 			rows := m.railRows()
 			if m.railCursor >= 0 && m.railCursor < len(rows) {
 				r := rows[m.railCursor]
-				if r.Kind == RailRowHeader {
+				if r.Kind == RailRowHeader || r.Kind == RailRowFolder {
 					m.groupCollapsed[r.GroupName] = !m.groupCollapsed[r.GroupName]
 					_ = SaveTUIState(TUIState{
 						GroupsCollapsed: collapsedGroupNames(m.groupCollapsed),
@@ -2536,7 +2546,7 @@ func (m Model) copyConversation() tea.Cmd {
 // state, taking the search filter and group-collapse map into account.
 func (m Model) railRows() []RailRow {
 	visible := m.visibleSessions()
-	return BuildRailRows(visible, m.sessions, m.groupCollapsed)
+	return BuildRailRows(visible, m.sessions, m.groupCollapsed, m.folders)
 }
 
 // visibleSessions applies the search filter. With no filter active
@@ -2727,6 +2737,7 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 			Render(" "+searchHeader) + "\n")
 	}
 	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	folderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
 	for i, r := range rows {
 		switch r.Kind {
 		case RailRowHeader:
@@ -2740,6 +2751,21 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 			}
 			line := fmt.Sprintf("%s %s %s", cursorMark, arrow, r.GroupName)
 			b.WriteString(headerStyle.Render(line) + "\n")
+		case RailRowFolder:
+			// Folders use a 📁 glyph instead of the auto-group ▾/▸ so
+			// the user can tell them apart at a glance even when
+			// expanded. We still honor the collapsed state via the
+			// same shared map.
+			glyph := "📁"
+			if collapsed[r.GroupName] {
+				glyph = "📁▸"
+			}
+			cursorMark := " "
+			if i == cursor {
+				cursorMark = ">"
+			}
+			line := fmt.Sprintf("%s %s %s", cursorMark, glyph, r.GroupName)
+			b.WriteString(folderStyle.Render(line) + "\n")
 		case RailRowSession:
 			s := r.Session
 			marker := "  "
