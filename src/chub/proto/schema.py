@@ -218,3 +218,15 @@ class PromoteSessionParams(_Strict):
 class PurgeParams(_Strict):
     run_id: str | None = None
     session: str | None = None
+
+
+# --- session history (TUI viewport persistence) -------------------------------
+
+
+class GetSessionHistoryParams(_Strict):
+    session_id: str
+    limit: int = 500
+
+
+class GetSessionHistoryResult(_Strict):
+    turns: list[dict[str, Any]]  # [{role, text, ts}, ...]

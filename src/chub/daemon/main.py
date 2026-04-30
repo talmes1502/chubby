@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import re
@@ -33,6 +34,7 @@ from chub.proto.schema import (
     DetachSessionParams,
     GetHubRunParams,
     GetHubRunResult,
+    GetSessionHistoryParams,
     InjectParams,
     ListHubRunsParams,
     ListHubRunsResult,
@@ -60,6 +62,18 @@ from chub.proto.schema import (
 log = logging.getLogger("chubd")
 
 PROTOCOL_VERSION = 1
+
+
+def _parse_ts_ms(raw: Any) -> int:
+    """Parse a Claude JSONL timestamp. Returns 0 if unparseable."""
+    if not isinstance(raw, str):
+        return 0
+    try:
+        from datetime import datetime
+        # Claude uses ISO 8601 with optional Z suffix.
+        return int(datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp() * 1000)
+    except (ValueError, TypeError):
+        return 0
 
 
 def _build_registry(
@@ -225,6 +239,54 @@ def _build_registry(
             limit=p.limit,
         )
         return {"matches": rows}
+
+    async def get_session_history(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        """Read the bound JSONL transcript and return user/assistant turns
+        so the TUI can seed its viewport on startup. Returns an empty list
+        if no transcript is bound (yet) or no JSONL file is found."""
+        from chub.daemon import hooks as hooks_mod
+
+        p = GetSessionHistoryParams.model_validate(params)
+        s = await reg.get(p.session_id)
+        if s.claude_session_id is None:
+            return {"turns": []}
+        path = hooks_mod.find_jsonl_for_session(s.claude_session_id)
+        if path is None:
+            return {"turns": []}
+
+        turns: list[dict[str, Any]] = []
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    t = rec.get("type")
+                    if t not in ("user", "assistant"):
+                        continue
+                    msg = rec.get("message")
+                    text = hooks_mod._extract_turn_text(msg)
+                    if not text:
+                        continue
+                    ts_raw = rec.get("timestamp")
+                    ts_ms = _parse_ts_ms(ts_raw) if ts_raw else 0
+                    turns.append({
+                        "role": "user" if t == "user" else "assistant",
+                        "text": text,
+                        "ts": ts_ms,
+                    })
+        except OSError:
+            return {"turns": []}
+
+        if p.limit > 0 and len(turns) > p.limit:
+            turns = turns[-p.limit:]
+        return {"turns": turns}
 
     async def register_readonly(
         params: dict[str, Any], ctx: CallContext
@@ -463,6 +525,7 @@ def _build_registry(
     h.register("session_ended", session_ended)
     h.register("spawn_session", spawn_session)
     h.register("search_transcripts", search_transcripts)
+    h.register("get_session_history", get_session_history)
     h.register("register_readonly", register_readonly)
     h.register("mark_idle", mark_idle)
     h.register("list_hub_runs", list_hub_runs)
