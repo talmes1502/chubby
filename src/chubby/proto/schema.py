@@ -256,3 +256,18 @@ class RefreshClaudeSessionParams(_Strict):
     the wrapper SIGTERMs claude and re-launches with --resume."""
 
     id: str
+
+
+# --- recent cwds (Phase B: spawn modal Ctrl+P recent-dir picker) -------------
+
+
+class RecentCwdsParams(_Strict):
+    """Sent by the TUI's spawn modal Ctrl+P: returns the most recently
+    used cwds (distinct, ordered by created_at DESC) so the user can
+    cycle through their recent project dirs without retyping."""
+
+    limit: int = 20
+
+
+class RecentCwdsResult(_Strict):
+    cwds: list[str]

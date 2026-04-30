@@ -44,6 +44,8 @@ from chubby.proto.schema import (
     PromoteSessionParams,
     PurgeParams,
     PushOutputParams,
+    RecentCwdsParams,
+    RecentCwdsResult,
     RecolorSessionParams,
     RefreshClaudeSessionParams,
     RegisterReadonlyParams,
@@ -594,6 +596,19 @@ def _build_registry(
         )
         return {}
 
+    async def recent_cwds(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        """Return the most-recently-used cwds across all sessions.
+
+        Used by the TUI spawn modal's Ctrl+P picker so the user can
+        cycle through recent project dirs without retyping. Distinct,
+        ordered most-recent-first.
+        """
+        p = RecentCwdsParams.model_validate(params)
+        cwds = await db.recent_cwds(p.limit)
+        return RecentCwdsResult(cwds=cwds).model_dump()
+
     async def subscribe_events(
         params: dict[str, Any], ctx: CallContext
     ) -> dict[str, Any]:
@@ -635,6 +650,7 @@ def _build_registry(
     h.register("purge", purge)
     h.register("update_claude_pid", update_claude_pid)
     h.register("refresh_claude_session", refresh_claude_session)
+    h.register("recent_cwds", recent_cwds)
     return h
 
 

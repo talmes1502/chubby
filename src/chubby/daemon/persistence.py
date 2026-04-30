@@ -159,6 +159,30 @@ class Database:
         )
         await self.conn.commit()
 
+    async def recent_cwds(self, limit: int = 20) -> list[str]:
+        """Return the most-recently-used cwds across all sessions, distinct,
+        ordered by created_at DESC. Filters out empty/null cwds. Used by
+        the TUI spawn modal's Ctrl+P recent-dir picker.
+
+        SQLite has no straightforward DISTINCT-preserving-order in a
+        single statement (DISTINCT + ORDER BY by a non-projected column
+        breaks across versions), so we sort first via a window-style
+        subquery: pick the max created_at per cwd, then order by that.
+        """
+        if limit <= 0:
+            return []
+        cur = await self.conn.execute(
+            "SELECT cwd FROM ("
+            "  SELECT cwd, MAX(created_at) AS last_used "
+            "  FROM sessions "
+            "  WHERE cwd IS NOT NULL AND cwd != '' "
+            "  GROUP BY cwd"
+            ") ORDER BY last_used DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cur.fetchall()
+        return [r[0] for r in rows]
+
     async def search(
         self,
         query: str,
