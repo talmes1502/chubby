@@ -64,6 +64,7 @@ const (
 	ModeHelp
 	ModeRename
 	ModeAttach
+	ModeNewFolder
 )
 
 // renameTarget says whether ModeRename is editing a session name or a
@@ -73,6 +74,11 @@ type renameTarget int
 const (
 	RenameSession renameTarget = iota
 	RenameGroup
+	// RenameFolder edits a user-created folder name (Phase A). Distinct
+	// from RenameGroup because folders are not tags — the rename
+	// rewrites folders.json instead of issuing per-session
+	// set_session_tags RPCs.
+	RenameFolder
 )
 
 // renameState backs ModeRename: a single textinput plus the ids the
@@ -84,6 +90,14 @@ type renameState struct {
 	target   renameTarget
 	sessions []string
 	oldName  string
+}
+
+// newFolderState backs ModeNewFolder: a single textinput plus an err
+// slot so duplicate-name rejection can surface inline without dropping
+// the user back to the main view.
+type newFolderState struct {
+	input textinput.Model
+	err   error
 }
 
 // broadcastState is held in the Model so the reducer can mutate it
@@ -179,13 +193,14 @@ type Model struct {
 	mode    Mode
 	compose textinput.Model
 
-	bcast   broadcastState
-	grep    grepState
-	history historyState
-	spawn   spawnState
-	search  searchState
-	rename  renameState
-	attach  attachState
+	bcast     broadcastState
+	grep      grepState
+	history   historyState
+	spawn     spawnState
+	search    searchState
+	rename    renameState
+	attach    attachState
+	newFolder newFolderState
 
 	toasts []toast
 
@@ -584,11 +599,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.compose.SetValue("")
 		return m, nil
 	case chubCommandDoneMsg:
-		// Chub-side commands (/color, /rename, /tag, /refresh-claude)
-		// need a refresh so the new color/name/tags propagate to the
-		// rail immediately. Any non-empty toast is surfaced via the same
-		// transient message bubble we use for awaiting_user notifications.
+		// Chub-side commands (/color, /rename, /tag, /refresh-claude,
+		// /movetofolder, /removefromfolder) need a refresh so the new
+		// color/name/tags/folder-membership propagates to the rail
+		// immediately. Folders state lives entirely in the TUI — re-
+		// load it from disk so the rail reflects the freshly written
+		// folders.json without going through the daemon. Any
+		// non-empty toast is surfaced via the same transient message
+		// bubble we use for awaiting_user notifications.
 		m.compose.SetValue("")
+		m.folders = LoadFolders()
 		if msg.toast != "" {
 			m.toasts = append(m.toasts, toast{
 				sessionName: msg.toast,
@@ -611,7 +631,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case renameDoneMsg:
 		m.mode = ModeMain
+		// Folder renames live in folders.json — reload so the rail
+		// picks up the new key. Cheap; safe for non-folder renames
+		// (the on-disk shape is unchanged).
+		m.folders = LoadFolders()
 		return m, m.refreshSessions()
+	case renameFolderFailedMsg:
+		// Folder rename errors (collision, empty name) are recoverable
+		// — return to main and surface the message via the same toast
+		// channel awaiting_user notifications use, so the user sees
+		// what went wrong without being trapped in a fatal-error
+		// screen.
+		m.mode = ModeMain
+		m.toasts = append(m.toasts, toast{
+			sessionName: "rename failed: " + msg.err.Error(),
+			color:       "9",
+			expiresAt:   time.Now().Add(3 * time.Second),
+		})
+		return m, nil
 	case respawnDoneMsg:
 		return m, m.refreshSessions()
 	case historyTurnsMsg:
@@ -714,6 +751,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleKeySpawn(msg)
 	case ModeRename:
 		return m.handleKeyRename(msg)
+	case ModeNewFolder:
+		return m.handleKeyNewFolder(msg)
 	case ModeSearch:
 		return m.handleKeySearch(msg)
 	case ModeAttach:
@@ -841,6 +880,12 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "ctrl+r":
 		return m.enterRenameMode()
+	case "ctrl+f":
+		// New folder modal (Phase A). The plan asked for Ctrl+M but
+		// terminals emit CR for both Ctrl+M and Enter (bubbletea
+		// resolves both to "enter"), so we use Ctrl+F instead — same
+		// "f" mnemonic as "folder" and free in our keymap.
+		return m.openNewFolderModal()
 	case "ctrl+p":
 		s := m.focusedSession()
 		if s == nil || s.Status != "dead" {
@@ -1300,6 +1345,19 @@ func (m Model) enterRenameMode() (tea.Model, tea.Cmd) {
 			sessions: ids,
 			oldName:  row.GroupName,
 		}
+	case RailRowFolder:
+		// User folder rename — does not retag any sessions; just
+		// rewrites the folder key in folders.json. sessions slice is
+		// empty because no per-session RPC is required.
+		input.SetValue(row.GroupName)
+		input.CursorEnd()
+		input.Focus()
+		m.rename = renameState{
+			input:    input,
+			target:   RenameFolder,
+			sessions: nil,
+			oldName:  row.GroupName,
+		}
 	default:
 		return m, nil
 	}
@@ -1318,8 +1376,11 @@ func (m Model) handleKeyRename(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = ModeMain
 			return m, nil
 		}
-		if m.rename.target == RenameSession {
+		switch m.rename.target {
+		case RenameSession:
 			return m, m.doRenameSession(m.rename.sessions[0], newName)
+		case RenameFolder:
+			return m, m.doRenameFolder(m.rename.oldName, newName)
 		}
 		// RenameGroup: bulk retag all sessions in the group.
 		return m, m.doRenameGroup(m.rename.sessions, m.rename.oldName, newName)
@@ -1327,6 +1388,96 @@ func (m Model) handleKeyRename(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.rename.input, cmd = m.rename.input.Update(msg)
 	return m, cmd
+}
+
+// openNewFolderModal switches to ModeNewFolder with a fresh, focused
+// textinput. Pointer-flavored body via assignment to m.mode + m.newFolder
+// inside this value receiver — Update() picks up the returned tea.Model.
+func (m Model) openNewFolderModal() (tea.Model, tea.Cmd) {
+	input := textinput.New()
+	input.Prompt = "▸ "
+	input.CharLimit = 0
+	input.Focus()
+	m.newFolder = newFolderState{input: input}
+	m.mode = ModeNewFolder
+	return m, nil
+}
+
+// handleKeyNewFolder is the reducer for ModeNewFolder. Enter creates
+// the folder (rejecting duplicates inline via newFolder.err); Esc
+// cancels.
+func (m Model) handleKeyNewFolder(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = ModeMain
+		m.newFolder = newFolderState{}
+		return m, nil
+	case "enter":
+		name := strings.TrimSpace(m.newFolder.input.Value())
+		if name == "" {
+			m.newFolder.err = fmt.Errorf("name required")
+			return m, nil
+		}
+		// Reload from disk in case another concurrent TUI session
+		// added a folder; the in-memory state is the source of truth
+		// for rendering but disk is the source of truth for
+		// uniqueness.
+		st := LoadFolders()
+		if err := st.CreateFolder(name); err != nil {
+			m.newFolder.err = err
+			return m, nil
+		}
+		if err := SaveFolders(st); err != nil {
+			m.newFolder.err = err
+			return m, nil
+		}
+		m.folders = st
+		m.mode = ModeMain
+		m.newFolder = newFolderState{}
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.newFolder.input, cmd = m.newFolder.input.Update(msg)
+	// Clear the error on any subsequent edit so the user isn't stuck
+	// staring at a stale "already exists" line after backspacing.
+	if m.newFolder.err != nil {
+		m.newFolder.err = nil
+	}
+	return m, cmd
+}
+
+// viewNewFolder renders the centered new-folder modal.
+func (m Model) viewNewFolder() string {
+	w := m.width
+	if w < 50 {
+		w = 50
+	}
+	cw := w - 12
+	if cw < 30 {
+		cw = 30
+	}
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Bold(true).Render("New folder") + "\n\n")
+	b.WriteString("  name: " + m.newFolder.input.View() + "\n\n")
+	if m.newFolder.err != nil {
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("9")).
+			Render("error: "+m.newFolder.err.Error()) + "\n\n")
+	}
+	b.WriteString(dim.Render("Enter to create · Esc cancel"))
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		Width(cw).
+		Padding(0, 1).
+		Render(b.String())
+	wh, hh := m.width, m.height
+	if wh < 1 {
+		wh = w
+	}
+	if hh < 1 {
+		hh = 10
+	}
+	return lipgloss.Place(wh, hh, lipgloss.Center, lipgloss.Center, box)
 }
 
 func (m Model) doRenameSession(sid, newName string) tea.Cmd {
@@ -1357,6 +1508,27 @@ func (m Model) doRenameGroup(sids []string, oldGroup, newGroup string) tea.Cmd {
 			if err != nil {
 				return errMsg{err}
 			}
+		}
+		return renameDoneMsg{}
+	}
+}
+
+// doRenameFolder rewrites a user folder name in folders.json. Unlike
+// doRenameGroup it doesn't issue any RPCs — folders are TUI-local. On
+// success it returns renameDoneMsg so the standard rename reducer
+// path runs (mode -> Main, refresh sessions); on collision/error it
+// returns spawnFailedMsg-shape error embedded in renameState.err via
+// a renameFolderFailedMsg so the modal stays open.
+type renameFolderFailedMsg struct{ err error }
+
+func (m Model) doRenameFolder(oldName, newName string) tea.Cmd {
+	return func() tea.Msg {
+		st := LoadFolders()
+		if err := st.RenameFolder(oldName, newName); err != nil {
+			return renameFolderFailedMsg{err}
+		}
+		if err := SaveFolders(st); err != nil {
+			return renameFolderFailedMsg{err}
 		}
 		return renameDoneMsg{}
 	}
@@ -1705,6 +1877,11 @@ func (m Model) sendComposed() tea.Cmd {
 		case "/refresh-claude":
 			_ = arg // /refresh-claude takes no args; ignore any tail.
 			return m.doChubRefreshClaude()
+		case "/movetofolder":
+			return m.doChubMoveToFolder(arg)
+		case "/removefromfolder":
+			_ = arg // takes no args; ignore any tail.
+			return m.doChubRemoveFromFolder()
 		}
 	}
 	target := ""
@@ -1774,7 +1951,16 @@ func (m Model) sendComposed() tea.Cmd {
 // hypothetical "/refresh"; today there's no overlap, but the ordering
 // is the right invariant.
 func splitChubCommand(s string) (cmd, arg string, ok bool) {
-	for _, head := range []string{"/refresh-claude", "/color", "/rename", "/tag"} {
+	// Longest-first so "/removefromfolder" wins over a future
+	// "/remove*" and "/movetofolder" wins over a future "/move*".
+	for _, head := range []string{
+		"/removefromfolder",
+		"/movetofolder",
+		"/refresh-claude",
+		"/color",
+		"/rename",
+		"/tag",
+	} {
 		if s == head {
 			return head, "", true
 		}
@@ -1965,6 +2151,54 @@ func (m Model) doChubRefreshClaude() tea.Cmd {
 	}
 }
 
+// doChubMoveToFolder assigns the focused session to a folder. The
+// folder is created implicitly if it doesn't exist yet — matches the
+// "any non-empty arg works" UX of the other chub-side slash commands.
+// Empty arg is a usage error.
+//
+// Folders state lives entirely on the TUI side; no daemon RPC is fired.
+// We still emit chubCommandDoneMsg so the standard "clear compose +
+// refresh" reducer path runs and m.folders gets re-loaded from disk.
+func (m Model) doChubMoveToFolder(folder string) tea.Cmd {
+	s := m.focusedSession()
+	if s == nil {
+		return nil
+	}
+	sid := s.ID
+	folder = strings.TrimSpace(folder)
+	return func() tea.Msg {
+		if folder == "" {
+			return composeFailedMsg{fmt.Errorf("usage: /movetofolder <name>")}
+		}
+		st := LoadFolders()
+		st.Assign(folder, sid)
+		if err := SaveFolders(st); err != nil {
+			return composeFailedMsg{err}
+		}
+		return chubCommandDoneMsg{}
+	}
+}
+
+// doChubRemoveFromFolder removes the focused session from any folder
+// it's in. No-op (still chubCommandDoneMsg) when the session isn't in
+// a folder so the user gets the same "compose cleared" feedback either
+// way.
+func (m Model) doChubRemoveFromFolder() tea.Cmd {
+	s := m.focusedSession()
+	if s == nil {
+		return nil
+	}
+	sid := s.ID
+	return func() tea.Msg {
+		st := LoadFolders()
+		st.Unassign(sid)
+		if err := SaveFolders(st); err != nil {
+			return composeFailedMsg{err}
+		}
+		return chubCommandDoneMsg{}
+	}
+}
+
 // View renders the dual-pane layout plus the compose bar, or the
 // active modal pane when m.mode != ModeMain. Every mode is wrapped
 // with a one-line top header and a one-line context-aware status bar
@@ -1984,6 +2218,8 @@ func (m Model) View() string {
 		return m.wrapWithChrome(m.viewSpawn())
 	case ModeRename:
 		return m.wrapWithChrome(m.viewRename())
+	case ModeNewFolder:
+		return m.wrapWithChrome(m.viewNewFolder())
 	case ModeHelp:
 		return m.wrapWithChrome(m.viewHelp())
 	case ModeReconnecting:
@@ -2278,15 +2514,19 @@ func (m Model) viewHelp() string {
   /refresh-claude    (chubby) restart claude with --resume (picks up settings changes)
 
   Ctrl+N             new session in focused cwd
+  Ctrl+F             new folder (Phase A: explicit user folders)
   Ctrl+A             attach existing claude sessions (multi-select picker)
   Ctrl+K             search session list
-  Ctrl+R             rename focused session OR group (rail cursor)
+  Ctrl+R             rename focused session, group, OR folder (rail cursor)
   Ctrl+P             respawn focused dead session
   Ctrl+B             broadcast modal
   Ctrl+G             grep transcripts (current run)
   Ctrl+H             history panel (past hub-runs)
   Ctrl+J             toggle rail (full-width conversation)
   Ctrl+Y             copy focused session's conversation to clipboard
+
+  /movetofolder X    (chubby) move focused session to folder X (creates if new)
+  /removefromfolder  (chubby) remove focused session from its folder
 
   ?                  this help
   q / Ctrl+C         quit`
@@ -2359,8 +2599,11 @@ func (m Model) viewRename() string {
 	}
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	title := "Rename session"
-	if m.rename.target == RenameGroup {
+	switch m.rename.target {
+	case RenameGroup:
 		title = "Rename group"
+	case RenameFolder:
+		title = "Rename folder"
 	}
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Render(title) + "\n\n")

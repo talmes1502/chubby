@@ -45,6 +45,12 @@ var SlashCommands = []SlashCommand{
 	{"refresh-claude",
 		"(chubby) restart claude with --resume (settings reload, conversation kept)",
 		nil},
+	{"movetofolder",
+		"(chubby) move focused session to a folder (creates folder if new)",
+		nil},
+	{"removefromfolder",
+		"(chubby) remove focused session from its folder",
+		nil},
 }
 
 // MatchSlashCommands returns commands whose Name starts with prefix

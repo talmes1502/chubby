@@ -20,9 +20,21 @@ func TestMatchSlashCommands_PrefixCaseInsensitive(t *testing.T) {
 }
 
 func TestMatchSlashCommands_UpperCasePrefix(t *testing.T) {
+	// "MO" matches "model" and "movetofolder" (Phase A added the
+	// folder commands). Just assert "model" is in the result and
+	// the search is case-insensitive.
 	got := MatchSlashCommands("MO")
-	if len(got) != 1 || got[0].Name != "model" {
-		t.Fatalf("got %+v want one match for 'model'", got)
+	if len(got) == 0 {
+		t.Fatalf("expected at least one match")
+	}
+	found := false
+	for _, c := range got {
+		if c.Name == "model" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("got %+v want a match for 'model'", got)
 	}
 }
 
