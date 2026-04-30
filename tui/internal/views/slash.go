@@ -17,7 +17,8 @@ type SlashCommand struct {
 
 // SlashCommands is the static catalog. Kept short and Claude-Code
 // specific: these are the commands the daemon actually understands when
-// proxied through inject.
+// proxied through inject. The "(chub)" prefix marks commands intercepted
+// by the TUI itself rather than forwarded to Claude.
 var SlashCommands = []SlashCommand{
 	{"model", "Switch the Claude model for this session",
 		[]string{"opus", "sonnet", "haiku",
@@ -29,6 +30,14 @@ var SlashCommands = []SlashCommand{
 	{"login", "Re-authenticate", nil},
 	{"status", "Show session status", nil},
 	{"init", "Initialize a CLAUDE.md", nil},
+	// chub-side commands — intercepted by the TUI; never sent to Claude.
+	// The hex codes mirror src/chub/daemon/colors.py PALETTE.
+	{"color", "(chub) recolor the focused session", []string{
+		"#5fafff", "#ff8787", "#87d787", "#ffaf5f", "#d787d7",
+		"#5fd7d7", "#d7d787", "#af87ff", "#ff5faf",
+	}},
+	{"rename", "(chub) rename the focused session", nil},
+	{"tag", "(chub) modify session tags (e.g. /tag +foo -bar)", nil},
 }
 
 // MatchSlashCommands returns commands whose Name starts with prefix

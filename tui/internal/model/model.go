@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -202,6 +203,12 @@ type listMsg []Session
 type errMsg struct{ err error }
 type composeSentMsg struct{}
 type composeFailedMsg struct{ err error }
+
+// chubCommandDoneMsg is emitted by the chub-side compose-bar commands
+// (/color, /rename, /tag) after a successful RPC. The reducer clears
+// the compose value and triggers a session refresh so the new color /
+// name / tags show up immediately in the rail.
+type chubCommandDoneMsg struct{}
 type bcastDoneMsg struct{ n int }
 type grepDebounceMsg struct{ token int }
 type grepResultsMsg struct {
@@ -440,6 +447,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case composeSentMsg:
 		m.compose.SetValue("")
 		return m, nil
+	case chubCommandDoneMsg:
+		// Chub-side commands (/color, /rename, /tag) need a refresh so the
+		// new color/name/tags propagate to the rail immediately.
+		m.compose.SetValue("")
+		return m, m.refreshSessions()
 	case composeFailedMsg:
 		m.err = msg.err
 		return m, nil
@@ -1229,10 +1241,30 @@ func (m Model) sendBroadcast() tea.Cmd {
 
 // sendComposed parses an optional @name retarget prefix, resolves the
 // target session id via list_sessions, then issues the inject RPC.
+//
+// chub-side slash commands (/color, /rename, /tag) are intercepted here
+// before any inject path: they modify the chub session itself rather
+// than the underlying Claude conversation, so they must never reach
+// Claude.
 func (m Model) sendComposed() tea.Cmd {
 	text := m.compose.Value()
 	if text == "" {
 		return nil
+	}
+	trimmed := strings.TrimSpace(text)
+	// Chub-side commands intercepted before any inject path — match the
+	// command head and pass everything else as the (possibly empty) arg
+	// so the doChub* helpers can produce a usage error. Without this we
+	// would burn a list_sessions/inject round-trip on a typo.
+	if cmd, arg, ok := splitChubCommand(trimmed); ok {
+		switch cmd {
+		case "/color":
+			return m.doChubColor(arg)
+		case "/rename":
+			return m.doChubRename(arg)
+		case "/tag":
+			return m.doChubTag(arg)
+		}
 	}
 	target := ""
 	if strings.HasPrefix(text, "@") {
@@ -1278,6 +1310,101 @@ func (m Model) sendComposed() tea.Cmd {
 			return composeFailedMsg{err}
 		}
 		return composeSentMsg{}
+	}
+}
+
+// splitChubCommand recognises a chub-side slash command head ("/color",
+// "/rename", "/tag") at the start of the trimmed compose text and
+// returns (head, remainder-trimmed, true). The remainder may be empty
+// — the caller decides how to surface a usage error. Returns false for
+// anything else, leaving the regular inject path to handle it.
+func splitChubCommand(s string) (cmd, arg string, ok bool) {
+	for _, head := range []string{"/color", "/rename", "/tag"} {
+		if s == head {
+			return head, "", true
+		}
+		if strings.HasPrefix(s, head+" ") {
+			return head, strings.TrimSpace(s[len(head)+1:]), true
+		}
+	}
+	return "", "", false
+}
+
+// chubColorRE validates the /color argument: must be #RRGGBB.
+var chubColorRE = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+
+// doChubColor fires the recolor_session RPC for the focused session.
+// The arg must be a #RRGGBB hex string; anything else surfaces as an
+// error in the compose bar without contacting the daemon.
+func (m Model) doChubColor(color string) tea.Cmd {
+	s := m.focusedSession()
+	if s == nil {
+		return nil
+	}
+	sid := s.ID
+	c := m.client
+	return func() tea.Msg {
+		if !chubColorRE.MatchString(color) {
+			return composeFailedMsg{fmt.Errorf("color must be #RRGGBB, got %q", color)}
+		}
+		if _, err := c.Call(context.Background(), "recolor_session",
+			map[string]any{"id": sid, "color": color}); err != nil {
+			return composeFailedMsg{err}
+		}
+		return chubCommandDoneMsg{}
+	}
+}
+
+// doChubRename fires the rename_session RPC for the focused session.
+// Empty names are rejected up front (the daemon would reject them too,
+// but failing here means we don't burn a round-trip on a typo).
+func (m Model) doChubRename(name string) tea.Cmd {
+	s := m.focusedSession()
+	if s == nil {
+		return nil
+	}
+	sid := s.ID
+	c := m.client
+	return func() tea.Msg {
+		if name == "" {
+			return composeFailedMsg{fmt.Errorf("name required")}
+		}
+		if _, err := c.Call(context.Background(), "rename_session",
+			map[string]any{"id": sid, "name": name}); err != nil {
+			return composeFailedMsg{err}
+		}
+		return chubCommandDoneMsg{}
+	}
+}
+
+// doChubTag parses a "+foo -bar" spec and fires set_session_tags. Lone
+// "+" / "-" tokens (no name) are silently dropped; an empty add+remove
+// pair yields a usage error so the user sees what shape the command
+// expects.
+func (m Model) doChubTag(spec string) tea.Cmd {
+	s := m.focusedSession()
+	if s == nil {
+		return nil
+	}
+	sid := s.ID
+	c := m.client
+	return func() tea.Msg {
+		var add, remove []string
+		for _, tok := range strings.Fields(spec) {
+			if strings.HasPrefix(tok, "+") && len(tok) > 1 {
+				add = append(add, tok[1:])
+			} else if strings.HasPrefix(tok, "-") && len(tok) > 1 {
+				remove = append(remove, tok[1:])
+			}
+		}
+		if len(add) == 0 && len(remove) == 0 {
+			return composeFailedMsg{fmt.Errorf("usage: /tag +foo -bar")}
+		}
+		if _, err := c.Call(context.Background(), "set_session_tags",
+			map[string]any{"id": sid, "add": add, "remove": remove}); err != nil {
+			return composeFailedMsg{err}
+		}
+		return chubCommandDoneMsg{}
 	}
 }
 
@@ -1554,6 +1681,9 @@ func (m Model) viewHelp() string {
   @name <msg>        one-shot redirect: send to <name>, then snap back
   Tab (in compose)   autocomplete @name or /command
   /<name>            Claude slash command (Tab completes; e.g. /model sonnet)
+  /color #RRGGBB     (chub) recolor focused session
+  /rename <name>     (chub) rename focused session
+  /tag +foo -bar     (chub) modify tags
 
   Ctrl+N             new session in focused cwd
   Ctrl+K             search session list

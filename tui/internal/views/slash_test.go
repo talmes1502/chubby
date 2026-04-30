@@ -7,12 +7,12 @@ import (
 
 func TestMatchSlashCommands_PrefixCaseInsensitive(t *testing.T) {
 	got := MatchSlashCommands("c")
-	// "clear" and "compact" both start with c, sorted alphabetically.
+	// "clear", "color", and "compact" all start with c, sorted alphabetically.
 	names := make([]string, 0, len(got))
 	for _, c := range got {
 		names = append(names, c.Name)
 	}
-	want := []string{"clear", "compact"}
+	want := []string{"clear", "color", "compact"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("got %v want %v", names, want)
 	}
