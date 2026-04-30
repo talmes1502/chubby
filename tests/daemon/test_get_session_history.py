@@ -112,12 +112,19 @@ async def test_get_session_history_reads_jsonl_turns(
     # Timestamp parses to a positive ms value.
     assert turns[0]["ts"] > 0
 
-    # Second turn: assistant text + tool_use → "let me look\n⏺ Read".
+    # Second turn: assistant prose lives in `text`; the tool_use block
+    # is split out into the structured `tool_calls` array so the TUI can
+    # render it as a styled box rather than inline ⏺-prefixed text.
     assert turns[1]["role"] == "assistant"
     assert "let me look" in turns[1]["text"]
-    assert "⏺ Read" in turns[1]["text"]
-    # Tool args MUST NOT appear in the rendered turn.
+    # Tool name/args MUST NOT leak into the prose body.
+    assert "⏺ Read" not in turns[1]["text"]
     assert "/tmp/x.py" not in turns[1]["text"]
+    tcs = turns[1].get("tool_calls", [])
+    assert len(tcs) == 1
+    assert tcs[0]["name"] == "Read"
+    # Read's canonical key is file_path, so the summary echoes it.
+    assert tcs[0]["summary"] == "/tmp/x.py"
 
 
 async def test_get_session_history_returns_empty_when_unbound(

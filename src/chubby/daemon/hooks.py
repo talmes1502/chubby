@@ -204,38 +204,130 @@ def _stringify(content: Any) -> str:
 
 
 def _summarize_tool_use(block: dict[str, Any]) -> str:
-    """Render a tool_use block the way Claude's UI does: a single-line
-    indicator with the tool name and no arguments. Verbose argument
-    summaries belong in the FTS index, not the live transcript view."""
+    """Legacy single-line summary kept for FTS indexing of tool-call
+    turns. The live TUI no longer uses this — it consumes the
+    structured tool_calls payload from ``_extract_turn_payload``."""
     name = block.get("name", "?")
     return f"⏺ {name}"
 
 
-def _extract_turn_text(message: Any) -> str:
-    """Pull user-readable text out of a Claude transcript ``message``.
+# Tool-name → input-key list to extract a one-line "summary" describing
+# what the tool was called with. The TUI renders it as the second line
+# of the tool-call box (e.g. "Bash command\n  ls -la"). Order in the
+# tuple matters: the first key with a non-empty value wins. Tools not
+# listed fall through to a generic "name=value, …" rendering.
+_TOOL_SUMMARY_KEYS: dict[str, tuple[str, ...]] = {
+    "Bash":      ("command",),
+    "BashOutput": ("bash_id", "shell_id"),
+    "Read":      ("file_path",),
+    "Edit":      ("file_path",),
+    "Write":     ("file_path",),
+    "MultiEdit": ("file_path",),
+    "NotebookEdit": ("notebook_path",),
+    "Grep":      ("pattern",),
+    "Glob":      ("pattern",),
+    "WebFetch":  ("url",),
+    "WebSearch": ("query",),
+    "Task":      ("description",),
+}
 
-    ``message.content`` is either a plain string or a list of content
-    blocks. We render:
-      - ``text`` blocks: verbatim.
-      - ``tool_use`` blocks: ``⏺ <ToolName>`` (one line, no args).
-      - ``tool_result`` blocks: dropped entirely (Claude's own UI
-        collapses them; showing them as separate ``▸ [tool_result …]``
-        rows ends up looking like noise from the user side because
-        Claude's protocol delivers tool results as ``type=user``
-        records).
 
-    Returns the empty string if there's nothing user-readable — the
-    tailer drops empty turns so they don't render as blank rows.
+def _summarize_tool_input(name: str, tinput: Any) -> str:
+    """Pick a single human-readable line for the tool's input args.
+
+    For known tools we use the canonical key (Bash → command, Read →
+    file_path, etc.). For TodoWrite we summarise the count; everything
+    else falls through to a "key=value · key=value" render of the
+    first 2 keys so the user at least sees what was passed.
+    """
+    if not isinstance(tinput, dict):
+        return ""
+    if name == "TodoWrite":
+        todos = tinput.get("todos")
+        if isinstance(todos, list):
+            return f"{len(todos)} item{'' if len(todos) == 1 else 's'}"
+    keys = _TOOL_SUMMARY_KEYS.get(name)
+    if keys:
+        for k in keys:
+            v = tinput.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip().splitlines()[0]
+            if isinstance(v, int | float):
+                return str(v)
+    # Fallback: first 2 string-ish kv pairs, comma-joined. Truncate
+    # individual values so a giant blob doesn't blow up the box.
+    parts: list[str] = []
+    for k, v in list(tinput.items())[:2]:
+        if isinstance(v, str):
+            line = v.splitlines()[0] if v else ""
+            if len(line) > 80:
+                line = line[:77] + "…"
+            parts.append(f"{k}={line}")
+        elif isinstance(v, int | float | bool):
+            parts.append(f"{k}={v}")
+    return " · ".join(parts)
+
+
+def _summarize_tool_result(block: dict[str, Any]) -> tuple[str, bool]:
+    """Pull a short preview out of a tool_result block. Returns
+    ``(preview, is_error)`` — preview is the first ~3 non-blank lines,
+    capped at 240 chars; is_error is True for permission rejections /
+    runtime failures so the TUI can show a red ✗ instead of dim text.
+
+    The ``is_error`` field on the block is the canonical signal. As a
+    fallback we also flag well-known rejection prose (Claude emits the
+    same string each time the user denies a tool use).
+    """
+    content = block.get("content")
+    is_error = bool(block.get("is_error"))
+    if isinstance(content, list):
+        # tool_result content can itself be a list of {type:text, text:…}
+        # sub-blocks. Concatenate the text bits.
+        text = ""
+        for sub in content:
+            if isinstance(sub, dict) and sub.get("type") == "text":
+                t = sub.get("text")
+                if isinstance(t, str):
+                    text += t
+        content = text
+    if not isinstance(content, str):
+        return "", is_error
+    if not is_error and "doesn't want to proceed" in content:
+        is_error = True
+    lines = [ln for ln in content.splitlines() if ln.strip()][:3]
+    out = "\n".join(lines)
+    if len(out) > 240:
+        out = out[:237] + "…"
+    return out, is_error
+
+
+def _extract_turn_payload(
+    message: Any,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Pull both user-readable text AND structured tool calls out of a
+    Claude transcript ``message``.
+
+    Returns ``(text, tool_calls)`` where:
+      - ``text`` is the concatenation of every ``text`` block (verbatim).
+      - ``tool_calls`` is a list of ``{name, summary, result_preview}``
+        dicts, one per ``tool_use`` block. ``result_preview`` is the
+        empty string on the way out — it gets filled in by the tailer
+        when the next ``tool_result`` block arrives in a later
+        ``type=user`` record.
+
+    A turn that has neither text nor tool_use blocks returns
+    ``("", [])`` so the caller can skip it.
     """
     if not isinstance(message, dict):
-        return ""
+        return "", []
     content = message.get("content")
     if isinstance(content, str):
-        return _strip_command_xml(content) if content else ""
+        text = _strip_command_xml(content) if content else ""
+        return text, []
     if not isinstance(content, list):
-        return ""
-    parts: list[str] = []
-    has_text = False
+        return "", []
+    text_parts: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
     for block in content:
         if not isinstance(block, dict):
             continue
@@ -243,18 +335,60 @@ def _extract_turn_text(message: Any) -> str:
         if btype == "text":
             t = block.get("text")
             if isinstance(t, str) and t:
-                parts.append(t)
-                has_text = True
+                text_parts.append(t)
         elif btype == "tool_use":
-            parts.append(_summarize_tool_use(block))
-        # tool_result and unknown block types are silently dropped.
-    if not has_text:
-        # A turn with only tool_use blocks (no accompanying text) renders
-        # as just "⏺ Bash" — visual noise. Drop it; the tailer skips
-        # empty turns so they won't appear in live or history views.
-        return ""
-    joined = "\n".join(parts)
-    return _strip_command_xml(joined) if joined else ""
+            name = block.get("name", "?")
+            summary = _summarize_tool_input(name, block.get("input"))
+            tool_calls.append({
+                "id": block.get("id", ""),
+                "name": name,
+                "summary": summary,
+                "result_preview": "",
+                "result_is_error": False,
+            })
+    text = "\n".join(text_parts)
+    if text:
+        text = _strip_command_xml(text)
+    return text, tool_calls
+
+
+def _extract_turn_text(message: Any) -> str:
+    """Back-compat wrapper for callers that only want the text body
+    (FTS indexing, tests). Tool-call rendering uses
+    ``_extract_turn_payload`` instead.
+    """
+    text, _ = _extract_turn_payload(message)
+    return text
+
+
+def _extract_tool_results(message: Any) -> dict[str, dict[str, Any]]:
+    """When a ``type=user`` JSONL record carries tool_result blocks
+    (Claude's protocol uses user-records to deliver them back), pull
+    out a ``{tool_use_id: {"preview": str, "is_error": bool}}`` mapping
+    so the tailer can splice each preview into the matching prior
+    tool_use call (with its error state).
+    """
+    out: dict[str, dict[str, Any]] = {}
+    if not isinstance(message, dict):
+        return out
+    content = message.get("content")
+    if not isinstance(content, list):
+        return out
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "tool_result":
+            continue
+        tid = block.get("tool_use_id")
+        if not isinstance(tid, str):
+            continue
+        preview, is_error = _summarize_tool_result(block)
+        # Error rejections often have empty bodies — still surface them
+        # so the user sees "✗ rejected" in the box. Plain successes
+        # with empty bodies stay collapsed.
+        if preview or is_error:
+            out[tid] = {"preview": preview, "is_error": is_error}
+    return out
 
 
 def _read_new_lines(path: Path, pos: int) -> tuple[int, list[str]]:
@@ -287,6 +421,12 @@ async def _tail_jsonl(
     """
     pos = 0
     indexed = 0
+    # Track recent tool_use calls so a follow-up tool_result block (which
+    # arrives in a separate type=user record) can be spliced back as a
+    # result_preview on the matching prior call. Bounded to a few
+    # recent tool calls — Claude rarely keeps more than that in flight.
+    recent_tool_calls: list[tuple[str, dict[str, Any]]] = []  # (sid, call)
+    pending_results: dict[str, dict[str, Any]] = {}  # tool_use_id → {preview, is_error}
     while True:
         pos, lines = await asyncio.to_thread(_read_new_lines, path, pos)
         for line in lines:
@@ -301,20 +441,66 @@ async def _tail_jsonl(
                 continue
             message = rec.get("message")
             role = "user" if rtype == "user" else "assistant"
-            text = _extract_turn_text(message)
-            if not text:
-                # Skip empty turns (e.g. assistant message containing only
-                # a tool_use we already summarised to "" — shouldn't happen,
-                # but be safe).
+            # Side-channel: user records that carry tool_result blocks
+            # update the previously-broadcast tool_use entries via a
+            # dedicated event so the TUI can splice them in. Then we
+            # SKIP broadcasting them as normal user turns (they have no
+            # human-readable text — only the result body).
+            if rtype == "user":
+                results = _extract_tool_results(message)
+                if results:
+                    for tid, payload in results.items():
+                        pending_results[tid] = payload
+                        if registry.subs is not None:
+                            await registry.subs.broadcast(
+                                "tool_result",
+                                {
+                                    "session_id": session_id,
+                                    "tool_use_id": tid,
+                                    "preview": payload["preview"],
+                                    "is_error": payload["is_error"],
+                                    "ts": now_ms(),
+                                },
+                            )
+                    # Tool-result-only user records carry no prose; skip.
+                    if not isinstance(message, dict) or not isinstance(
+                        message.get("content"), str
+                    ):
+                        continue
+            text, tool_calls = _extract_turn_payload(message)
+            if not text and not tool_calls:
+                # Skip turns with neither text nor tool calls.
                 continue
+            # Splice in any results that arrived for these calls before
+            # the call itself was broadcast (rare but possible at
+            # startup when the JSONL is being replayed from offset 0).
+            for tc in tool_calls:
+                tid = tc.get("id", "")
+                if tid and tid in pending_results:
+                    payload = pending_results.pop(tid)
+                    tc["result_preview"] = payload["preview"]
+                    tc["result_is_error"] = payload["is_error"]
+                recent_tool_calls.append((session_id, tc))
+            if len(recent_tool_calls) > 32:
+                recent_tool_calls = recent_tool_calls[-32:]
             ts = now_ms()
             if registry.db is not None:
+                # Index text + a one-line tool summary so FTS can find
+                # "/tag bash ls -la" on the source command, not just on
+                # accompanying prose.
+                fts_body = text
+                if tool_calls:
+                    summary_lines = "\n".join(
+                        f"⏺ {tc['name']} {tc['summary']}".strip()
+                        for tc in tool_calls
+                    )
+                    fts_body = (text + "\n" + summary_lines) if text else summary_lines
                 await registry.db.insert_message(
                     session_id=session_id,
                     hub_run_id=registry.hub_run_id,
                     ts=ts,
                     role=role,
-                    content=text,
+                    content=fts_body,
                 )
             # Assistant turns carry a `usage` block with token counts; surface
             # it to live TUI clients as a session_usage_changed event so the
@@ -359,6 +545,7 @@ async def _tail_jsonl(
                         "session_id": session_id,
                         "role": role,
                         "text": text,
+                        "tool_calls": tool_calls,
                         "ts": ts,
                     },
                 )

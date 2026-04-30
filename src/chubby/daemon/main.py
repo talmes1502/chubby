@@ -302,14 +302,40 @@ def _build_registry(
                     if t not in ("user", "assistant"):
                         continue
                     msg = rec.get("message")
-                    text = hooks_mod._extract_turn_text(msg)
-                    if not text:
+                    if t == "user":
+                        # User records may carry only tool_result blocks
+                        # (Claude's protocol delivers them via type=user).
+                        # Splice any results onto the most recent matching
+                        # tool_call in the history we've built so far,
+                        # then skip if the record has no other prose.
+                        results = hooks_mod._extract_tool_results(msg)
+                        if results:
+                            for tid, payload in results.items():
+                                for prior in reversed(turns):
+                                    spliced = False
+                                    for tc in prior.get("tool_calls", []):
+                                        if tc.get("id") == tid:
+                                            tc["result_preview"] = payload["preview"]
+                                            tc["result_is_error"] = payload["is_error"]
+                                            spliced = True
+                                            break
+                                    if spliced:
+                                        break
+                            # If the record had ONLY tool_results (no
+                            # prose content as a string), don't add a
+                            # blank user turn.
+                            content = msg.get("content") if isinstance(msg, dict) else None
+                            if not isinstance(content, str):
+                                continue
+                    text, tool_calls = hooks_mod._extract_turn_payload(msg)
+                    if not text and not tool_calls:
                         continue
                     ts_raw = rec.get("timestamp")
                     ts_ms = _parse_ts_ms(ts_raw) if ts_raw else 0
                     turns.append({
                         "role": "user" if t == "user" else "assistant",
                         "text": text,
+                        "tool_calls": tool_calls,
                         "ts": ts_ms,
                     })
         except OSError:

@@ -49,6 +49,19 @@ func TestRenderMarkdown_RendererCacheReused(t *testing.T) {
 	}
 }
 
+// TestRenderMarkdown_FencedCodeBlock — chroma rejects bare ANSI-256
+// color codes ("141") with "unknown style element"; this caused a
+// runtime panic the first time a code block hit our custom theme.
+// Exercise the path so future palette regressions surface in tests
+// rather than at chubby-tui startup.
+func TestRenderMarkdown_FencedCodeBlock(t *testing.T) {
+	src := "Here:\n\n```python\ndef hello():\n    return 'world'\n```\n"
+	got := RenderMarkdown(src, 80)
+	if !strings.Contains(got, "hello") {
+		t.Fatalf("expected fenced code body in output, got %q", got)
+	}
+}
+
 func TestRenderMarkdown_CollapsesBlankRuns(t *testing.T) {
 	// A list followed by a paragraph used to ship 3+ consecutive newlines
 	// in glamour's default layout. The post-process should keep them at

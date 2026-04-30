@@ -11,7 +11,7 @@ import (
 // there's nothing to dedup against.
 func TestAppendTranscriptTurn_AppendsNew(t *testing.T) {
 	m := Model{conversation: map[string][]Turn{}}
-	m.appendTranscriptTurn("s1", "user", "hello", 100)
+	m.appendTranscriptTurn("s1", "user", "hello", nil, 100)
 	turns := m.conversation["s1"]
 	if len(turns) != 1 {
 		t.Fatalf("want 1 turn, got %d", len(turns))
@@ -28,7 +28,7 @@ func TestAppendTranscriptTurn_DedupesExactDuplicate(t *testing.T) {
 	m := Model{conversation: map[string][]Turn{
 		"s1": {{Role: "user", Text: "hello", Ts: 100}},
 	}}
-	m.appendTranscriptTurn("s1", "user", "hello", 200)
+	m.appendTranscriptTurn("s1", "user", "hello", nil, 200)
 	turns := m.conversation["s1"]
 	if len(turns) != 1 {
 		t.Fatalf("expected dedup to skip, got %d turns", len(turns))
@@ -45,7 +45,7 @@ func TestAppendTranscriptTurn_DifferentTextAppends(t *testing.T) {
 	m := Model{conversation: map[string][]Turn{
 		"s1": {{Role: "user", Text: "hello", Ts: 100}},
 	}}
-	m.appendTranscriptTurn("s1", "user", "world", 200)
+	m.appendTranscriptTurn("s1", "user", "world", nil, 200)
 	turns := m.conversation["s1"]
 	if len(turns) != 2 {
 		t.Fatalf("want 2 turns (different text), got %d", len(turns))
@@ -62,7 +62,7 @@ func TestAppendTranscriptTurn_DifferentRoleAppends(t *testing.T) {
 	m := Model{conversation: map[string][]Turn{
 		"s1": {{Role: "user", Text: "hello", Ts: 100}},
 	}}
-	m.appendTranscriptTurn("s1", "assistant", "hello", 200)
+	m.appendTranscriptTurn("s1", "assistant", "hello", nil, 200)
 	turns := m.conversation["s1"]
 	if len(turns) != 2 {
 		t.Fatalf("want 2 turns (different role), got %d", len(turns))
@@ -86,7 +86,7 @@ func TestAppendTranscriptTurn_DedupWindowRespected(t *testing.T) {
 			{Role: "user", Text: "t5", Ts: 6},
 		},
 	}}
-	m.appendTranscriptTurn("s1", "user", "hello", 7)
+	m.appendTranscriptTurn("s1", "user", "hello", nil, 7)
 	turns := m.conversation["s1"]
 	if len(turns) != 7 {
 		t.Fatalf("expected hello to append (outside window), got %d turns", len(turns))
@@ -105,7 +105,7 @@ func TestAppendTranscriptTurn_DedupWindowRespected(t *testing.T) {
 			{Role: "user", Text: "t5", Ts: 5},
 		},
 	}}
-	m2.appendTranscriptTurn("s1", "user", "t5", 6)
+	m2.appendTranscriptTurn("s1", "user", "t5", nil, 6)
 	if got := len(m2.conversation["s1"]); got != 5 {
 		t.Fatalf("expected dedup of t5, got %d turns", got)
 	}
@@ -120,7 +120,7 @@ func TestAppendTranscriptTurn_RespectsTurnsCap(t *testing.T) {
 		turns[i] = Turn{Role: "assistant", Text: "old-" + string(rune('a'+i%26)), Ts: int64(i)}
 	}
 	m := Model{conversation: map[string][]Turn{"s": turns}}
-	m.appendTranscriptTurn("s", "user", "newest-unique", 9999)
+	m.appendTranscriptTurn("s", "user", "newest-unique", nil, 9999)
 	got := m.conversation["s"]
 	if len(got) != turnsCap {
 		t.Fatalf("expected cap of %d, got %d", turnsCap, len(got))

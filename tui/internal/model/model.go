@@ -26,12 +26,26 @@ import (
 )
 
 // Turn is a single transcript entry — a user prompt or an assistant
-// response. Text is already stripped of tool block boilerplate by the
-// daemon: it's just the user-readable text plus compact tool summaries.
+// response. Text is the prose body only. Tool calls (Bash, Edit,
+// Read, …) live in Tools as structured records so the viewport can
+// render each one as a styled box matching Claude Code's UI.
 type Turn struct {
-	Role string
-	Text string
-	Ts   int64
+	Role  string
+	Text  string
+	Tools []ToolCall
+	Ts    int64
+}
+
+// ToolCall describes a single tool invocation made by the model
+// during an assistant turn. ID matches Claude's tool_use_id so the
+// tailer can splice in ResultPreview when the matching tool_result
+// arrives in a follow-up record.
+type ToolCall struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Summary       string `json:"summary"`
+	ResultPreview string `json:"result_preview"`
+	ResultIsError bool   `json:"result_is_error"`
 }
 
 // turnsCap is the per-session retention cap. Beyond this we trim the
@@ -624,9 +638,10 @@ func (m Model) loadHistory(sid string) tea.Cmd {
 		}
 		var r struct {
 			Turns []struct {
-				Role string `json:"role"`
-				Text string `json:"text"`
-				Ts   int64  `json:"ts"`
+				Role      string     `json:"role"`
+				Text      string     `json:"text"`
+				ToolCalls []ToolCall `json:"tool_calls"`
+				Ts        int64      `json:"ts"`
 			} `json:"turns"`
 		}
 		if err := json.Unmarshal(raw, &r); err != nil {
@@ -634,7 +649,12 @@ func (m Model) loadHistory(sid string) tea.Cmd {
 		}
 		turns := make([]Turn, 0, len(r.Turns))
 		for _, t := range r.Turns {
-			turns = append(turns, Turn{Role: t.Role, Text: t.Text, Ts: t.Ts})
+			turns = append(turns, Turn{
+				Role:  t.Role,
+				Text:  t.Text,
+				Tools: t.ToolCalls,
+				Ts:    t.Ts,
+			})
 		}
 		return historyTurnsMsg{sid: sid, turns: turns}
 	}
@@ -767,6 +787,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				role, _ := subP["role"].(string)
 				text, _ := subP["text"].(string)
 				ts, _ := subP["ts"].(float64)
+				// Tool calls arrive as a list of dicts on the wire;
+				// decode each one defensively (any field can be missing).
+				var tools []ToolCall
+				if rawList, ok := subP["tool_calls"].([]any); ok {
+					for _, ent := range rawList {
+						entry, ok := ent.(map[string]any)
+						if !ok {
+							continue
+						}
+						name, _ := entry["name"].(string)
+						summary, _ := entry["summary"].(string)
+						id, _ := entry["id"].(string)
+						preview, _ := entry["result_preview"].(string)
+						isErr, _ := entry["result_is_error"].(bool)
+						if name == "" {
+							continue
+						}
+						tools = append(tools, ToolCall{
+							ID: id, Name: name, Summary: summary,
+							ResultPreview: preview, ResultIsError: isErr,
+						})
+					}
+				}
 				// Snapshot length before append so we can tell whether
 				// the dedup actually skipped the turn — only "real"
 				// (non-deduped) appends should bump newSinceScroll, or
@@ -778,7 +821,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// canonically seeded the conversation via
 				// get_session_history; without dedup the user sees each
 				// recent turn twice.
-				m.appendTranscriptTurn(sid, role, text, int64(ts))
+				m.appendTranscriptTurn(sid, role, text, tools, int64(ts))
 				appended := len(m.conversation[sid]) > prevLen
 				// Track the thinking→generating transition so the banner
 				// can show "Generating…" and "thought for Ns" the way
@@ -814,6 +857,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Auto-detect file paths in the new turn so Ctrl+] can
 				// open the most-recent mention without re-rendering.
 				m.harvestPathsFromText(text)
+			case "tool_result":
+				sid, _ := subP["session_id"].(string)
+				tuid, _ := subP["tool_use_id"].(string)
+				preview, _ := subP["preview"].(string)
+				isErr, _ := subP["is_error"].(bool)
+				m.applyToolResult(sid, tuid, preview, isErr)
 			case "session_usage_changed":
 				sid, _ := subP["session_id"].(string)
 				inF, _ := subP["input_tokens"].(float64)
@@ -4150,23 +4199,70 @@ const transcriptDedupWindow = 5
 // sees duplicates. The historyTurnsMsg REPLACE path is the canonical
 // seed and is intentionally NOT deduped — only live events run through
 // here.
-func (m *Model) appendTranscriptTurn(sid, role, text string, ts int64) {
+func (m *Model) appendTranscriptTurn(sid, role, text string, tools []ToolCall, ts int64) {
 	turns := m.conversation[sid]
 	n := len(turns)
 	start := n - transcriptDedupWindow
 	if start < 0 {
 		start = 0
 	}
+	// Dedup signature includes tool-call IDs because two assistant
+	// turns can share identical text but different tool calls (rare
+	// but possible: Claude can repeat "let me check" across rounds).
+	sig := turnSignature(role, text, tools)
 	for i := start; i < n; i++ {
-		if turns[i].Role == role && turns[i].Text == text {
+		if turnSignature(turns[i].Role, turns[i].Text, turns[i].Tools) == sig {
 			return
 		}
 	}
-	turns = append(turns, Turn{Role: role, Text: text, Ts: ts})
+	turns = append(turns, Turn{Role: role, Text: text, Tools: tools, Ts: ts})
 	if len(turns) > turnsCap {
 		turns = turns[len(turns)-turnsCap:]
 	}
 	m.conversation[sid] = turns
+}
+
+// turnSignature builds a dedup key combining role, text, and tool-use
+// IDs. Two turns with the same text but different tool_use IDs are
+// distinct events and shouldn't collide.
+func turnSignature(role, text string, tools []ToolCall) string {
+	if len(tools) == 0 {
+		return role + "|" + text
+	}
+	var b strings.Builder
+	b.WriteString(role)
+	b.WriteString("|")
+	b.WriteString(text)
+	for _, t := range tools {
+		b.WriteString("|")
+		b.WriteString(t.ID)
+	}
+	return b.String()
+}
+
+// applyToolResult finds the most recent ToolCall with the given id
+// across all sessions' conversations and fills in its ResultPreview /
+// ResultIsError. Used when a tool_result event arrives — Claude
+// delivers it via a follow-up record, so we splice it into the prior
+// assistant turn.
+//
+// An empty preview with isError=true is still applied (rejections often
+// have empty bodies — "✗ rejected" is the signal we want to surface).
+func (m *Model) applyToolResult(sid, toolUseID, preview string, isError bool) {
+	if toolUseID == "" || (preview == "" && !isError) {
+		return
+	}
+	turns := m.conversation[sid]
+	for i := len(turns) - 1; i >= 0; i-- {
+		for j := range turns[i].Tools {
+			if turns[i].Tools[j].ID == toolUseID {
+				turns[i].Tools[j].ResultPreview = preview
+				turns[i].Tools[j].ResultIsError = isError
+				m.conversation[sid] = turns
+				return
+			}
+		}
+	}
 }
 
 // formatConversation renders turns as a single string for clipboard
@@ -4782,7 +4878,19 @@ func renderTurns(turns []Turn, sessionColor string, innerWidth int) string {
 			// Claude's responses are markdown. Rendering them via glamour
 			// turns **bold**, [links](url), bullet lists, and fenced code
 			// into terminal-styled output that matches Claude's own UI.
-			b.WriteString(views.RenderMarkdown(t.Text, innerWidth))
+			if t.Text != "" {
+				b.WriteString(views.RenderMarkdown(t.Text, innerWidth))
+			}
+			// Tool calls render as rounded cyan boxes underneath the
+			// prose so the eye reads "Claude said X, then ran Y".
+			for j, tc := range t.Tools {
+				if t.Text != "" || j > 0 {
+					b.WriteString("\n")
+				}
+				b.WriteString(views.RenderToolCall(
+					tc.Name, tc.Summary, tc.ResultPreview,
+					tc.ResultIsError, innerWidth))
+			}
 		}
 		b.WriteString("\n")
 	}

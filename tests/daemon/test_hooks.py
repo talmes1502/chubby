@@ -102,43 +102,59 @@ def test_extract_turn_text_text_blocks() -> None:
     assert _extract_turn_text(msg) == "first part\nsecond part"
 
 
-def test_extract_turn_text_renders_tool_blocks_claude_style() -> None:
-    """tool_use blocks become compact one-liners; tool_result blocks
-    are dropped entirely (Claude's own UI collapses them)."""
+def test_extract_turn_text_strips_tool_blocks_from_prose() -> None:
+    """Tool-use blocks no longer leak into the rendered prose body —
+    they're carried separately by _extract_turn_payload so the TUI can
+    style them as boxed widgets. _extract_turn_text only returns the
+    prose, and tool_result blocks are still dropped completely.
+    """
+    from chubby.daemon.hooks import _extract_turn_payload
+
     msg = {
         "role": "assistant",
         "content": [
             {"type": "text", "text": "let me check"},
             {
                 "type": "tool_use",
+                "id": "tu1",
                 "name": "Read",
                 "input": {"file_path": "/tmp/x.py"},
             },
-            {
-                "type": "tool_result",
-                "content": "abcdef",
-            },
+            {"type": "tool_result", "content": "abcdef"},
         ],
     }
-    out = _extract_turn_text(msg)
-    assert "let me check" in out
-    assert "⏺ Read" in out
-    # Tool args MUST NOT appear (Claude's UI shows just the tool name).
-    assert "/tmp/x.py" not in out
-    # Tool results MUST NOT appear at all.
-    assert "tool_result" not in out
-    assert "6 chars" not in out
+    text, tool_calls = _extract_turn_payload(msg)
+    assert "let me check" in text
+    assert "⏺ Read" not in text
+    assert "/tmp/x.py" not in text
+    assert "tool_result" not in text
+
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["name"] == "Read"
+    assert tool_calls[0]["summary"] == "/tmp/x.py"
+    assert tool_calls[0]["id"] == "tu1"
 
 
-def test_extract_turn_text_drops_pure_tool_use_turns() -> None:
-    """An assistant record with only tool_use blocks (no accompanying
-    text) would render as just '⏺ Bash' — visual noise. Drop it so the
-    tailer skips the turn entirely."""
+def test_extract_turn_payload_keeps_pure_tool_use_turns() -> None:
+    """An assistant record with only tool_use blocks now produces
+    ("", [<call>]) — the tailer keeps such turns because the TUI
+    renders the tool boxes themselves. The legacy _extract_turn_text
+    still returns "" so FTS doesn't index a body for them."""
+    from chubby.daemon.hooks import _extract_turn_payload
+
     msg = {
         "role": "assistant",
-        "content": [{"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}],
+        "content": [{
+            "type": "tool_use", "id": "tu2",
+            "name": "Bash", "input": {"command": "ls -la"},
+        }],
     }
     assert _extract_turn_text(msg) == ""
+    text, tool_calls = _extract_turn_payload(msg)
+    assert text == ""
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["name"] == "Bash"
+    assert tool_calls[0]["summary"] == "ls -la"
 
 
 def test_extract_turn_text_returns_empty_when_only_tool_results() -> None:
