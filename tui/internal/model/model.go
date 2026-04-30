@@ -104,6 +104,14 @@ type Model struct {
 	toasts []toast
 
 	reconnectAttempts int
+
+	// groupCollapsed tracks which group headers are collapsed in the
+	// left rail. Persisted to ~/.claude/hub/tui-state.json on change.
+	groupCollapsed map[string]bool
+	// railCursor indexes the currently-highlighted row in the visible
+	// rail (may be a group header or a session). Up/Down walks this;
+	// Tab/Shift+Tab walks m.focused (session-only).
+	railCursor int
 }
 
 type tickMsg struct{}
@@ -130,12 +138,13 @@ type reconnectedMsg struct{}
 // New constructs a Model bound to an already-connected rpc.Client.
 func New(c *rpc.Client) Model {
 	return Model{
-		client:  c,
-		output:  map[string]string{},
-		mode:    ModeMain,
-		compose: views.NewCompose(),
-		bcast:   broadcastState{selected: map[string]bool{}},
-		grep:    grepState{query: views.NewGrepQuery()},
+		client:         c,
+		output:         map[string]string{},
+		mode:           ModeMain,
+		compose:        views.NewCompose(),
+		bcast:          broadcastState{selected: map[string]bool{}},
+		grep:           grepState{query: views.NewGrepQuery()},
+		groupCollapsed: LoadCollapsedGroups(),
 	}
 }
 
@@ -198,6 +207,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.focused >= len(m.sessions) {
 			m.focused = 0
 		}
+		m.syncRailCursorToFocus()
 		return m, m.listenEvents()
 	case evMsg:
 		ev := rpc.Event(msg)
@@ -332,15 +342,37 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "tab":
-		if len(m.sessions) > 0 {
-			m.focused = (m.focused + 1) % len(m.sessions)
-		}
+		m.cycleFocusedSession(+1)
 		return m, nil
 	case "shift+tab":
-		if len(m.sessions) > 0 {
-			m.focused = (m.focused - 1 + len(m.sessions)) % len(m.sessions)
-		}
+		m.cycleFocusedSession(-1)
 		return m, nil
+	case "up", "k":
+		// Compose forwarding fallthrough is below; only intercept these
+		// when the compose bar is empty so the user can still type 'k'.
+		if m.compose.Value() == "" {
+			m.moveRailCursor(-1)
+			return m, nil
+		}
+	case "down", "j":
+		if m.compose.Value() == "" {
+			m.moveRailCursor(+1)
+			return m, nil
+		}
+	case " ":
+		// Space toggles a group header collapse, but only when compose
+		// is empty (otherwise space goes to the textinput).
+		if m.compose.Value() == "" {
+			rows := m.railRows()
+			if m.railCursor >= 0 && m.railCursor < len(rows) {
+				r := rows[m.railCursor]
+				if r.Kind == RailRowHeader {
+					m.groupCollapsed[r.GroupName] = !m.groupCollapsed[r.GroupName]
+					_ = SaveCollapsedGroups(m.groupCollapsed)
+					return m, nil
+				}
+			}
+		}
 	case "ctrl+b":
 		m.mode = ModeBroadcast
 		m.bcast = broadcastState{selected: map[string]bool{}}
@@ -716,7 +748,12 @@ func (m Model) View() string {
 	if h < 5 {
 		h = 5
 	}
-	left := renderList(m.sessions, m.focused, leftW, h)
+	rows := m.railRows()
+	focusedID := ""
+	if s := m.focusedSession(); s != nil {
+		focusedID = s.ID
+	}
+	left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, leftW, h)
 	right := renderViewport(m.focusedSession(), m.output, rightW, h)
 	main := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
@@ -916,6 +953,94 @@ func (m Model) focusedSession() *Session {
 	return &m.sessions[m.focused]
 }
 
+// railRows returns the visible left-rail rows for the current model
+// state, taking the search filter and group-collapse map into account.
+func (m Model) railRows() []RailRow {
+	visible := m.visibleSessions()
+	return BuildRailRows(visible, m.sessions, m.groupCollapsed)
+}
+
+// visibleSessions applies the search filter (Feature C). With no
+// filter active this is m.sessions verbatim.
+func (m Model) visibleSessions() []Session {
+	return m.sessions
+}
+
+// railSessionRows is the subset of rail rows that are sessions, in rail
+// order — used by Tab/Shift+Tab to cycle session-only.
+func (m Model) railSessionRows() []RailRow {
+	rows := m.railRows()
+	out := make([]RailRow, 0, len(rows))
+	for _, r := range rows {
+		if r.Kind == RailRowSession {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// syncRailCursorToFocus moves m.railCursor onto the row that
+// represents m.focused, if visible. If not visible (e.g. inside a
+// collapsed group), the cursor is left alone.
+func (m *Model) syncRailCursorToFocus() {
+	rows := m.railRows()
+	for i, r := range rows {
+		if r.Kind == RailRowSession && r.SessionIdx == m.focused {
+			m.railCursor = i
+			return
+		}
+	}
+}
+
+// focusRailRow updates m.focused if the rail cursor is on a session.
+// Headers leave m.focused alone.
+func (m *Model) focusRailRow() {
+	rows := m.railRows()
+	if m.railCursor < 0 || m.railCursor >= len(rows) {
+		return
+	}
+	r := rows[m.railCursor]
+	if r.Kind == RailRowSession {
+		m.focused = r.SessionIdx
+	}
+}
+
+// cycleFocusedSession advances focus by `dir` (+1 or -1) over the
+// session-only rows in rail order, skipping group headers and
+// collapsed groups. Updates the rail cursor too.
+func (m *Model) cycleFocusedSession(dir int) {
+	sessRows := m.railSessionRows()
+	if len(sessRows) == 0 {
+		return
+	}
+	// Find current focus position in sessRows.
+	cur := -1
+	for i, r := range sessRows {
+		if r.SessionIdx == m.focused {
+			cur = i
+			break
+		}
+	}
+	next := 0
+	if cur >= 0 {
+		next = (cur + dir + len(sessRows)) % len(sessRows)
+	}
+	m.focused = sessRows[next].SessionIdx
+	m.syncRailCursorToFocus()
+}
+
+// moveRailCursor walks all rail rows by `dir` (+1 or -1). When the
+// cursor lands on a session, m.focused is updated; landing on a header
+// leaves the focused session alone.
+func (m *Model) moveRailCursor(dir int) {
+	rows := m.railRows()
+	if len(rows) == 0 {
+		return
+	}
+	m.railCursor = (m.railCursor + dir + len(rows)) % len(rows)
+	m.focusRailRow()
+}
+
 var statusGlyph = map[string]string{
 	"idle":          "○",
 	"thinking":      "●",
@@ -923,23 +1048,45 @@ var statusGlyph = map[string]string{
 	"dead":          "✕",
 }
 
-func renderList(ss []Session, focused, w, h int) string {
+// renderList draws the grouped left rail. rows is the flattened
+// header+session list from BuildRailRows; cursor is the highlighted
+// row; focusedID is the currently-focused session's ID (gets the ▣
+// marker even if it's not the cursor row).
+func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[string]bool, w, h int) string {
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Render(" Sessions") + "\n")
-	for i, s := range ss {
-		marker := "  "
-		if i == focused {
-			marker = "▣ "
+	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	for i, r := range rows {
+		switch r.Kind {
+		case RailRowHeader:
+			arrow := "▾"
+			if collapsed[r.GroupName] {
+				arrow = "▸"
+			}
+			cursorMark := " "
+			if i == cursor {
+				cursorMark = ">"
+			}
+			line := fmt.Sprintf("%s %s %s", cursorMark, arrow, r.GroupName)
+			b.WriteString(headerStyle.Render(line) + "\n")
+		case RailRowSession:
+			s := r.Session
+			marker := "  "
+			if s.ID == focusedID {
+				marker = "▣ "
+			} else if i == cursor {
+				marker = "▸ "
+			}
+			col := lipgloss.Color(s.Color)
+			glyph := statusGlyph[s.Status]
+			if glyph == "" {
+				glyph = "·"
+			}
+			line := fmt.Sprintf("  %s%s %s", marker,
+				lipgloss.NewStyle().Foreground(col).Render(s.Name),
+				glyph)
+			b.WriteString(lipgloss.NewStyle().Width(w).Render(line) + "\n")
 		}
-		col := lipgloss.Color(s.Color)
-		glyph := statusGlyph[s.Status]
-		if glyph == "" {
-			glyph = "·"
-		}
-		line := fmt.Sprintf("%s%s %s", marker,
-			lipgloss.NewStyle().Foreground(col).Render(s.Name),
-			glyph)
-		b.WriteString(lipgloss.NewStyle().Width(w).Render(line) + "\n")
 	}
 	return lipgloss.NewStyle().Width(w).Height(h).Border(lipgloss.RoundedBorder()).Render(b.String())
 }
