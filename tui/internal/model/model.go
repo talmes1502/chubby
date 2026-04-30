@@ -1,5 +1,7 @@
 // Package model is the Bubble Tea Model for chub-tui: the top-level
-// session-list rail, focused-viewport pane, and event/refresh wiring.
+// session-list rail, focused-viewport pane, compose bar, and event/refresh
+// wiring. Modal panes (broadcast, grep, history) are layered on top and
+// share Mode dispatch.
 package model
 
 import (
@@ -10,10 +12,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/USER/chub/tui/internal/rpc"
+	"github.com/USER/chub/tui/internal/views"
 )
 
 // Session mirrors the SessionDict schema returned by chubd's list_sessions.
@@ -30,6 +34,14 @@ type Session struct {
 // outputCap is the rolling per-session live buffer size in bytes.
 const outputCap = 64 * 1024
 
+// Mode controls which modal pane is on top of the main two-pane layout.
+// Subsequent phases add ModeBroadcast, ModeGrep, ModeHistory, ModeReconnecting.
+type Mode int
+
+const (
+	ModeMain Mode = iota
+)
+
 // Model is the Bubble Tea state.
 type Model struct {
 	client   *rpc.Client
@@ -39,16 +51,26 @@ type Model struct {
 	width    int
 	height   int
 	err      error
+
+	mode    Mode
+	compose textinput.Model
 }
 
 type tickMsg struct{}
 type evMsg rpc.Event
 type listMsg []Session
 type errMsg struct{ err error }
+type composeSentMsg struct{}
+type composeFailedMsg struct{ err error }
 
 // New constructs a Model bound to an already-connected rpc.Client.
 func New(c *rpc.Client) Model {
-	return Model{client: c, output: map[string]string{}}
+	return Model{
+		client:  c,
+		output:  map[string]string{},
+		mode:    ModeMain,
+		compose: views.NewCompose(),
+	}
 }
 
 // Init kicks off initial session refresh, event listening, and tick loop.
@@ -91,21 +113,9 @@ func tickEvery() tea.Cmd {
 // Update is the Bubble Tea reducer.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
-			return m, tea.Quit
-		case "tab":
-			if len(m.sessions) > 0 {
-				m.focused = (m.focused + 1) % len(m.sessions)
-			}
-		case "shift+tab":
-			if len(m.sessions) > 0 {
-				m.focused = (m.focused - 1 + len(m.sessions)) % len(m.sessions)
-			}
-		}
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		return m, nil
 	case listMsg:
 		m.sessions = []Session(msg)
 		if m.focused >= len(m.sessions) {
@@ -139,27 +149,128 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.refreshSessions(), tickEvery())
 	case errMsg:
 		m.err = msg.err
+		return m, nil
+	case composeSentMsg:
+		m.compose.SetValue("")
+		return m, nil
+	case composeFailedMsg:
+		m.err = msg.err
+		return m, nil
+	case tea.KeyMsg:
+		return m.handleKey(msg)
 	}
 	return m, nil
 }
 
-// View renders the dual-pane layout.
+func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
+		return m, tea.Quit
+	}
+	switch msg.String() {
+	case "tab":
+		if len(m.sessions) > 0 {
+			m.focused = (m.focused + 1) % len(m.sessions)
+		}
+		return m, nil
+	case "shift+tab":
+		if len(m.sessions) > 0 {
+			m.focused = (m.focused - 1 + len(m.sessions)) % len(m.sessions)
+		}
+		return m, nil
+	case "enter":
+		return m, m.sendComposed()
+	case "shift+enter":
+		cur := m.compose.Value()
+		m.compose.SetValue(cur + "\n")
+		return m, nil
+	}
+	// Default: forward to compose textinput.
+	var cmd tea.Cmd
+	m.compose, cmd = m.compose.Update(msg)
+	return m, cmd
+}
+
+// sendComposed parses an optional @name retarget prefix, resolves the
+// target session id via list_sessions, then issues the inject RPC.
+func (m Model) sendComposed() tea.Cmd {
+	text := m.compose.Value()
+	if text == "" {
+		return nil
+	}
+	target := ""
+	if strings.HasPrefix(text, "@") {
+		sp := strings.IndexByte(text, ' ')
+		if sp > 1 {
+			target = text[1:sp]
+			text = text[sp+1:]
+		}
+	}
+	if target == "" {
+		if s := m.focusedSession(); s != nil {
+			target = s.Name
+		}
+	}
+	payload := text
+	c := m.client
+	return func() tea.Msg {
+		raw, err := c.Call(context.Background(), "list_sessions", nil)
+		if err != nil {
+			return composeFailedMsg{err}
+		}
+		var r struct {
+			Sessions []Session `json:"sessions"`
+		}
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return composeFailedMsg{err}
+		}
+		var sid string
+		for _, s := range r.Sessions {
+			if s.Name == target {
+				sid = s.ID
+				break
+			}
+		}
+		if sid == "" {
+			return composeFailedMsg{fmt.Errorf("no session named %q", target)}
+		}
+		b64 := base64.StdEncoding.EncodeToString([]byte(payload))
+		if _, err := c.Call(context.Background(), "inject", map[string]any{
+			"session_id":  sid,
+			"payload_b64": b64,
+		}); err != nil {
+			return composeFailedMsg{err}
+		}
+		return composeSentMsg{}
+	}
+}
+
+// View renders the dual-pane layout plus the compose bar.
 func (m Model) View() string {
 	if m.err != nil {
-		return fmt.Sprintf("error: %v\npress q to quit", m.err)
+		return fmt.Sprintf("error: %v\npress ctrl+c to quit", m.err)
 	}
 	leftW := 24
 	rightW := m.width - leftW - 2
 	if rightW < 20 {
 		rightW = 20
 	}
-	h := m.height - 2
+	composeH := 3
+	h := m.height - composeH - 2
 	if h < 5 {
 		h = 5
 	}
 	left := renderList(m.sessions, m.focused, leftW, h)
 	right := renderViewport(m.focusedSession(), m.output, rightW, h)
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	main := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+
+	target := "(no session)"
+	color := "#888"
+	if s := m.focusedSession(); s != nil {
+		target = "@" + s.Name
+		color = s.Color
+	}
+	composeBar := views.RenderCompose(m.compose, target, color, m.width)
+	return lipgloss.JoinVertical(lipgloss.Left, main, composeBar)
 }
 
 func (m Model) focusedSession() *Session {
