@@ -34,6 +34,35 @@ def claude_projects_root() -> Path:
     return Path.home() / ".claude" / "projects"
 
 
+def claude_sessions_dir() -> Path:
+    """Return ``~/.claude/sessions/`` — Claude's per-pid session registry.
+
+    Each running ``claude`` process drops a ``<pid>.json`` here whose
+    ``sessionId`` field maps the pid to the session's UUID. We use this
+    as a precise pid → JSONL binding instead of relying on mtime races
+    when multiple Claude sessions share a cwd.
+    """
+    return Path.home() / ".claude" / "sessions"
+
+
+def session_id_for_pid(pid: int) -> str | None:
+    """Read ``~/.claude/sessions/<pid>.json`` and return the sessionId field.
+
+    Returns ``None`` if the file is missing, unreadable, malformed, or
+    lacks a string ``sessionId``. Caller is expected to retry while a
+    Claude child is still booting.
+    """
+    p = claude_sessions_dir() / f"{pid}.json"
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    sid = data.get("sessionId")
+    return sid if isinstance(sid, str) else None
+
+
 def find_jsonl_for_session(claude_session_id: str) -> Path | None:
     """Locate Claude's JSONL transcript for a known session id.
 
@@ -264,40 +293,66 @@ async def watch_for_transcript(
     registry: Registry,
     session: Session,
     *,
-    poll_interval: float = 1.0,
+    claude_pid: int | None = None,
+    poll_interval: float = 0.5,
     timeout: float = 60.0,
 ) -> None:
     """Wait for Claude to create a JSONL for ``session``, then start tailing.
 
     Wrapped/spawned sessions don't know their ``claude_session_id`` up
-    front — Claude only writes its transcript once it's running. We
-    scan the entire ``~/.claude/projects/`` tree for a JSONL whose first
-    records reference the session's cwd and whose mtime is newer than
-    ``session.created_at``. This is encoding-free: no assumptions about
-    how Claude maps cwd → subdir name.
+    front — Claude only writes its transcript once it's running.
 
-    Once found we set ``session.claude_session_id`` on the registry
-    (which broadcasts ``session_id_resolved``) and spawn the regular
-    tailer. If nothing shows up within ``timeout`` seconds we log and
-    give up.
+    Preferred path (``claude_pid`` known): poll
+    ``~/.claude/sessions/<claude_pid>.json`` — Claude itself writes this
+    file with the running session's UUID, giving us a precise pid →
+    sessionId mapping. This eliminates the mtime race that bites when
+    another live Claude session in the same cwd keeps touching its own
+    JSONL faster than the freshly-spawned one.
+
+    Fallback (no ``claude_pid`` or pid-keyed file never appears): scan
+    ``~/.claude/projects/`` for a JSONL whose first records reference
+    ``session.cwd`` and whose mtime is newer than ``session.created_at``.
+    This is the legacy behaviour and still works for sessions registered
+    before this code was deployed.
+
+    Once a session id is resolved we set it on the registry (which
+    broadcasts ``session_id_resolved``) and spawn the regular tailer. If
+    nothing shows up within ``timeout`` seconds we log and give up.
     """
     deadline = now_ms() + int(timeout * 1000)
     found: Path | None = None
-    while now_ms() < deadline:
-        found = await asyncio.to_thread(
-            find_new_jsonl_for_cwd, session.cwd, session.created_at
-        )
-        if found is not None:
-            break
-        await asyncio.sleep(poll_interval)
+    claude_session_id: str | None = None
+
+    if claude_pid is not None:
+        while now_ms() < deadline:
+            sid = await asyncio.to_thread(session_id_for_pid, claude_pid)
+            if sid is not None:
+                jsonl = await asyncio.to_thread(find_jsonl_for_session, sid)
+                if jsonl is not None:
+                    claude_session_id = sid
+                    found = jsonl
+                    break
+            await asyncio.sleep(poll_interval)
+
     if found is None:
+        # Fallback: legacy mtime-based scan. Used when no claude_pid was
+        # supplied or when the pid-keyed file never showed up.
+        while now_ms() < deadline:
+            found = await asyncio.to_thread(
+                find_new_jsonl_for_cwd, session.cwd, session.created_at
+            )
+            if found is not None:
+                claude_session_id = found.stem
+                break
+            await asyncio.sleep(poll_interval)
+
+    if found is None or claude_session_id is None:
         log.info(
             "watch_for_transcript: no JSONL appeared for session %s within %.0fs",
             session.id,
             timeout,
         )
         return
-    claude_session_id = found.stem
     await registry.set_claude_session_id(session.id, claude_session_id)
     log.info(
         "watch_for_transcript: bound session %s to claude session %s",

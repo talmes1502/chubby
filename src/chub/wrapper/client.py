@@ -137,11 +137,23 @@ class WrapperClient:
         return self._inbound_events
 
     async def register(
-        self, *, name: str, cwd: str, pid: int, tags: list[str]
+        self,
+        *,
+        name: str,
+        cwd: str,
+        pid: int,
+        tags: list[str],
+        claude_pid: int | None = None,
     ) -> str:
         out = await self._call(
             "register_wrapped",
-            {"name": name, "cwd": cwd, "pid": pid, "tags": tags},
+            {
+                "name": name,
+                "cwd": cwd,
+                "pid": pid,
+                "tags": tags,
+                "claude_pid": claude_pid,
+            },
         )
         sid = out["session"]["id"]
         if not isinstance(sid, str):

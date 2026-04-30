@@ -13,6 +13,7 @@ from chub.daemon.hooks import (
     _tail_jsonl,
     find_jsonl_for_session,
     find_new_jsonl_for_cwd,
+    session_id_for_pid,
     watch_for_transcript,
 )
 from chub.daemon.persistence import Database
@@ -253,7 +254,10 @@ async def test_tailer_skips_blank_invalid_and_non_turn_records(tmp_path: Path) -
 
 async def test_watch_for_transcript_binds_new_jsonl(tmp_path: Path, monkeypatch) -> None:
     """watch_for_transcript picks up a JSONL written after session creation
-    by matching the cwd field inside the file — no path encoding."""
+    by matching the cwd field inside the file — no path encoding.
+
+    Falls back to the mtime/cwd heuristic when no ``claude_pid`` is given.
+    """
     # Use a real cwd so Path.resolve() comparisons line up.
     cwd_dir = tmp_path / "work"
     cwd_dir.mkdir()
@@ -298,5 +302,116 @@ async def test_watch_for_transcript_binds_new_jsonl(tmp_path: Path, monkeypatch)
 
     bound = await reg.get(s.id)
     assert bound.claude_session_id == "abc1234"
+    assert any(m == "session_id_resolved" for m, _ in subs.broadcasts)
+    await db.close()
+
+
+def test_session_id_for_pid_reads_mapping(tmp_path: Path, monkeypatch) -> None:
+    """session_id_for_pid resolves the pid → sessionId mapping that Claude
+    writes to ``~/.claude/sessions/<pid>.json``."""
+    fake_dir = tmp_path / "sessions"
+    fake_dir.mkdir()
+    (fake_dir / "12345.json").write_text(
+        json.dumps(
+            {
+                "pid": 12345,
+                "sessionId": "abc-1234-uuid",
+                "cwd": "/some/cwd",
+            }
+        )
+    )
+
+    import chub.daemon.hooks as hooks_mod
+    monkeypatch.setattr(hooks_mod, "claude_sessions_dir", lambda: fake_dir)
+
+    assert session_id_for_pid(12345) == "abc-1234-uuid"
+
+
+def test_session_id_for_pid_missing_returns_none(tmp_path: Path, monkeypatch) -> None:
+    """A missing pid mapping returns None; caller is expected to retry."""
+    fake_dir = tmp_path / "sessions"
+    fake_dir.mkdir()
+
+    import chub.daemon.hooks as hooks_mod
+    monkeypatch.setattr(hooks_mod, "claude_sessions_dir", lambda: fake_dir)
+
+    assert session_id_for_pid(99999) is None
+
+    # Malformed JSON: also None (no crash).
+    (fake_dir / "55555.json").write_text("{not json")
+    assert session_id_for_pid(55555) is None
+
+    # Missing sessionId field: also None.
+    (fake_dir / "66666.json").write_text(json.dumps({"pid": 66666}))
+    assert session_id_for_pid(66666) is None
+
+
+async def test_watch_for_transcript_binds_via_claude_pid(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Happy path with claude_pid: the pid mapping resolves the sessionId,
+    we glob the JSONL by id (encoding-free), bind, and start tailing —
+    even if a stale unrelated JSONL with a more recent mtime exists in
+    the same cwd. That stale file is what would trip the mtime
+    heuristic; the pid-keyed lookup must ignore it.
+    """
+    cwd_dir = tmp_path / "work"
+    cwd_dir.mkdir()
+    cwd = str(cwd_dir)
+
+    fake_projects = tmp_path / "projects"
+    sub = fake_projects / "encoded-cwd"
+    sub.mkdir(parents=True)
+    fake_sessions = tmp_path / "sessions"
+    fake_sessions.mkdir()
+
+    # A stale JSONL belonging to an UNRELATED active Claude in the same
+    # cwd — newer mtime, would beat the new session in the legacy
+    # mtime heuristic. We must NOT pick this one.
+    (sub / "stale-other.jsonl").write_text(
+        json.dumps({"type": "first", "cwd": cwd}) + "\n"
+    )
+
+    # The "real" JSONL for the wrapped session, with a known UUID we
+    # surface via the pid mapping.
+    real_id = "abc1234"
+    (sub / f"{real_id}.jsonl").write_text(
+        json.dumps({"type": "first", "cwd": cwd}) + "\n"
+        + json.dumps(
+            {"type": "user", "message": {"role": "user", "content": "hello"}}
+        )
+        + "\n"
+    )
+    # Claude's per-pid mapping file — the precise binding we trust.
+    claude_pid = 424242
+    (fake_sessions / f"{claude_pid}.json").write_text(
+        json.dumps({"pid": claude_pid, "sessionId": real_id, "cwd": cwd})
+    )
+
+    import chub.daemon.hooks as hooks_mod
+    monkeypatch.setattr(hooks_mod, "claude_projects_root", lambda: fake_projects)
+    monkeypatch.setattr(hooks_mod, "claude_sessions_dir", lambda: fake_sessions)
+
+    db = await Database.open(tmp_path / "s.db")
+    subs = _FakeSubs()
+    reg = Registry(hub_run_id="hr_t", db=db, subs=subs)  # type: ignore[arg-type]
+    s = await reg.register(name="foo", kind=SessionKind.WRAPPED, cwd=cwd)
+
+    watch_task = asyncio.create_task(
+        watch_for_transcript(
+            reg, s, claude_pid=claude_pid, poll_interval=0.05, timeout=2.0
+        )
+    )
+    try:
+        await asyncio.sleep(0.3)
+    finally:
+        watch_task.cancel()
+        try:
+            await watch_task
+        except asyncio.CancelledError:
+            pass
+
+    bound = await reg.get(s.id)
+    assert bound.claude_session_id == real_id
     assert any(m == "session_id_resolved" for m, _ in subs.broadcasts)
     await db.close()

@@ -72,6 +72,7 @@ async def _run() -> int:
         cwd=args.cwd,
         pid=pty.pid,
         tags=[t for t in args.tags.split(",") if t],
+        claude_pid=pty.pid,
     )
 
     seq = 0

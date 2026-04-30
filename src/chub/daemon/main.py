@@ -106,8 +106,12 @@ def _build_registry(
         await reg.attach_log_writer(s.id, writer)
         # Wrapped sessions don't know their Claude session id at registration
         # time — Claude only writes its JSONL once it actually starts up.
-        # Watch the projects dir for a fresh transcript and bind it.
-        task = asyncio.create_task(hooks_mod.watch_for_transcript(reg, s))
+        # Prefer the pid → sessionId mapping at ~/.claude/sessions/<pid>.json
+        # when the wrapper supplied a claude_pid; that's a precise binding
+        # immune to the mtime race that hits when two Claudes share a cwd.
+        task = asyncio.create_task(
+            hooks_mod.watch_for_transcript(reg, s, claude_pid=p.claude_pid)
+        )
         background_tasks.add(task)
         task.add_done_callback(background_tasks.discard)
         return RegisterWrappedResult(session=SessionDict(**s.to_dict())).model_dump()

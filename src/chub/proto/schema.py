@@ -41,6 +41,7 @@ class RegisterWrappedParams(_Strict):
     pid: int
     tags: list[str] = []
     color: str | None = None
+    claude_pid: int | None = None
 
 
 class SessionDict(_Strict):
