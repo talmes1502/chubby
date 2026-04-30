@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from chub.cli.client import Client
-from chub.daemon.main import serve as daemon_serve
+from chubby.cli.client import Client
+from chubby.daemon.main import serve as daemon_serve
 
 
 async def test_history_and_note(chub_home: Path) -> None:

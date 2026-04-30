@@ -9,6 +9,7 @@ build/
 *.egg-info/
 node_modules/
 tui/chub-tui
+tui/chubby-tui
 .coverage
 coverage.xml
 .DS_Store

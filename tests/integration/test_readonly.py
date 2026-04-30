@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from chub.cli.client import Client
-from chub.daemon import main as chubd_main
-from chub.proto.errors import ChubError, ErrorCode
+from chubby.cli.client import Client
+from chubby.daemon import main as chubbyd_main
+from chubby.proto.errors import ChubError, ErrorCode
 
 
 async def test_register_readonly_then_inject_unsupported(
@@ -19,7 +19,7 @@ async def test_register_readonly_then_inject_unsupported(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Stub start_tailer to a no-op so we don't depend on a real JSONL file.
-    from chub.daemon import hooks as hooks_mod
+    from chubby.daemon import hooks as hooks_mod
 
     async def _noop(reg, s) -> None:  # type: ignore[no-untyped-def]
         return None
@@ -27,7 +27,7 @@ async def test_register_readonly_then_inject_unsupported(
     monkeypatch.setattr(hooks_mod, "start_tailer", _noop)
 
     stop = asyncio.Event()
-    server_task = asyncio.create_task(chubd_main.serve(stop_event=stop))
+    server_task = asyncio.create_task(chubbyd_main.serve(stop_event=stop))
     sock = chub_home / "hub.sock"
     for _ in range(100):
         if sock.exists():

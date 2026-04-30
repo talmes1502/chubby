@@ -92,7 +92,7 @@ func TestRawStatusBar_ModeHelp(t *testing.T) {
 
 func TestRawStatusBar_ModeReconnecting(t *testing.T) {
 	got := rawStatusBar(StatusModeReconnecting, false, 0)
-	if missing, ok := containsAll(got, "connecting", "chubd", "Ctrl+C"); ok {
+	if missing, ok := containsAll(got, "connecting", "chubbyd", "Ctrl+C"); ok {
 		t.Fatalf("ModeReconnecting missing %q: %s", missing, got)
 	}
 }
@@ -119,7 +119,7 @@ func TestStatusBarText_NoTruncationWhenWide(t *testing.T) {
 
 func TestTopStatus_NoRunID(t *testing.T) {
 	got := TopStatus("", 5, 0, 80)
-	if missing, ok := containsAll(got, "chub", "5 sessions"); ok {
+	if missing, ok := containsAll(got, "chubby", "5 sessions"); ok {
 		t.Fatalf("TopStatus missing %q: %s", missing, got)
 	}
 	if strings.Contains(got, "idle") {
@@ -136,7 +136,7 @@ func TestTopStatus_WithIdleSuffix(t *testing.T) {
 
 func TestTopStatus_WithRunID(t *testing.T) {
 	got := TopStatus("ab12cd", 3, 0, 80)
-	if missing, ok := containsAll(got, "chub", "ab12cd", "3 sessions"); ok {
+	if missing, ok := containsAll(got, "chubby", "ab12cd", "3 sessions"); ok {
 		t.Fatalf("TopStatus with runID missing %q: %s", missing, got)
 	}
 }

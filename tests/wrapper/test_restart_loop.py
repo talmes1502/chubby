@@ -11,8 +11,8 @@ import signal
 import sys
 from pathlib import Path
 
-from chub.proto.rpc import Event
-from chub.wrapper.client import WrapperClient
+from chubby.proto.rpc import Event
+from chubby.wrapper.client import WrapperClient
 
 
 class FakePty:
@@ -104,7 +104,7 @@ async def test_run_one_claude_restart_path(monkeypatch) -> None:
     actually run a second iteration here — that's covered by the
     wrapper's main loop, which is exercised separately. We just confirm
     the building blocks behave."""
-    import chub.wrapper.main as wm
+    import chubby.wrapper.main as wm
 
     monkeypatch.setattr(wm, "PtySession", FakePty)
     # Skip the per-pid sessionId capture (no real claude on disk).
@@ -153,7 +153,7 @@ async def test_run_one_claude_resume_argv(monkeypatch) -> None:
     """Second iteration: ``resume=<sid>`` flows into the claude argv as
     ``--resume <sid>`` and ``update_claude_pid`` is called instead of
     ``register``."""
-    import chub.wrapper.main as wm
+    import chubby.wrapper.main as wm
 
     monkeypatch.setattr(wm, "PtySession", FakePty)
 

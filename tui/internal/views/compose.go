@@ -1,4 +1,4 @@
-// Package views holds the per-mode UI helpers used by the chub-tui Model:
+// Package views holds the per-mode UI helpers used by the chubby-tui Model:
 // compose bar, broadcast modal, grep palette, history panel.
 package views
 

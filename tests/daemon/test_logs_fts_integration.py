@@ -1,11 +1,11 @@
 import asyncio
 from pathlib import Path
 
-from chub.daemon.events import EventLog
-from chub.daemon.logs import LogWriter
-from chub.daemon.persistence import Database
-from chub.daemon.registry import Registry
-from chub.daemon.session import SessionKind
+from chubby.daemon.events import EventLog
+from chubby.daemon.logs import LogWriter
+from chubby.daemon.persistence import Database
+from chubby.daemon.registry import Registry
+from chubby.daemon.session import SessionKind
 
 
 async def test_record_chunk_writes_log_and_indexes_fts(tmp_path: Path) -> None:

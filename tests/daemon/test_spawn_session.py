@@ -18,16 +18,16 @@ from typing import Any
 
 import pytest
 
-from chub.daemon import main as chubd_main
-from chub.proto import frame
-from chub.proto.errors import ErrorCode
+from chubby.daemon import main as chubbyd_main
+from chubby.proto import frame
+from chubby.proto.errors import ErrorCode
 
 
 @pytest.fixture
 def short_home() -> Iterator[Path]:
     """macOS AF_UNIX sun_path is limited to ~104 bytes; pytest's tmp_path
-    is too long when used as CHUB_HOME. Use a short /tmp dir."""
-    d = Path(tempfile.mkdtemp(prefix="chub-"))
+    is too long when used as CHUBBY_HOME. Use a short /tmp dir."""
+    d = Path(tempfile.mkdtemp(prefix="chubby-"))
     try:
         yield d
     finally:
@@ -62,9 +62,9 @@ async def _rpc(sock_path: Path, method: str, params: dict) -> dict:
 
 
 async def _start_daemon(short_home: Path, monkeypatch) -> tuple[Path, asyncio.Event, asyncio.Task]:
-    monkeypatch.setenv("CHUB_HOME", str(short_home))
+    monkeypatch.setenv("CHUBBY_HOME", str(short_home))
     stop = asyncio.Event()
-    server_task = asyncio.create_task(chubd_main.serve(stop_event=stop))
+    server_task = asyncio.create_task(chubbyd_main.serve(stop_event=stop))
     sock = short_home / "hub.sock"
     for _ in range(50):
         if sock.exists():

@@ -1,6 +1,6 @@
-"""End-to-end test for `chub spawn` / the daemon-side `spawn_session` RPC.
+"""End-to-end test for `chubby spawn` / the daemon-side `spawn_session` RPC.
 
-Stands up chubd, calls ``spawn_session`` over JSON-RPC, and verifies that a
+Stands up chubbyd, calls ``spawn_session`` over JSON-RPC, and verifies that a
 new session is registered and reachable via ``list_sessions``. The session is
 launched against a ``fakeclaude`` shim on PATH so no real Claude is contacted.
 """
@@ -11,8 +11,8 @@ import asyncio
 import os
 from pathlib import Path
 
-from chub.cli.client import Client
-from chub.daemon import main as chubd_main
+from chubby.cli.client import Client
+from chubby.daemon import main as chubbyd_main
 
 
 async def test_spawn_session_launches_wrapper(
@@ -21,7 +21,7 @@ async def test_spawn_session_launches_wrapper(
     tmp_path: Path,
 ) -> None:
     stop = asyncio.Event()
-    server_task = asyncio.create_task(chubd_main.serve(stop_event=stop))
+    server_task = asyncio.create_task(chubbyd_main.serve(stop_event=stop))
     sock = chub_home / "hub.sock"
     for _ in range(100):
         if sock.exists():

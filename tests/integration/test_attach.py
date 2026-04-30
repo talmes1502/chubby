@@ -1,4 +1,4 @@
-"""Tests for ``chub attach`` CLI and the daemon's scan_candidates / attach_tmux RPCs."""
+"""Tests for ``chubby attach`` CLI and the daemon's scan_candidates / attach_tmux RPCs."""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ from typing import Any, ClassVar
 import pytest
 from typer.testing import CliRunner
 
-import chub.cli.commands.attach as attach_mod
-from chub.cli.main import app
+import chubby.cli.commands.attach as attach_mod
+from chubby.cli.main import app
 
 
 class FakeClient:
-    """Stand-in for ``chub.cli.client.Client`` used by attach.run."""
+    """Stand-in for ``chubby.cli.client.Client`` used by attach.run."""
 
     candidates: ClassVar[list[dict[str, Any]]] = []
     attach_calls: ClassVar[list[dict[str, Any]]] = []
@@ -253,11 +253,11 @@ async def test_scan_candidates_returns_list_against_live_daemon(
     """Smoke test: scan_candidates RPC returns a list (possibly empty)."""
     import asyncio
 
-    from chub.cli.client import Client
-    from chub.daemon import main as chubd_main
+    from chubby.cli.client import Client
+    from chubby.daemon import main as chubbyd_main
 
     stop = asyncio.Event()
-    server_task = asyncio.create_task(chubd_main.serve(stop_event=stop))
+    server_task = asyncio.create_task(chubbyd_main.serve(stop_event=stop))
     sock = chub_home / "hub.sock"
     for _ in range(100):
         if sock.exists():

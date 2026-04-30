@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/USER/chub/tui/internal/views"
+	"github.com/USER/chubby/tui/internal/views"
 )
 
 // TestAutoSpawnDefault_OnFirstEmptyList verifies that the very first

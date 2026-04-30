@@ -1,4 +1,4 @@
-"""End-to-end tests for `set_session_tags` RPC and `chub tag` CLI."""
+"""End-to-end tests for `set_session_tags` RPC and `chubby tag` CLI."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from chub.cli.client import Client
-from chub.cli.main import app
-from chub.daemon.main import serve as daemon_serve
+from chubby.cli.client import Client
+from chubby.cli.main import app
+from chubby.daemon.main import serve as daemon_serve
 
 
 async def test_set_session_tags_round_trip(chub_home: Path) -> None:

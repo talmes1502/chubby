@@ -13,10 +13,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from chub.daemon.hooks import _tail_jsonl
-from chub.daemon.persistence import Database
-from chub.daemon.registry import Registry
-from chub.daemon.session import Session, SessionKind, SessionStatus
+from chubby.daemon.hooks import _tail_jsonl
+from chubby.daemon.persistence import Database
+from chubby.daemon.registry import Registry
+from chubby.daemon.session import Session, SessionKind, SessionStatus
 
 
 class _FakeSubs:

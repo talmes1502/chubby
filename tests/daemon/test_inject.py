@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from chub.daemon.registry import Registry
-from chub.daemon.session import SessionKind
-from chub.proto.errors import ChubError, ErrorCode
+from chubby.daemon.registry import Registry
+from chubby.daemon.session import SessionKind
+from chubby.proto.errors import ChubError, ErrorCode
 
 
 async def test_inject_writes_to_attached_writer() -> None:
@@ -40,7 +40,7 @@ async def test_inject_tmux_kind_dispatches_to_tmux_module(
     async def fake_inject_tmux(session: object, payload: bytes) -> None:
         captured.append((getattr(session, "name", "?"), payload))
 
-    import chub.daemon.attach.tmux as tmux_mod
+    import chubby.daemon.attach.tmux as tmux_mod
 
     monkeypatch.setattr(tmux_mod, "inject_tmux", fake_inject_tmux)
     r = Registry(hub_run_id="hr_t")

@@ -1,9 +1,9 @@
 from pathlib import Path
 
-from chub.daemon.events import EventLog
-from chub.daemon.persistence import Database
-from chub.daemon.registry import Registry
-from chub.daemon.session import SessionKind
+from chubby.daemon.events import EventLog
+from chubby.daemon.persistence import Database
+from chubby.daemon.registry import Registry
+from chubby.daemon.session import SessionKind
 
 
 async def test_register_persists_to_db(tmp_path: Path) -> None:

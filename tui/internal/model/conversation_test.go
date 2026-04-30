@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/USER/chub/tui/internal/rpc"
+	"github.com/USER/chubby/tui/internal/rpc"
 )
 
 // TestEvMsg_TranscriptMessage_AppendsTurn drives the reducer with a

@@ -10,16 +10,16 @@ from typing import Any
 
 import pytest
 
-from chub.cli.client import Client
-from chub.daemon.handlers import CallContext, HandlerRegistry
-from chub.daemon.server import Server
-from chub.proto.errors import ChubError, ErrorCode
+from chubby.cli.client import Client
+from chubby.daemon.handlers import CallContext, HandlerRegistry
+from chubby.daemon.server import Server
+from chubby.proto.errors import ChubError, ErrorCode
 
 
 @pytest.fixture
 async def started() -> AsyncIterator[Path]:
     # macOS AF_UNIX sun_path limit; use a short tempdir.
-    home = Path(tempfile.mkdtemp(prefix="chub-"))
+    home = Path(tempfile.mkdtemp(prefix="chubby-"))
     reg = HandlerRegistry()
 
     async def echo(p: dict[str, Any], ctx: CallContext) -> dict[str, Any]:

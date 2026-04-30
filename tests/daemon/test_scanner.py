@@ -1,10 +1,10 @@
-"""Tests for the process scanner used by ``chub attach``."""
+"""Tests for the process scanner used by ``chubby attach``."""
 
 from __future__ import annotations
 
 import os
 
-from chub.daemon.attach.scanner import (
+from chubby.daemon.attach.scanner import (
     Candidate,
     _enumerate_claude_pids,
     _parent_pid,

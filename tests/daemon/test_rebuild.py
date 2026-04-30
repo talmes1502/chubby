@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from chub.daemon.events import EventLog
-from chub.daemon.persistence import Database
-from chub.daemon.rebuild import rebuild_from_events
+from chubby.daemon.events import EventLog
+from chubby.daemon.persistence import Database
+from chubby.daemon.rebuild import rebuild_from_events
 
 
 async def test_rebuild_replays_session_added(tmp_path: Path) -> None:

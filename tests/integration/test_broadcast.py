@@ -1,6 +1,6 @@
-"""Tests for `chub broadcast` filtering and dispatch.
+"""Tests for `chubby broadcast` filtering and dispatch.
 
-The CLI's outbound calls go through ``chub.cli.client.Client``; we patch that
+The CLI's outbound calls go through ``chubby.cli.client.Client``; we patch that
 class so we don't need a live daemon. This isolates the filter logic
 (``--only`` / ``--tag``, dead/readonly skip) and the per-target inject loop.
 """
@@ -12,12 +12,12 @@ from typing import Any, ClassVar
 import pytest
 from typer.testing import CliRunner
 
-import chub.cli.commands.broadcast as broadcast_mod
-from chub.cli.main import app
+import chubby.cli.commands.broadcast as broadcast_mod
+from chubby.cli.main import app
 
 
 class FakeClient:
-    """Stand-in for ``chub.cli.client.Client`` used by broadcast.run."""
+    """Stand-in for ``chubby.cli.client.Client`` used by broadcast.run."""
 
     sessions: ClassVar[list[dict[str, Any]]] = []
     inject_calls: ClassVar[list[dict[str, Any]]] = []

@@ -8,7 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/USER/chub/tui/internal/views"
+	"github.com/USER/chubby/tui/internal/views"
 )
 
 // withTempHome redirects $HOME to a fresh temp dir for the duration of

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from chub.cli.format import hex_to_ansi24, prefix
+from chubby.cli.format import hex_to_ansi24, prefix
 
 
 def test_hex_to_ansi24() -> None:

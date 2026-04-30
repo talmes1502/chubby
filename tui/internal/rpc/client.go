@@ -1,5 +1,5 @@
 // Package rpc is a JSON-RPC 2.0 client over a length-prefixed (4-byte BE)
-// Unix-socket transport. Mirrors the Python proto in src/chub/proto/.
+// Unix-socket transport. Mirrors the Python proto in src/chubby/proto/.
 package rpc
 
 import (
@@ -59,7 +59,7 @@ type Client struct {
 	disconnected chan struct{}
 }
 
-// Dial connects to chubd at sockPath and starts a read loop.
+// Dial connects to chubbyd at sockPath and starts a read loop.
 func Dial(sockPath string) (*Client, error) {
 	c, err := net.Dial("unix", sockPath)
 	if err != nil {

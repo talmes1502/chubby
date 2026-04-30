@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from chub.daemon.events import EventLog
+from chubby.daemon.events import EventLog
 
 
 async def test_append_and_replay(tmp_path: Path) -> None:

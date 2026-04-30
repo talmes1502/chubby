@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from chub.cli.client import Client
-from chub.daemon.main import serve as daemon_serve
-from chub.proto.errors import ChubError, ErrorCode
+from chubby.cli.client import Client
+from chubby.daemon.main import serve as daemon_serve
+from chubby.proto.errors import ChubError, ErrorCode
 
 
 async def _wait_for_socket(sock: Path) -> None:

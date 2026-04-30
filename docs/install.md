@@ -1,4 +1,4 @@
-# Installing chub
+# Installing chubby
 
 ## Requirements
 
@@ -11,56 +11,56 @@
 ## Install
 
 ```bash
-pipx install chub
+pipx install chubby
 ```
 
-This gives you three commands: `chub`, `chubd`, `chub-claude`.
+This gives you three commands: `chubby`, `chubbyd`, `chubby-claude`.
 
-The TUI is a separate Go binary downloaded automatically the first time you run `chub tui`. To install it eagerly:
+The TUI is a separate Go binary downloaded automatically the first time you run `chubby tui`. To install it eagerly:
 
 ```bash
-chub tui --force-download
+chubby tui --force-download
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/USER/chub
-cd chub/tui
-go build -o ~/.local/bin/chub-tui ./cmd/chub-tui
+git clone https://github.com/USER/chubby
+cd chubby/tui
+go build -o ~/.local/bin/chubby-tui ./cmd/chubby-tui
 ```
 
 ## First-time setup
 
-1. Start the daemon: `chub up --detach`
+1. Start the daemon: `chubby up --detach`
 2. Install hooks for read-only attach to raw `claude` sessions:
    ```bash
-   chub install-hooks --dry-run    # preview
-   chub install-hooks              # write
+   chubby install-hooks --dry-run    # preview
+   chubby install-hooks              # write
    ```
-3. (Recommended) Alias `claude` to `chub-claude` so every Claude session is hub-aware:
+3. (Recommended) Alias `claude` to `chubby-claude` so every Claude session is hub-aware:
    ```bash
-   echo 'alias claude=chub-claude' >> ~/.zshrc
+   echo 'alias claude=chubby-claude' >> ~/.zshrc
    ```
    This is **not** automatic — auto-aliasing surprises people. Skip if you want only hand-launched sessions in the hub.
-4. Run the TUI: `chub tui`
+4. Run the TUI: `chubby tui`
 
 ## Common commands
 
 ```
-chub spawn --name backend --cwd ~/repo
-chub list
-chub send backend "what are we working on?"
-chub broadcast --tag sentra "run tests"
-chub grep "DELAYED_QUEUE_FULL"
-chub history
-chub attach --pick
+chubby spawn --name backend --cwd ~/repo
+chubby list
+chubby send backend "what are we working on?"
+chubby broadcast --tag sentra "run tests"
+chubby grep "DELAYED_QUEUE_FULL"
+chubby history
+chubby attach --pick
 ```
 
 ## Uninstall
 
 ```bash
-pipx uninstall chub
+pipx uninstall chubby
 rm -rf ~/.claude/hub
-# remove hook entries from ~/.claude/settings.json (look for "chub-register-readonly" / "chub-mark-idle")
+# remove hook entries from ~/.claude/settings.json (look for "chubby-register-readonly" / "chubby-mark-idle")
 ```

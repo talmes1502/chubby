@@ -6,7 +6,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from chub.wrapper.pty import PtySession
+from chubby.wrapper.pty import PtySession
 
 
 async def test_spawn_echoes_stdin(tmp_path: Path) -> None:

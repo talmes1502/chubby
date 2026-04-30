@@ -5,7 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/USER/chub/tui/internal/views"
+	"github.com/USER/chubby/tui/internal/views"
 )
 
 // TestSpawn_TabCyclesThreeFields verifies Tab walks 0→1→2→0 and

@@ -1,4 +1,4 @@
-// Package model is the Bubble Tea Model for chub-tui: the top-level
+// Package model is the Bubble Tea Model for chubby-tui: the top-level
 // session-list rail, focused-viewport pane, compose bar, and event/refresh
 // wiring. Modal panes (broadcast, grep, history) are layered on top and
 // share Mode dispatch.
@@ -20,8 +20,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/USER/chub/tui/internal/rpc"
-	"github.com/USER/chub/tui/internal/views"
+	"github.com/USER/chubby/tui/internal/rpc"
+	"github.com/USER/chubby/tui/internal/views"
 )
 
 // Turn is a single transcript entry — a user prompt or an assistant
@@ -37,7 +37,7 @@ type Turn struct {
 // oldest entries so the model stays bounded for long sessions.
 const turnsCap = 500
 
-// Session mirrors the SessionDict schema returned by chubd's list_sessions.
+// Session mirrors the SessionDict schema returned by chubbyd's list_sessions.
 type Session struct {
 	ID     string   `json:"id"`
 	Name   string   `json:"name"`
@@ -232,7 +232,7 @@ type errMsg struct{ err error }
 type composeSentMsg struct{}
 type composeFailedMsg struct{ err error }
 
-// chubCommandDoneMsg is emitted by the chub-side compose-bar commands
+// chubCommandDoneMsg is emitted by the chubby-side compose-bar commands
 // (/color, /rename, /tag, /refresh-claude) after a successful RPC. The
 // reducer clears the compose value and triggers a session refresh so
 // any color/name/tag change propagates to the rail. ``toast``, when
@@ -417,8 +417,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.syncRailCursorToFocus()
 		// First time we see each session, lazily load its prior transcript
-		// from the daemon so the viewport stays populated across `chub down`
-		// + `chub up` cycles. Live transcript_message events still append
+		// from the daemon so the viewport stays populated across `chubby down`
+		// + `chubby up` cycles. Live transcript_message events still append
 		// on top of whatever we load here.
 		cmds := []tea.Cmd{m.listenEvents()}
 		for _, s := range m.sessions {
@@ -1376,8 +1376,8 @@ func (m Model) loadHubRun(run map[string]any) tea.Cmd {
 	}
 }
 
-// loadLogPreview reads ${CHUB_HOME}/runs/<runID>/logs/<name>.log directly.
-// Reading off disk is fine because the TUI runs on the same host as chubd.
+// loadLogPreview reads ${CHUBBY_HOME}/runs/<runID>/logs/<name>.log directly.
+// Reading off disk is fine because the TUI runs on the same host as chubbyd.
 func (m Model) loadLogPreview(runID, sessionName string) tea.Cmd {
 	sessions := m.history.runSessions
 	return func() tea.Msg {
@@ -1463,8 +1463,8 @@ func (m Model) sendBroadcast() tea.Cmd {
 // sendComposed parses an optional @name retarget prefix, resolves the
 // target session id via list_sessions, then issues the inject RPC.
 //
-// chub-side slash commands (/color, /rename, /tag) are intercepted here
-// before any inject path: they modify the chub session itself rather
+// chubby-side slash commands (/color, /rename, /tag) are intercepted here
+// before any inject path: they modify the chubby session itself rather
 // than the underlying Claude conversation, so they must never reach
 // Claude.
 func (m Model) sendComposed() tea.Cmd {
@@ -1546,7 +1546,7 @@ func (m Model) sendComposed() tea.Cmd {
 	}
 }
 
-// splitChubCommand recognises a chub-side slash command head ("/color",
+// splitChubCommand recognises a chubby-side slash command head ("/color",
 // "/rename", "/tag", "/refresh-claude") at the start of the trimmed
 // compose text and returns (head, remainder-trimmed, true). The
 // remainder may be empty — the caller decides how to surface a usage
@@ -1571,7 +1571,7 @@ func splitChubCommand(s string) (cmd, arg string, ok bool) {
 // chubColorRE matches a strict #RRGGBB hex literal.
 var chubColorRE = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 
-// chubPalette mirrors the daemon-side PALETTE in src/chub/daemon/colors.py.
+// chubPalette mirrors the daemon-side PALETTE in src/chubby/daemon/colors.py.
 // Used by /color so users can say "/color 0" or "/color red" without
 // memorising hex codes. Order matches the daemon palette so palette
 // indexes line up.
@@ -1725,7 +1725,7 @@ func (m Model) doChubTag(spec string) tea.Cmd {
 // doChubRefreshClaude fires the refresh_claude_session RPC for the
 // focused session. The daemon pushes a restart_claude event over the
 // wrapper's writer; the wrapper SIGTERMs claude and re-launches with
-// ``claude --resume <sid>``. The chub session row stays put; the JSONL
+// ``claude --resume <sid>``. The chubby session row stays put; the JSONL
 // stays put; only settings/MCP/hooks reload.
 //
 // We surface a short toast ("refreshing <name>…") so the user knows
@@ -2033,7 +2033,7 @@ func (m Model) viewHistory() string {
 }
 
 func (m Model) viewHelp() string {
-	body := `chub-tui keys
+	body := `chubby-tui keys
 
   Tab / Shift+Tab    cycle focused session
   Up / Down k / j    walk session list
@@ -2042,10 +2042,10 @@ func (m Model) viewHelp() string {
   @name <msg>        one-shot redirect: send to <name>, then snap back
   Tab (in compose)   autocomplete @name or /command
   /<name>            Claude slash command (Tab completes; e.g. /model sonnet)
-  /color #RRGGBB     (chub) recolor focused session
-  /rename <name>     (chub) rename focused session
-  /tag +foo -bar     (chub) modify tags
-  /refresh-claude    (chub) restart claude with --resume (picks up settings changes)
+  /color #RRGGBB     (chubby) recolor focused session
+  /rename <name>     (chubby) rename focused session
+  /tag +foo -bar     (chubby) modify tags
+  /refresh-claude    (chubby) restart claude with --resume (picks up settings changes)
 
   Ctrl+N             new session in focused cwd
   Ctrl+K             search session list
@@ -2156,7 +2156,7 @@ func (m Model) viewRename() string {
 }
 
 func (m Model) viewReconnecting() string {
-	msg := fmt.Sprintf("reconnecting to chubd... (attempt %d)", m.reconnectAttempts)
+	msg := fmt.Sprintf("reconnecting to chubbyd... (attempt %d)", m.reconnectAttempts)
 	w, h := m.width, m.height
 	if w < 1 {
 		w = 40
@@ -2481,7 +2481,7 @@ func renderViewport(s *Session, conversation map[string][]Turn, w, h, spinnerFra
 			bold.Render("Ctrl+N") + " " +
 			dim.Render("to create one") + "\n" +
 			dim.Render("or") + " " +
-			bold.Render("chub spawn --name <n> --cwd <dir>") + " " +
+			bold.Render("chubby spawn --name <n> --cwd <dir>") + " " +
 			dim.Render("from another terminal")
 		return lipgloss.NewStyle().Width(w).Height(h).
 			Border(lipgloss.RoundedBorder()).

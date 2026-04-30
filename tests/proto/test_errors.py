@@ -1,4 +1,4 @@
-from chub.proto.errors import ChubError, ErrorCode
+from chubby.proto.errors import ChubError, ErrorCode
 
 
 def test_error_codes_exist() -> None:

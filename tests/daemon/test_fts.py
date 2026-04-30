@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from chub.daemon.persistence import Database
+from chubby.daemon.persistence import Database
 
 
 async def test_insert_and_search(tmp_path: Path) -> None:

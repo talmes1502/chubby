@@ -8,13 +8,13 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from chub.daemon.handlers import CallContext, HandlerRegistry
-from chub.daemon.server import Server
-from chub.wrapper.client import WrapperClient
+from chubby.daemon.handlers import CallContext, HandlerRegistry
+from chubby.daemon.server import Server
+from chubby.wrapper.client import WrapperClient
 
 
 async def test_register_and_send_chunk() -> None:
-    short_dir = Path(tempfile.mkdtemp(prefix="chub-"))
+    short_dir = Path(tempfile.mkdtemp(prefix="chubby-"))
     try:
         sock_path = short_dir / "h.sock"
         reg = HandlerRegistry()

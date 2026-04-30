@@ -1,4 +1,4 @@
-from chub import __version__
+from chubby import __version__
 
 
 def test_version_string() -> None:

@@ -3,7 +3,7 @@ package model
 import (
 	"testing"
 
-	"github.com/USER/chub/tui/internal/rpc"
+	"github.com/USER/chubby/tui/internal/rpc"
 )
 
 // TestHistoryTurnsMsg_ReplacesConversation drives the reducer with a

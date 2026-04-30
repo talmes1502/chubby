@@ -1,4 +1,4 @@
-"""Integration test for ``chub start`` — one-command bootstrap."""
+"""Integration test for ``chubby start`` — one-command bootstrap."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from chub.cli.main import app
-from chub.daemon import paths
+from chubby.cli.main import app
+from chubby.daemon import paths
 
 
 def _pid_alive(pid: int) -> bool:
@@ -25,10 +25,10 @@ def _pid_alive(pid: int) -> bool:
 
 
 def test_chub_start_bootstraps_daemon(chub_home: Path) -> None:
-    """``chub start --no-tui --no-auto-attach --no-hooks`` brings up a daemon
+    """``chubby start --no-tui --no-auto-attach --no-hooks`` brings up a daemon
     even if none was running before.
     """
-    # Make sure no daemon was running in this isolated CHUB_HOME.
+    # Make sure no daemon was running in this isolated CHUBBY_HOME.
     assert not paths.pid_path().exists()
 
     runner = CliRunner()
@@ -75,12 +75,12 @@ def test_chub_start_help_lists_flags() -> None:
 
 
 def test_chub_start_skips_when_daemon_already_running(chub_home: Path) -> None:
-    """If a daemon is already up, chub start re-uses it (no respawn)."""
-    from chub.daemon import main as chubd_main
+    """If a daemon is already up, chubby start re-uses it (no respawn)."""
+    from chubby.daemon import main as chubbyd_main
 
     async def driver() -> tuple[int, str]:
         stop = asyncio.Event()
-        server_task = asyncio.create_task(chubd_main.serve(stop_event=stop))
+        server_task = asyncio.create_task(chubbyd_main.serve(stop_event=stop))
         # Wait for the socket to come up.
         for _ in range(100):
             if paths.sock_path().exists() and paths.pid_path().exists():
@@ -88,7 +88,7 @@ def test_chub_start_skips_when_daemon_already_running(chub_home: Path) -> None:
             await asyncio.sleep(0.02)
         assert paths.sock_path().exists()
         original_pid = int(paths.pid_path().read_text().strip())
-        # Run chub start in a thread (CliRunner is sync). Use a separate
+        # Run chubby start in a thread (CliRunner is sync). Use a separate
         # event-loop-friendly subprocess approach here: we just use asyncio's
         # to_thread to run the Typer CLI synchronously.
         runner = CliRunner()

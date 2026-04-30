@@ -1,6 +1,6 @@
-"""End-to-end test for the chub-claude wrapper.
+"""End-to-end test for the chubby-claude wrapper.
 
-Spawns chubd in-process, launches a real ``chub-claude`` subprocess wired to a
+Spawns chubbyd in-process, launches a real ``chubby-claude`` subprocess wired to a
 ``fakeclaude`` shim on PATH, then verifies that an ``inject`` RPC reaches the
 fake claude (it appears in ``FAKECLAUDE_LOG``).
 
@@ -15,8 +15,8 @@ import base64
 import os
 from pathlib import Path
 
-from chub.cli.client import Client
-from chub.daemon import main as chubd_main
+from chubby.cli.client import Client
+from chubby.daemon import main as chubbyd_main
 
 
 async def test_wrapper_registers_and_receives_inject(
@@ -25,13 +25,13 @@ async def test_wrapper_registers_and_receives_inject(
     tmp_path: Path,
 ) -> None:
     stop = asyncio.Event()
-    server_task = asyncio.create_task(chubd_main.serve(stop_event=stop))
+    server_task = asyncio.create_task(chubbyd_main.serve(stop_event=stop))
     sock = chub_home / "hub.sock"
     for _ in range(100):
         if sock.exists():
             break
         await asyncio.sleep(0.05)
-    assert sock.exists(), "chubd never created its socket"
+    assert sock.exists(), "chubbyd never created its socket"
 
     proc: asyncio.subprocess.Process | None = None
     fc_log = tmp_path / "fc.log"
@@ -39,7 +39,7 @@ async def test_wrapper_registers_and_receives_inject(
         proc = await asyncio.create_subprocess_exec(
             "uv",
             "run",
-            "chub-claude",
+            "chubby-claude",
             "--name",
             "x",
             "--cwd",
@@ -49,7 +49,7 @@ async def test_wrapper_registers_and_receives_inject(
             stderr=asyncio.subprocess.PIPE,
             env={
                 **os.environ,
-                "CHUB_HOME": str(chub_home),
+                "CHUBBY_HOME": str(chub_home),
                 "FAKECLAUDE_LOG": str(fc_log),
                 "PATH": os.environ["PATH"],
             },

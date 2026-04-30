@@ -1,4 +1,4 @@
-"""Shared fixtures: tempdir CHUB_HOME, fakeclaude on PATH."""
+"""Shared fixtures: tempdir CHUBBY_HOME, fakeclaude on PATH."""
 
 from __future__ import annotations
 
@@ -31,9 +31,9 @@ def fakeclaude_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def chub_home(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """A short-prefix CHUB_HOME so AF_UNIX sun_path stays under macOS limits."""
-    short_dir = Path(tempfile.mkdtemp(prefix="chub-"))
-    monkeypatch.setenv("CHUB_HOME", str(short_dir))
+    """A short-prefix CHUBBY_HOME so AF_UNIX sun_path stays under macOS limits."""
+    short_dir = Path(tempfile.mkdtemp(prefix="chubby-"))
+    monkeypatch.setenv("CHUBBY_HOME", str(short_dir))
     try:
         yield short_dir
     finally:

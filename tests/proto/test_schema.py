@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from chub.proto.schema import PingParams, PingResult, VersionResult
+from chubby.proto.schema import PingParams, PingResult, VersionResult
 
 
 def test_ping_params_accepts_optional_message() -> None:

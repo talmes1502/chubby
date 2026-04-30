@@ -1,4 +1,4 @@
-"""End-to-end test for `chub grep` — wires search_transcripts RPC into a real daemon."""
+"""End-to-end test for `chubby grep` — wires search_transcripts RPC into a real daemon."""
 
 from __future__ import annotations
 
@@ -6,19 +6,19 @@ import asyncio
 import base64
 from pathlib import Path
 
-from chub.cli.client import Client
-from chub.daemon import main as chubd_main
+from chubby.cli.client import Client
+from chubby.daemon import main as chubbyd_main
 
 
 async def test_search_transcripts_finds_pushed_output(chub_home: Path) -> None:
     stop = asyncio.Event()
-    server_task = asyncio.create_task(chubd_main.serve(stop_event=stop))
+    server_task = asyncio.create_task(chubbyd_main.serve(stop_event=stop))
     sock = chub_home / "hub.sock"
     for _ in range(100):
         if sock.exists():
             break
         await asyncio.sleep(0.05)
-    assert sock.exists(), "chubd never created its socket"
+    assert sock.exists(), "chubbyd never created its socket"
 
     try:
         client = Client(sock)

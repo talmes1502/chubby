@@ -20,7 +20,7 @@ type SlashCommand struct {
 
 // SlashCommands is the static catalog. Kept short and Claude-Code
 // specific: these are the commands the daemon actually understands when
-// proxied through inject. The "(chub)" prefix marks commands intercepted
+// proxied through inject. The "(chubby)" prefix marks commands intercepted
 // by the TUI itself rather than forwarded to Claude.
 var SlashCommands = []SlashCommand{
 	{"model", "Switch the Claude model for this session",
@@ -33,17 +33,17 @@ var SlashCommands = []SlashCommand{
 	{"login", "Re-authenticate", nil},
 	{"status", "Show session status", nil},
 	{"init", "Initialize a CLAUDE.md", nil},
-	// chub-side commands — intercepted by the TUI; never sent to Claude.
-	// The hex codes mirror src/chub/daemon/colors.py PALETTE.
-	{"color", "(chub) recolor the focused session — accepts hex / 0-15 / name", []string{
+	// chubby-side commands — intercepted by the TUI; never sent to Claude.
+	// The hex codes mirror src/chubby/daemon/colors.py PALETTE.
+	{"color", "(chubby) recolor the focused session — accepts hex / 0-15 / name", []string{
 		"blue", "green", "red", "orange", "pink", "cyan", "magenta",
 		"yellow", "purple", "lime", "mint", "salmon", "lavender",
 		"#5fafff", "#ff8787", "#87d787", "#ffaf5f", "#d787d7",
 	}},
-	{"rename", "(chub) rename the focused session", nil},
-	{"tag", "(chub) modify session tags (e.g. /tag +foo -bar)", nil},
+	{"rename", "(chubby) rename the focused session", nil},
+	{"tag", "(chubby) modify session tags (e.g. /tag +foo -bar)", nil},
 	{"refresh-claude",
-		"(chub) restart claude with --resume (settings reload, conversation kept)",
+		"(chubby) restart claude with --resume (settings reload, conversation kept)",
 		nil},
 }
 

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from chub.daemon.pidlock import PidLockBusy, acquire
+from chubby.daemon.pidlock import PidLockBusy, acquire
 
 
 def test_acquire_writes_pid(tmp_path: Path) -> None:

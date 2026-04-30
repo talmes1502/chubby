@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from chub.daemon import main as chubd_main
-from chub.proto import frame
+from chubby.daemon import main as chubbyd_main
+from chubby.proto import frame
 
 
 async def _ping(sock_path: Path) -> dict:
@@ -25,9 +25,9 @@ async def _ping(sock_path: Path) -> dict:
 @pytest.fixture
 def short_home() -> Path:
     # macOS AF_UNIX sun_path is limited to ~104 bytes; pytest's tmp_path is too
-    # long when used as CHUB_HOME (the socket sits inside it). Use a short
+    # long when used as CHUBBY_HOME (the socket sits inside it). Use a short
     # /tmp dir instead.
-    d = Path(tempfile.mkdtemp(prefix="chub-"))
+    d = Path(tempfile.mkdtemp(prefix="chubby-"))
     try:
         yield d
     finally:
@@ -35,9 +35,9 @@ def short_home() -> Path:
 
 
 async def test_run_serves_ping_and_version(short_home: Path, monkeypatch) -> None:
-    monkeypatch.setenv("CHUB_HOME", str(short_home))
+    monkeypatch.setenv("CHUBBY_HOME", str(short_home))
     stop = asyncio.Event()
-    server_task = asyncio.create_task(chubd_main.serve(stop_event=stop))
+    server_task = asyncio.create_task(chubbyd_main.serve(stop_event=stop))
     sock = short_home / "hub.sock"
     for _ in range(50):
         if sock.exists():
@@ -66,9 +66,9 @@ async def _rpc(sock_path: Path, method: str, params: dict) -> dict:
 
 
 async def test_register_wrapped_then_list(short_home: Path, monkeypatch) -> None:
-    monkeypatch.setenv("CHUB_HOME", str(short_home))
+    monkeypatch.setenv("CHUBBY_HOME", str(short_home))
     stop = asyncio.Event()
-    server_task = asyncio.create_task(chubd_main.serve(stop_event=stop))
+    server_task = asyncio.create_task(chubbyd_main.serve(stop_event=stop))
     sock = short_home / "hub.sock"
     for _ in range(50):
         if sock.exists():
@@ -89,23 +89,23 @@ async def test_serve_exits_when_server_dies(short_home: Path, monkeypatch) -> No
     because we set stop_event), serve() should still proceed to cleanup
     and release the PID lock so a new daemon can start.
     """
-    monkeypatch.setenv("CHUB_HOME", str(short_home))
+    monkeypatch.setenv("CHUBBY_HOME", str(short_home))
     pid_path = short_home / "hub.pid"
 
-    real_start = chubd_main.Server.start
+    real_start = chubbyd_main.Server.start
 
-    async def start_then_close(self: chubd_main.Server) -> None:
+    async def start_then_close(self: chubbyd_main.Server) -> None:
         await real_start(self)
         # Simulate the asyncio.Server dying (e.g. because of a fatal
         # internal error in the accept loop).
         assert self._server is not None
         self._server.close()
 
-    monkeypatch.setattr(chubd_main.Server, "start", start_then_close)
+    monkeypatch.setattr(chubbyd_main.Server, "start", start_then_close)
 
     stop = asyncio.Event()
     # serve() must return on its own without us having to set stop.
-    await asyncio.wait_for(chubd_main.serve(stop_event=stop), timeout=2.0)
+    await asyncio.wait_for(chubbyd_main.serve(stop_event=stop), timeout=2.0)
 
     # PID lock file must be gone so a fresh daemon can start.
     assert not pid_path.exists()

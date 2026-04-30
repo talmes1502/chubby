@@ -7,16 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from chub.daemon.handlers import CallContext, HandlerRegistry
-from chub.daemon.server import Server
-from chub.proto import frame
+from chubby.daemon.handlers import CallContext, HandlerRegistry
+from chubby.daemon.server import Server
+from chubby.proto import frame
 
 
 @pytest.fixture
 async def started_server(tmp_path: Path):
     # macOS AF_UNIX path limit is ~104 chars; pytest tmp_path is too long, so
     # use a short /tmp dir for the socket itself.
-    short_dir = Path(tempfile.mkdtemp(prefix="chub-"))
+    short_dir = Path(tempfile.mkdtemp(prefix="chubby-"))
     sock_path = short_dir / "h.sock"
     reg = HandlerRegistry()
 

@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from chub.proto.errors import ChubError, ErrorCode
-from chub.proto.rpc import Request, Response, Event, decode_message, encode_message
+from chubby.proto.errors import ChubError, ErrorCode
+from chubby.proto.rpc import Request, Response, Event, decode_message, encode_message
 
 
 def test_request_round_trip() -> None:

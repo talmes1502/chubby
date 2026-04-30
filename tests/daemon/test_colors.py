@@ -1,4 +1,4 @@
-from chub.daemon.colors import PALETTE, ColorAllocator
+from chubby.daemon.colors import PALETTE, ColorAllocator
 
 
 def test_palette_has_16_unique_hex_colors() -> None:

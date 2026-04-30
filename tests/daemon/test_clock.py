@@ -1,6 +1,6 @@
 import time
 
-from chub.daemon import clock
+from chubby.daemon import clock
 
 
 def test_now_returns_monotonic_increasing_int_ms() -> None:

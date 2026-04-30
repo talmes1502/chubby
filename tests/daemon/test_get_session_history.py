@@ -1,7 +1,7 @@
 """Tests for the get_session_history RPC.
 
 The TUI uses this to seed its viewport on first sight of a session, so the
-conversation persists across `chub down` + `chub up` cycles. The daemon reads
+conversation persists across `chubby down` + `chubby up` cycles. The daemon reads
 the bound JSONL on disk; only ``user`` / ``assistant`` records become turns,
 non-conversation records (e.g. ``last-prompt``, ``attachment``) are dropped.
 """
@@ -11,13 +11,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from chub.daemon.handlers import CallContext
-from chub.daemon.main import _build_registry
-from chub.daemon.persistence import Database
-from chub.daemon.registry import Registry
-from chub.daemon.runs import HubRun
-from chub.daemon.session import SessionKind
-from chub.daemon.subscriptions import SubscriptionHub
+from chubby.daemon.handlers import CallContext
+from chubby.daemon.main import _build_registry
+from chubby.daemon.persistence import Database
+from chubby.daemon.registry import Registry
+from chubby.daemon.runs import HubRun
+from chubby.daemon.session import SessionKind
+from chubby.daemon.subscriptions import SubscriptionHub
 
 
 async def _noop_write(_b: bytes) -> None:  # pragma: no cover - unused
@@ -72,7 +72,7 @@ async def test_get_session_history_reads_jsonl_turns(
     )
 
     # Point the projects-root resolver at our fake tree.
-    import chub.daemon.hooks as hooks_mod
+    import chubby.daemon.hooks as hooks_mod
     monkeypatch.setattr(hooks_mod, "claude_projects_root", lambda: fake_root)
 
     # Build the dependency graph the handler closure expects.
@@ -81,7 +81,7 @@ async def test_get_session_history_reads_jsonl_turns(
         subs = SubscriptionHub()
         run_dir = tmp_path / "run"
         run_dir.mkdir(exist_ok=True)
-        from chub.daemon.events import EventLog
+        from chubby.daemon.events import EventLog
         run = HubRun(
             id="hr_t",
             started_at=0,
@@ -90,7 +90,7 @@ async def test_get_session_history_reads_jsonl_turns(
         )
         reg = Registry(hub_run_id=run.id, db=db, subs=subs)
         s = await reg.register(name="x", kind=SessionKind.WRAPPED, cwd=str(tmp_path))
-        # Bind the chub session to the Claude session id whose JSONL we wrote.
+        # Bind the chubby session to the Claude session id whose JSONL we wrote.
         await reg.set_claude_session_id(s.id, claude_session_id)
 
         handlers = _build_registry(reg, run, db, subs)
@@ -123,11 +123,11 @@ async def test_get_session_history_reads_jsonl_turns(
 async def test_get_session_history_returns_empty_when_unbound(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """If the chub session has no claude_session_id yet (JSONL not bound),
+    """If the chubby session has no claude_session_id yet (JSONL not bound),
     the handler returns an empty list rather than failing."""
     fake_root = tmp_path / "projects"
     fake_root.mkdir()
-    import chub.daemon.hooks as hooks_mod
+    import chubby.daemon.hooks as hooks_mod
     monkeypatch.setattr(hooks_mod, "claude_projects_root", lambda: fake_root)
 
     db = await Database.open(tmp_path / "s.db")
@@ -135,7 +135,7 @@ async def test_get_session_history_returns_empty_when_unbound(
         subs = SubscriptionHub()
         run_dir = tmp_path / "run"
         run_dir.mkdir(exist_ok=True)
-        from chub.daemon.events import EventLog
+        from chubby.daemon.events import EventLog
         run = HubRun(
             id="hr_t",
             started_at=0,

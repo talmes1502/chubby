@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from chub.daemon.subscriptions import SubscriptionHub
+from chubby.daemon.subscriptions import SubscriptionHub
 
 
 async def test_subscribe_and_broadcast() -> None:

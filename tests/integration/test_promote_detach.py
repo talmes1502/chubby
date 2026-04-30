@@ -1,4 +1,4 @@
-"""Tests for ``chub promote`` / ``chub detach`` and the daemon-side handlers."""
+"""Tests for ``chubby promote`` / ``chubby detach`` and the daemon-side handlers."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from typing import Any, ClassVar
 import pytest
 from typer.testing import CliRunner
 
-import chub.cli.commands.detach as detach_mod
-import chub.cli.commands.promote as promote_mod
-from chub.cli.main import app
-from chub.daemon.attach import promote as promote_daemon
-from chub.daemon.attach import tmux as tmux_mod
-from chub.daemon.registry import Registry
-from chub.daemon.session import SessionKind, SessionStatus
+import chubby.cli.commands.detach as detach_mod
+import chubby.cli.commands.promote as promote_mod
+from chubby.cli.main import app
+from chubby.daemon.attach import promote as promote_daemon
+from chubby.daemon.attach import tmux as tmux_mod
+from chubby.daemon.registry import Registry
+from chubby.daemon.session import SessionKind, SessionStatus
 
 # --- CLI smoke tests ---------------------------------------------------------
 
@@ -194,12 +194,12 @@ async def test_promote_session_rejects_unknown_id(
     chub_home: Any,
 ) -> None:
     """promote_session via the daemon raises for an unknown session id."""
-    from chub.cli.client import Client
-    from chub.daemon import main as chubd_main
-    from chub.proto.errors import ChubError
+    from chubby.cli.client import Client
+    from chubby.daemon import main as chubbyd_main
+    from chubby.proto.errors import ChubError
 
     stop = asyncio.Event()
-    server_task = asyncio.create_task(chubd_main.serve(stop_event=stop))
+    server_task = asyncio.create_task(chubbyd_main.serve(stop_event=stop))
     sock = chub_home / "hub.sock"
     for _ in range(100):
         if sock.exists():

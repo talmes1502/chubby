@@ -1,4 +1,4 @@
-"""Tests for ``chub.daemon.notify`` and the AWAITING_USER hook."""
+"""Tests for ``chubby.daemon.notify`` and the AWAITING_USER hook."""
 
 from __future__ import annotations
 
@@ -8,10 +8,10 @@ from typing import Any
 
 import pytest
 
-from chub.daemon import notify as notify_mod
-from chub.daemon.notify import _esc, notify
-from chub.daemon.registry import Registry
-from chub.daemon.session import SessionKind, SessionStatus
+from chubby.daemon import notify as notify_mod
+from chubby.daemon.notify import _esc, notify
+from chubby.daemon.registry import Registry
+from chubby.daemon.session import SessionKind, SessionStatus
 
 
 class _FakeProc:
@@ -83,7 +83,7 @@ async def test_update_status_awaiting_user_fires_notify(
     if pending:
         await asyncio.gather(*pending)
 
-    assert notified == [("chub: alpha", "session is awaiting your input")]
+    assert notified == [("chubby: alpha", "session is awaiting your input")]
 
 
 async def test_update_status_non_awaiting_does_not_notify(

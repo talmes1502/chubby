@@ -1,5 +1,5 @@
 """Tests for ``refresh_claude_session`` and ``update_claude_pid`` — the
-two RPCs that bridge the TUI's ``/refresh-claude`` chub-side command into
+two RPCs that bridge the TUI's ``/refresh-claude`` chubby-side command into
 the wrapper's restart loop. Together they let the user reload settings/
 hooks/MCP without losing the running conversation.
 """
@@ -14,17 +14,17 @@ from pathlib import Path
 
 import pytest
 
-from chub.daemon import main as chubd_main
-from chub.proto import frame
-from chub.proto.errors import ErrorCode
+from chubby.daemon import main as chubbyd_main
+from chubby.proto import frame
+from chubby.proto.errors import ErrorCode
 
 
 @pytest.fixture
 def short_home() -> Path:
     """macOS AF_UNIX sun_path is limited to ~104 bytes; pytest's tmp_path
-    is too long when used as CHUB_HOME (the socket sits inside it). Use
+    is too long when used as CHUBBY_HOME (the socket sits inside it). Use
     a short /tmp dir we clean up ourselves."""
-    d = Path(tempfile.mkdtemp(prefix="chub-"))
+    d = Path(tempfile.mkdtemp(prefix="chubby-"))
     try:
         yield d
     finally:
@@ -46,11 +46,11 @@ async def _rpc(sock_path: Path, method: str, params: dict) -> dict:
 
 
 async def _start_daemon(short_home: Path, monkeypatch) -> tuple[Path, asyncio.Event, asyncio.Task]:
-    """Boot chubd against ``short_home``; return (sock_path, stop_event,
+    """Boot chubbyd against ``short_home``; return (sock_path, stop_event,
     server_task)."""
-    monkeypatch.setenv("CHUB_HOME", str(short_home))
+    monkeypatch.setenv("CHUBBY_HOME", str(short_home))
     stop = asyncio.Event()
-    server_task = asyncio.create_task(chubd_main.serve(stop_event=stop))
+    server_task = asyncio.create_task(chubbyd_main.serve(stop_event=stop))
     sock = short_home / "hub.sock"
     for _ in range(50):
         if sock.exists():
@@ -153,9 +153,9 @@ async def test_refresh_claude_wrapper_unreachable(
     rather than silently dropping the request."""
     # Easier to test this at the Registry level since manufacturing a
     # detached wrapper through RPC requires a multi-connection dance.
-    from chub.daemon.registry import Registry
-    from chub.daemon.session import SessionKind
-    from chub.proto.errors import ChubError
+    from chubby.daemon.registry import Registry
+    from chubby.daemon.session import SessionKind
+    from chubby.proto.errors import ChubError
 
     reg = Registry(hub_run_id="hr_t")
     s = await reg.register(
@@ -181,9 +181,9 @@ async def test_refresh_claude_emits_restart_event() -> None:
     session, invoke the handler logic (via the registry's ``inject``-style
     write path replicated), and assert the bytes pushed to the writer
     parse as a JSON-RPC event whose method is ``restart_claude``."""
-    from chub.daemon.registry import Registry
-    from chub.daemon.session import SessionKind
-    from chub.proto.rpc import Event, encode_message
+    from chubby.daemon.registry import Registry
+    from chubby.daemon.session import SessionKind
+    from chubby.proto.rpc import Event, encode_message
 
     reg = Registry(hub_run_id="hr_t")
     s = await reg.register(
@@ -211,11 +211,11 @@ async def test_refresh_claude_emits_restart_event() -> None:
 
 async def test_update_claude_pid_updates_session_pid() -> None:
     """``update_claude_pid`` mutates the session's pid in place; the
-    chub session id is unchanged. We don't go through the RPC envelope
+    chubby session id is unchanged. We don't go through the RPC envelope
     here — we assert against the registry directly so the test stays
     fast and deterministic."""
-    from chub.daemon.registry import Registry
-    from chub.daemon.session import SessionKind
+    from chubby.daemon.registry import Registry
+    from chubby.daemon.session import SessionKind
 
     reg = Registry(hub_run_id="hr_t")
     s = await reg.register(

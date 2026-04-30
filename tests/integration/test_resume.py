@@ -1,7 +1,7 @@
-"""End-to-end test for `chub up --resume` PID-alive bookkeeping.
+"""End-to-end test for `chubby up --resume` PID-alive bookkeeping.
 
-Stands up chubd, registers a wrapped session with a clearly-dead pid, shuts
-the daemon down, then restarts it with ``CHUB_RESUME=last`` and verifies the
+Stands up chubbyd, registers a wrapped session with a clearly-dead pid, shuts
+the daemon down, then restarts it with ``CHUBBY_RESUME=last`` and verifies the
 re-imported session is marked ``dead``.
 """
 
@@ -11,8 +11,8 @@ import asyncio
 import os
 from pathlib import Path
 
-from chub.cli.client import Client
-from chub.daemon.main import serve as daemon_serve
+from chubby.cli.client import Client
+from chubby.daemon.main import serve as daemon_serve
 
 
 async def test_resume_marks_dead_pids(chub_home: Path) -> None:
@@ -37,8 +37,8 @@ async def test_resume_marks_dead_pids(chub_home: Path) -> None:
         stop.set()
         await asyncio.wait_for(t, timeout=3.0)
 
-    # --- Run 2 with CHUB_RESUME=last: the prior session should re-appear ----
-    os.environ["CHUB_RESUME"] = "last"
+    # --- Run 2 with CHUBBY_RESUME=last: the prior session should re-appear ----
+    os.environ["CHUBBY_RESUME"] = "last"
     try:
         stop = asyncio.Event()
         t = asyncio.create_task(daemon_serve(stop_event=stop))
@@ -56,7 +56,7 @@ async def test_resume_marks_dead_pids(chub_home: Path) -> None:
             stop.set()
             await asyncio.wait_for(t, timeout=3.0)
     finally:
-        del os.environ["CHUB_RESUME"]
+        del os.environ["CHUBBY_RESUME"]
 
     assert any(
         s["name"] == "x" and s["status"] == "dead" for s in sessions

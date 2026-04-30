@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from chub.cli.client import Client
-from chub.daemon import main as chubd_main
+from chubby.cli.client import Client
+from chubby.daemon import main as chubbyd_main
 
 
 async def test_attach_existing_readonly_no_transcript(
@@ -26,7 +26,7 @@ async def test_attach_existing_readonly_no_transcript(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When no JSONL is found, register without claude_session_id."""
-    from chub.daemon import hooks as hooks_mod
+    from chubby.daemon import hooks as hooks_mod
 
     async def _noop(reg, s) -> None:  # type: ignore[no-untyped-def]
         return None
@@ -38,7 +38,7 @@ async def test_attach_existing_readonly_no_transcript(
     monkeypatch.setenv("HOME", str(tmp_path))
 
     stop = asyncio.Event()
-    server_task = asyncio.create_task(chubd_main.serve(stop_event=stop))
+    server_task = asyncio.create_task(chubbyd_main.serve(stop_event=stop))
     sock = chub_home / "hub.sock"
     for _ in range(100):
         if sock.exists():
@@ -81,7 +81,7 @@ async def test_attach_existing_readonly_finds_transcript(
     """When a JSONL referencing this cwd exists anywhere under
     ~/.claude/projects/, attach_existing_readonly should find it via the
     encoding-free cwd-field scan."""
-    from chub.daemon import hooks as hooks_mod
+    from chubby.daemon import hooks as hooks_mod
 
     async def _noop(reg, s) -> None:  # type: ignore[no-untyped-def]
         return None
@@ -104,7 +104,7 @@ async def test_attach_existing_readonly_finds_transcript(
     monkeypatch.setattr(hooks_mod, "claude_projects_root", lambda: fake_root)
 
     stop = asyncio.Event()
-    server_task = asyncio.create_task(chubd_main.serve(stop_event=stop))
+    server_task = asyncio.create_task(chubbyd_main.serve(stop_event=stop))
     sock = chub_home / "hub.sock"
     for _ in range(100):
         if sock.exists():

@@ -11,14 +11,14 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-from chub.daemon.events import EventLog
-from chub.daemon.handlers import CallContext
-from chub.daemon.main import _build_registry
-from chub.daemon.persistence import Database
-from chub.daemon.registry import Registry
-from chub.daemon.runs import HubRun
-from chub.daemon.session import SessionKind, SessionStatus
-from chub.daemon.subscriptions import SubscriptionHub
+from chubby.daemon.events import EventLog
+from chubby.daemon.handlers import CallContext
+from chubby.daemon.main import _build_registry
+from chubby.daemon.persistence import Database
+from chubby.daemon.registry import Registry
+from chubby.daemon.runs import HubRun
+from chubby.daemon.session import SessionKind, SessionStatus
+from chubby.daemon.subscriptions import SubscriptionHub
 
 
 async def _noop_write(_b: bytes) -> None:  # pragma: no cover - unused

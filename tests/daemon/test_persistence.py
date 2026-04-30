@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from chub.daemon.persistence import Database
+from chubby.daemon.persistence import Database
 
 
 async def test_open_creates_schema(tmp_path: Path) -> None:
@@ -16,7 +16,7 @@ async def test_open_creates_schema(tmp_path: Path) -> None:
 
 
 async def test_insert_session_round_trip(tmp_path: Path) -> None:
-    from chub.daemon.session import Session, SessionKind, SessionStatus
+    from chubby.daemon.session import Session, SessionKind, SessionStatus
 
     db = await Database.open(tmp_path / "state.db")
     s = Session(

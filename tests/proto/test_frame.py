@@ -3,7 +3,7 @@ import io
 
 import pytest
 
-from chub.proto import frame
+from chubby.proto import frame
 
 
 def test_encode_prepends_4_byte_be_length() -> None:

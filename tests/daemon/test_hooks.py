@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from chub.daemon.hooks import (
+from chubby.daemon.hooks import (
     _extract_turn_text,
     _stringify,
     _tail_jsonl,
@@ -16,9 +16,9 @@ from chub.daemon.hooks import (
     session_id_for_pid,
     watch_for_transcript,
 )
-from chub.daemon.persistence import Database
-from chub.daemon.registry import Registry
-from chub.daemon.session import Session, SessionKind, SessionStatus
+from chubby.daemon.persistence import Database
+from chubby.daemon.registry import Registry
+from chubby.daemon.session import Session, SessionKind, SessionStatus
 
 
 class _FakeSubs:
@@ -39,7 +39,7 @@ def test_find_jsonl_for_session_globs_any_subdir(tmp_path: Path, monkeypatch) ->
     sub.mkdir(parents=True)
     (sub / "abc1234.jsonl").write_text("{}\n")
 
-    import chub.daemon.hooks as hooks_mod
+    import chubby.daemon.hooks as hooks_mod
     monkeypatch.setattr(hooks_mod, "claude_projects_root", lambda: fake_root)
 
     found = find_jsonl_for_session("abc1234")
@@ -70,7 +70,7 @@ def test_find_new_jsonl_for_cwd_matches_via_cwd_field(
         json.dumps({"type": "first", "cwd": other_cwd}) + "\n"
     )
 
-    import chub.daemon.hooks as hooks_mod
+    import chubby.daemon.hooks as hooks_mod
     monkeypatch.setattr(hooks_mod, "claude_projects_root", lambda: fake_root)
 
     found = find_new_jsonl_for_cwd(target_cwd, since_ms=0)
@@ -323,7 +323,7 @@ async def test_watch_for_transcript_binds_new_jsonl(tmp_path: Path, monkeypatch)
     sub = fake_root / "whatever-encoded-name"
     sub.mkdir(parents=True)
 
-    import chub.daemon.hooks as hooks_mod
+    import chubby.daemon.hooks as hooks_mod
     monkeypatch.setattr(hooks_mod, "claude_projects_root", lambda: fake_root)
 
     db = await Database.open(tmp_path / "s.db")
@@ -375,7 +375,7 @@ def test_session_id_for_pid_reads_mapping(tmp_path: Path, monkeypatch) -> None:
         )
     )
 
-    import chub.daemon.hooks as hooks_mod
+    import chubby.daemon.hooks as hooks_mod
     monkeypatch.setattr(hooks_mod, "claude_sessions_dir", lambda: fake_dir)
 
     assert session_id_for_pid(12345) == "abc-1234-uuid"
@@ -386,7 +386,7 @@ def test_session_id_for_pid_missing_returns_none(tmp_path: Path, monkeypatch) ->
     fake_dir = tmp_path / "sessions"
     fake_dir.mkdir()
 
-    import chub.daemon.hooks as hooks_mod
+    import chubby.daemon.hooks as hooks_mod
     monkeypatch.setattr(hooks_mod, "claude_sessions_dir", lambda: fake_dir)
 
     assert session_id_for_pid(99999) is None
@@ -442,7 +442,7 @@ async def test_watch_for_transcript_binds_via_claude_pid(
         json.dumps({"pid": claude_pid, "sessionId": real_id, "cwd": cwd})
     )
 
-    import chub.daemon.hooks as hooks_mod
+    import chubby.daemon.hooks as hooks_mod
     monkeypatch.setattr(hooks_mod, "claude_projects_root", lambda: fake_projects)
     monkeypatch.setattr(hooks_mod, "claude_sessions_dir", lambda: fake_sessions)
 

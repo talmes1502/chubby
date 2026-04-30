@@ -1,10 +1,10 @@
-"""Tests for the chub Typer CLI."""
+"""Tests for the chubby Typer CLI."""
 
 from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from chub.cli.main import app
+from chubby.cli.main import app
 
 runner = CliRunner()
 

@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from chub.proto.schema import (
+from chubby.proto.schema import (
     RegisterWrappedParams,
     RegisterWrappedResult,
     ListSessionsParams,

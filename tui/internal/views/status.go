@@ -80,7 +80,7 @@ func rawStatusBar(mode StatusMode, composeHasText bool, broadcastField int) stri
 	case StatusModeHelp:
 		return "(any key dismisses)"
 	case StatusModeReconnecting:
-		return "connecting to chubd... · Ctrl+C quit"
+		return "connecting to chubbyd... · Ctrl+C quit"
 	}
 	return ""
 }
@@ -92,9 +92,9 @@ func rawStatusBar(mode StatusMode, composeHasText bool, broadcastField int) stri
 func TopStatus(hubRunShort string, sessionCount, idleCount, width int) string {
 	var s string
 	if hubRunShort != "" {
-		s = fmt.Sprintf("chub · %s · %d sessions", hubRunShort, sessionCount)
+		s = fmt.Sprintf("chubby · %s · %d sessions", hubRunShort, sessionCount)
 	} else {
-		s = fmt.Sprintf("chub · %d sessions", sessionCount)
+		s = fmt.Sprintf("chubby · %d sessions", sessionCount)
 	}
 	if idleCount > 0 {
 		s += fmt.Sprintf(" · %d idle ⚡", idleCount)

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from chub.daemon.logs import LogWriter
+from chubby.daemon.logs import LogWriter
 
 
 async def test_writes_chunks_with_color_header(tmp_path: Path) -> None:

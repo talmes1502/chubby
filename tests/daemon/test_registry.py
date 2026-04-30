@@ -1,8 +1,8 @@
 import pytest
 
-from chub.daemon.registry import Registry
-from chub.daemon.session import SessionKind
-from chub.proto.errors import ChubError, ErrorCode
+from chubby.daemon.registry import Registry
+from chubby.daemon.session import SessionKind
+from chubby.proto.errors import ChubError, ErrorCode
 
 
 async def test_register_wrapped_assigns_id_and_color() -> None:

@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from chub.daemon.attach.tmux import _capture_pane, inject_tmux
-from chub.daemon.session import Session, SessionKind, SessionStatus
+from chubby.daemon.attach.tmux import _capture_pane, inject_tmux
+from chubby.daemon.session import Session, SessionKind, SessionStatus
 
 _tmux = shutil.which("tmux")
 pytestmark = pytest.mark.skipif(_tmux is None, reason="tmux not installed")

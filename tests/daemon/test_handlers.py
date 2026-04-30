@@ -4,8 +4,8 @@ from typing import Any
 
 import pytest
 
-from chub.daemon.handlers import CallContext, HandlerRegistry
-from chub.proto.errors import ChubError, ErrorCode
+from chubby.daemon.handlers import CallContext, HandlerRegistry
+from chubby.proto.errors import ChubError, ErrorCode
 
 
 def _stub_ctx() -> CallContext:
