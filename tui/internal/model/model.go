@@ -44,6 +44,7 @@ const (
 	ModeGrep
 	ModeHistory
 	ModeReconnecting
+	ModeSpawn
 )
 
 // broadcastState is held in the Model so the reducer can mutate it
@@ -70,6 +71,14 @@ type toast struct {
 	sessionName string
 	color       string
 	expiresAt   time.Time
+}
+
+// spawnState backs ModeSpawn: a small modal asking for a new session
+// name, with the cwd inherited from the focused session.
+type spawnState struct {
+	name textinput.Model
+	cwd  string
+	err  error
 }
 
 // historyState backs the three-column miller view: hub-runs on the
@@ -100,6 +109,7 @@ type Model struct {
 	bcast   broadcastState
 	grep    grepState
 	history historyState
+	spawn   spawnState
 
 	toasts []toast
 
@@ -134,6 +144,8 @@ type historyRunSessionsMsg struct {
 type toastTickMsg struct{}
 type reconnectAttemptMsg struct{}
 type reconnectedMsg struct{}
+type spawnDoneMsg struct{}
+type spawnFailedMsg struct{ err error }
 
 // New constructs a Model bound to an already-connected rpc.Client.
 func New(c *rpc.Client) Model {
@@ -286,6 +298,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case bcastDoneMsg:
 		m.mode = ModeMain
 		return m, m.refreshSessions()
+	case spawnDoneMsg:
+		m.mode = ModeMain
+		return m, m.refreshSessions()
+	case spawnFailedMsg:
+		m.spawn.err = msg.err
+		return m, nil
 	case grepDebounceMsg:
 		if msg.token != m.grep.debounceToken {
 			return m, nil
@@ -330,6 +348,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleKeyGrep(msg)
 	case ModeHistory:
 		return m.handleKeyHistory(msg)
+	case ModeSpawn:
+		return m.handleKeySpawn(msg)
 	case ModeReconnecting:
 		// Swallow keys while we're reconnecting; user can still ctrl+c
 		// because that's handled before the dispatch.
@@ -376,6 +396,14 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+b":
 		m.mode = ModeBroadcast
 		m.bcast = broadcastState{selected: map[string]bool{}}
+		return m, nil
+	case "ctrl+n":
+		cwd := ""
+		if s := m.focusedSession(); s != nil {
+			cwd = s.Cwd
+		}
+		m.spawn = spawnState{name: views.NewSpawnNameInput(), cwd: cwd}
+		m.mode = ModeSpawn
 		return m, nil
 	case "ctrl+h":
 		m.mode = ModeHistory
@@ -496,6 +524,38 @@ func (m Model) handleKeyGrep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return grepDebounceMsg{token: tok}
 	})
 	return m, tea.Batch(cmd, debounce)
+}
+
+func (m Model) handleKeySpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = ModeMain
+		return m, nil
+	case "enter":
+		name := strings.TrimSpace(m.spawn.name.Value())
+		if name == "" {
+			return m, nil
+		}
+		return m, m.doSpawn(name, m.spawn.cwd)
+	}
+	var cmd tea.Cmd
+	m.spawn.name, cmd = m.spawn.name.Update(msg)
+	return m, cmd
+}
+
+func (m Model) doSpawn(name, cwd string) tea.Cmd {
+	c := m.client
+	return func() tea.Msg {
+		params := map[string]any{
+			"name": name,
+			"cwd":  cwd,
+			"tags": []string{},
+		}
+		if _, err := c.Call(context.Background(), "spawn_session", params); err != nil {
+			return spawnFailedMsg{err}
+		}
+		return spawnDoneMsg{}
+	}
 }
 
 func (m Model) handleKeyHistory(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -735,6 +795,8 @@ func (m Model) View() string {
 		return m.viewGrep()
 	case ModeHistory:
 		return m.viewHistory()
+	case ModeSpawn:
+		return m.viewSpawn()
 	case ModeReconnecting:
 		return m.viewReconnecting()
 	}
@@ -931,6 +993,44 @@ func (m Model) viewHistory() string {
 	header := lipgloss.NewStyle().Bold(true).Render(
 		"History (Tab=switch col, Enter=open, Esc=close)")
 	return lipgloss.JoinVertical(lipgloss.Left, header, cols)
+}
+
+func (m Model) viewSpawn() string {
+	w := m.width
+	if w < 50 {
+		w = 50
+	}
+	cw := w - 12
+	if cw < 30 {
+		cw = 30
+	}
+	cwd := m.spawn.cwd
+	if cwd == "" {
+		cwd = "(none — daemon will pick a default)"
+	}
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Bold(true).Render("New session") + "\n\n")
+	b.WriteString("  cwd:  " + cwd + "\n")
+	b.WriteString("  name: " + m.spawn.name.View() + "\n\n")
+	if m.spawn.err != nil {
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("9")).
+			Render("error: "+m.spawn.err.Error()) + "\n\n")
+	}
+	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
+		Render("Enter to spawn · Esc to cancel"))
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		Width(cw).
+		Padding(0, 1).
+		Render(b.String())
+	wh, hh := m.width, m.height
+	if wh < 1 {
+		wh = w
+	}
+	if hh < 1 {
+		hh = 10
+	}
+	return lipgloss.Place(wh, hh, lipgloss.Center, lipgloss.Center, box)
 }
 
 func (m Model) viewReconnecting() string {
