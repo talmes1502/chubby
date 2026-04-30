@@ -212,6 +212,7 @@ type reconnectedMsg struct{}
 type spawnDoneMsg struct{}
 type spawnFailedMsg struct{ err error }
 type renameDoneMsg struct{}
+type respawnDoneMsg struct{}
 
 // New constructs a Model bound to an already-connected rpc.Client.
 func New(c *rpc.Client) Model {
@@ -391,6 +392,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case renameDoneMsg:
 		m.mode = ModeMain
 		return m, m.refreshSessions()
+	case respawnDoneMsg:
+		return m, m.refreshSessions()
 	case grepDebounceMsg:
 		if msg.token != m.grep.debounceToken {
 			return m, nil
@@ -542,6 +545,12 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "ctrl+r":
 		return m.enterRenameMode()
+	case "ctrl+p":
+		s := m.focusedSession()
+		if s == nil || s.Status != "dead" {
+			return m, nil
+		}
+		return m, m.doRespawn(s.Name, s.Cwd, s.Tags)
 	case "?":
 		// Only intercept '?' as the help key when compose is empty,
 		// otherwise the user can't type a literal '?' mid-prompt.
@@ -822,6 +831,45 @@ func (m Model) doSpawn(name, cwd string, tags []string) tea.Cmd {
 			return spawnFailedMsg{err}
 		}
 		return spawnDoneMsg{}
+	}
+}
+
+// doRespawn resurrects a dead session: spawns a new wrapper with the
+// same cwd and tags under a temp name (the dead row still occupies the
+// original name in the registry until it actually transitions), then
+// renames the new session back to the original. The dead row stays in
+// the DB but doesn't conflict — the registry's name-uniqueness check
+// excludes DEAD status (see registry.register / registry.rename).
+func (m Model) doRespawn(name, cwd string, tags []string) tea.Cmd {
+	c := m.client
+	if tags == nil {
+		tags = []string{}
+	}
+	return func() tea.Msg {
+		tempName := name + "-r"
+		out, err := c.Call(context.Background(), "spawn_session", map[string]any{
+			"name": tempName,
+			"cwd":  cwd,
+			"tags": tags,
+		})
+		if err != nil {
+			return errMsg{err}
+		}
+		var r struct {
+			Session struct {
+				ID string `json:"id"`
+			} `json:"session"`
+		}
+		if err := json.Unmarshal(out, &r); err != nil {
+			return errMsg{err}
+		}
+		if _, err := c.Call(context.Background(), "rename_session", map[string]any{
+			"id":   r.Session.ID,
+			"name": name,
+		}); err != nil {
+			return errMsg{err}
+		}
+		return respawnDoneMsg{}
 	}
 }
 
@@ -1428,6 +1476,7 @@ func (m Model) viewHelp() string {
   Ctrl+N             new session in focused cwd
   Ctrl+K             search session list
   Ctrl+R             rename focused session OR group (rail cursor)
+  Ctrl+P             respawn focused dead session
   Ctrl+B             broadcast modal
   Ctrl+G             grep transcripts (current run)
   Ctrl+H             history panel (past hub-runs)
@@ -1774,6 +1823,18 @@ func renderViewport(s *Session, conversation map[string][]Turn, w, h int) string
 		Foreground(lipgloss.Color(s.Color)).
 		Bold(true).
 		Render(s.Name)
+	if s.Status == "dead" {
+		hint := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true).
+			Render("session is dead — press Ctrl+P to respawn")
+		body := header + "\n\n" + hint
+		turns := conversation[s.ID]
+		if len(turns) > 0 {
+			// Still show the prior transcript below the hint so the user
+			// can see what happened before the session died.
+			body += "\n\n" + renderTurns(turns, s.Color, w-2)
+		}
+		return frame.Render(body)
+	}
 	turns := conversation[s.ID]
 	if len(turns) == 0 {
 		body := header + "\n\n" +
@@ -1781,19 +1842,23 @@ func renderViewport(s *Session, conversation map[string][]Turn, w, h int) string
 				Render("(no messages yet — type below to send)")
 		return frame.Render(body)
 	}
-	// Inner width: account for the rounded-border (1 col on each side).
-	inner := w - 2
-	if inner < 10 {
-		inner = 10
+	body := header + "\n\n" + renderTurns(turns, s.Color, w-2)
+	return frame.Render(body)
+}
+
+// renderTurns formats the structured transcript: user prompts marked
+// with a coloured arrow, assistant responses in the default fg,
+// separated by blank lines. Pass innerWidth to fit inside a bordered
+// frame (subtract 2 for the rounded border).
+func renderTurns(turns []Turn, sessionColor string, innerWidth int) string {
+	if innerWidth < 10 {
+		innerWidth = 10
 	}
 	userStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(s.Color)).Bold(true).
-		Width(inner)
-	asstStyle := lipgloss.NewStyle().Width(inner)
-
+		Foreground(lipgloss.Color(sessionColor)).Bold(true).
+		Width(innerWidth)
+	asstStyle := lipgloss.NewStyle().Width(innerWidth)
 	var b strings.Builder
-	b.WriteString(header)
-	b.WriteString("\n\n")
 	for i, t := range turns {
 		if i > 0 {
 			b.WriteString("\n")
@@ -1806,5 +1871,5 @@ func renderViewport(s *Session, conversation map[string][]Turn, w, h int) string
 		}
 		b.WriteString("\n")
 	}
-	return frame.Render(b.String())
+	return b.String()
 }

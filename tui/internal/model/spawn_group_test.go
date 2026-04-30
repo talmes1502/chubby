@@ -117,6 +117,38 @@ func slicesEq(a, b []string) bool {
 	return true
 }
 
+// TestCtrlP_OnlyFiresOnDeadSession verifies the respawn shortcut is a
+// no-op when there's no focused session and when the focused session is
+// not dead — so an accidental Ctrl+P on a live session can't double-spawn.
+func TestCtrlP_OnlyFiresOnDeadSession(t *testing.T) {
+	cases := []struct {
+		name     string
+		sessions []Session
+		focused  int
+		wantCmd  bool
+	}{
+		{"no focused session", nil, 0, false},
+		{"focused session is idle", []Session{{ID: "s1", Name: "a", Status: "idle"}}, 0, false},
+		{"focused session is awaiting", []Session{{ID: "s1", Name: "a", Status: "awaiting_user"}}, 0, false},
+		{"focused session is dead", []Session{{ID: "s1", Name: "a", Status: "dead", Cwd: "/tmp"}}, 0, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := Model{
+				sessions: c.sessions,
+				focused:  c.focused,
+				mode:     ModeMain,
+				compose:  views.NewCompose(),
+			}
+			_, cmd := m.handleKeyMain(tea.KeyMsg{Type: tea.KeyCtrlP})
+			gotCmd := cmd != nil
+			if gotCmd != c.wantCmd {
+				t.Errorf("Ctrl+P returned cmd=%v, want %v", gotCmd, c.wantCmd)
+			}
+		})
+	}
+}
+
 // TestCtrlN_PrefillsGroupFromFocusedSession verifies that Ctrl+N pre-fills
 // the spawn modal's group field with the focused session's group, so a
 // new session lands in the same rail bucket by default.
