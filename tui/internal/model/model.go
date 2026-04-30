@@ -201,6 +201,11 @@ type Model struct {
 	// per TUI session. Without this guard the per-tick refresh would
 	// re-load history every 2 seconds.
 	historyLoaded map[string]bool
+
+	// initialListReceived flips true after the first listMsg arrives.
+	// Used to auto-open the spawn modal when the TUI starts and there
+	// are no sessions to focus.
+	initialListReceived bool
 }
 
 type tickMsg struct{}
@@ -370,6 +375,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.historyLoaded[s.ID] {
 				m.historyLoaded[s.ID] = true
 				cmds = append(cmds, m.loadHistory(s.ID))
+			}
+		}
+		// First listMsg + no sessions: auto-open the spawn modal so the
+		// user doesn't stare at an empty viewport.
+		if !m.initialListReceived {
+			m.initialListReceived = true
+			if len(m.sessions) == 0 && m.mode == ModeMain {
+				m.openSpawnModal()
 			}
 		}
 		return m, tea.Batch(cmds...)
@@ -654,29 +667,7 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.bcast = broadcastState{selected: map[string]bool{}}
 		return m, nil
 	case "ctrl+n":
-		cwd := ""
-		group := ""
-		if s := m.focusedSession(); s != nil {
-			cwd = s.Cwd
-			// Pre-fill the group with the focused session's group so the
-			// new session lands in the same rail bucket. Skip "(untitled)"
-			// — that's the no-group fallback, not a meaningful tag.
-			if g := GroupKey(*s); g != UntitledGroup {
-				group = g
-			}
-		}
-		if cwd == "" {
-			if home, err := os.UserHomeDir(); err == nil {
-				cwd = home
-			}
-		}
-		m.spawn = spawnState{
-			name:  views.NewSpawnNameInput(),
-			cwd:   views.NewSpawnCwdInput(cwd),
-			group: views.NewSpawnGroupInput(group),
-			field: 0,
-		}
-		m.mode = ModeSpawn
+		m.openSpawnModal()
 		return m, nil
 	case "ctrl+k":
 		m.search.query.SetValue("")
@@ -944,6 +935,37 @@ func (m Model) handleKeySpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.spawn.group, cmd = m.spawn.group.Update(msg)
 	}
 	return m, cmd
+}
+
+// openSpawnModal seeds spawnState (cwd defaults to focused session's cwd
+// or $HOME, group defaults to focused session's group when meaningful)
+// and switches to ModeSpawn. Pointer receiver because we mutate m.mode
+// and m.spawn. Called by Ctrl+N and by the auto-open path in listMsg
+// when the first list comes back empty.
+func (m *Model) openSpawnModal() {
+	cwd := ""
+	group := ""
+	if s := m.focusedSession(); s != nil {
+		cwd = s.Cwd
+		// Pre-fill the group with the focused session's group so the
+		// new session lands in the same rail bucket. Skip "(untitled)"
+		// — that's the no-group fallback, not a meaningful tag.
+		if g := GroupKey(*s); g != UntitledGroup {
+			group = g
+		}
+	}
+	if cwd == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			cwd = home
+		}
+	}
+	m.spawn = spawnState{
+		name:  views.NewSpawnNameInput(),
+		cwd:   views.NewSpawnCwdInput(cwd),
+		group: views.NewSpawnGroupInput(group),
+		field: 0,
+	}
+	m.mode = ModeSpawn
 }
 
 // refocusSpawn applies Focus()/Blur() so only the active spawn-modal
