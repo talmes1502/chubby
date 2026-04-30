@@ -1334,6 +1334,15 @@ func (m Model) sendComposed() tea.Cmd {
 			target = s.Name
 		}
 	}
+	if target == "" {
+		// No focused session and no @name retarget — guide the user
+		// instead of firing a doomed list_sessions+inject round-trip.
+		return func() tea.Msg {
+			return composeFailedMsg{fmt.Errorf(
+				"no session focused — press Ctrl+N to create one (or Tab once a session exists)",
+			)}
+		}
+	}
 	payload := text
 	c := m.client
 	return func() tea.Msg {
@@ -2187,8 +2196,19 @@ func renderSessionBanner(s *Session) string {
 // positioning escapes don't compose with lipgloss frames.
 func renderViewport(s *Session, conversation map[string][]Turn, w, h int) string {
 	if s == nil {
-		return lipgloss.NewStyle().Width(w).Height(h).Border(lipgloss.RoundedBorder()).
-			Render("(no session)")
+		dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+		bold := lipgloss.NewStyle().Bold(true)
+		body := bold.Render("no sessions yet") + "\n\n" +
+			dim.Render("press") + " " +
+			bold.Render("Ctrl+N") + " " +
+			dim.Render("to create one") + "\n" +
+			dim.Render("or") + " " +
+			bold.Render("chub spawn --name <n> --cwd <dir>") + " " +
+			dim.Render("from another terminal")
+		return lipgloss.NewStyle().Width(w).Height(h).
+			Border(lipgloss.RoundedBorder()).
+			Padding(1, 2).
+			Render(body)
 	}
 	frame := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
