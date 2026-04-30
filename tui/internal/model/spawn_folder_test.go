@@ -131,7 +131,10 @@ func TestSpawnWithFolder_AssignsToFolder(t *testing.T) {
 			name:   views.NewSpawnNameInput(),
 			cwd:    views.NewSpawnCwdInput("/tmp"),
 			folder: views.NewSpawnFolderInput("priority"),
-			field:  0,
+			// Enter on field 2 submits; earlier fields advance instead
+			// (form-fill convention). Start on the last field so this
+			// test exercises the submit path.
+			field: 2,
 		},
 	}
 	m.spawn.name.SetValue("api")
@@ -178,7 +181,7 @@ func TestSpawnWithEmptyFolder_LeavesUnfiled(t *testing.T) {
 			name:   views.NewSpawnNameInput(),
 			cwd:    views.NewSpawnCwdInput("/tmp"),
 			folder: views.NewSpawnFolderInput(""),
-			field:  0,
+			field:  2,
 		},
 	}
 	m.spawn.name.SetValue("api")

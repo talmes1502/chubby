@@ -49,6 +49,39 @@ func TestRenderMarkdown_RendererCacheReused(t *testing.T) {
 	}
 }
 
+// TestRenderMarkdown_HeadingMarkersStripped — H1-H6 should render the
+// heading TEXT styled (bold/color) with the leading `#` markers
+// removed, the way Claude's CLI does. Earlier versions of the chubby
+// theme set Prefix:"### " on each heading, which kept the literal
+// markers in the output and made headings look unrendered.
+func TestRenderMarkdown_HeadingMarkersStripped(t *testing.T) {
+	cases := []struct {
+		src         string
+		firstWord   string
+		shouldBeOut []string // markers that MUST NOT survive
+	}{
+		{"# Title", "Title", []string{"# T", "## T", "### T"}},
+		{"## Subtitle", "Subtitle", []string{"## S", "### S"}},
+		{"### Bottom line", "Bottom", []string{"### "}},
+		{"#### Detail", "Detail", []string{"#### "}},
+	}
+	for _, c := range cases {
+		out := RenderMarkdown(c.src, 80)
+		// The heading's first word must still appear (glamour wraps
+		// each token in its own ANSI escapes, so substring-checking the
+		// full phrase is brittle — checking the first word is enough).
+		if !strings.Contains(out, c.firstWord) {
+			t.Fatalf("rendering %q lost the heading text: %q", c.src, out)
+		}
+		for _, marker := range c.shouldBeOut {
+			if strings.Contains(out, marker) {
+				t.Fatalf("rendering %q kept literal marker %q: %q",
+					c.src, marker, out)
+			}
+		}
+	}
+}
+
 // TestRenderMarkdown_FencedCodeBlock — chroma rejects bare ANSI-256
 // color codes ("141") with "unknown style element"; this caused a
 // runtime panic the first time a code block hit our custom theme.

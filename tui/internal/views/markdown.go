@@ -76,44 +76,52 @@ var chubbyMarkdownStyle = ansi.StyleConfig{
 			Bold:        bptr(true),
 		},
 	},
+	// Headings: drop the literal `#` markers — Claude's UI styles
+	// headings via bold + color only and looks much cleaner without
+	// the prefix characters bleeding into the rendered output. H1-H4
+	// share the same accent (bright cyan, bold); H5/H6 step down to
+	// dimmer styles so a deeply-nested heading still reads as
+	// subordinate without competing with the body text.
 	H1: ansi.StyleBlock{
 		StylePrimitive: ansi.StylePrimitive{
-			Prefix: "# ",
-			Color:  sptr("81"),
-			Bold:   bptr(true),
+			BlockSuffix: "\n",
+			Color:       sptr("81"),
+			Bold:        bptr(true),
 		},
 	},
 	H2: ansi.StyleBlock{
 		StylePrimitive: ansi.StylePrimitive{
-			Prefix: "## ",
-			Color:  sptr("81"),
-			Bold:   bptr(true),
+			BlockSuffix: "\n",
+			Color:       sptr("81"),
+			Bold:        bptr(true),
 		},
 	},
 	H3: ansi.StyleBlock{
 		StylePrimitive: ansi.StylePrimitive{
-			Prefix: "### ",
-			Color:  sptr("81"),
-			Bold:   bptr(true),
+			BlockSuffix: "\n",
+			Color:       sptr("81"),
+			Bold:        bptr(true),
 		},
 	},
 	H4: ansi.StyleBlock{
 		StylePrimitive: ansi.StylePrimitive{
-			Prefix: "#### ",
-			Color:  sptr("81"),
-			Bold:   bptr(true),
+			BlockSuffix: "\n",
+			Color:       sptr("81"),
+			Bold:        bptr(true),
 		},
 	},
 	H5: ansi.StyleBlock{
 		StylePrimitive: ansi.StylePrimitive{
-			Prefix: "##### ",
-			Color:  sptr("81"),
+			BlockSuffix: "\n",
+			Color:       sptr("117"),
+			Bold:        bptr(true),
 		},
 	},
 	H6: ansi.StyleBlock{
 		StylePrimitive: ansi.StylePrimitive{
-			Prefix: "###### ",
-			Color:  sptr("245"),
+			BlockSuffix: "\n",
+			Color:       sptr("245"),
+			Italic:      bptr(true),
 		},
 	},
 	Strikethrough: ansi.StylePrimitive{

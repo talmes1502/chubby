@@ -189,6 +189,9 @@ type spawnState struct {
 	// pathCompletionIndex advances on each repeated Tab; pathCompletionLast
 	// is the last value Tab produced — if the user has edited the field
 	// since, we reset the cycle so a fresh prefix re-anchors at idx 0.
+	// To advance to the next field after autocompleting, press Enter
+	// (form-fill convention) — Tab keeps cycling so users can flip
+	// through sibling directories.
 	pathCompletionIndex int
 	pathCompletionLast  string
 
@@ -1721,9 +1724,12 @@ func (m Model) handleKeySpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "tab":
 		// In the cwd field, Tab tries directory-name completion first.
-		// Only if there's nothing to complete do we fall through to the
-		// existing Tab=cycle-field behavior — this matches the bash/zsh
-		// muscle memory users already have for path completion.
+		// Only if there's nothing to complete (or the user has already
+		// settled on a fully-completed path) do we advance to the next
+		// field. This matches both the bash/zsh muscle memory for path
+		// completion AND the form-fill expectation that Tab moves on
+		// once you're done — without it, a second Tab on a completed
+		// path would dive into the first subdir, which surprises users.
 		if m.spawn.field == 1 {
 			cur := m.spawn.cwd.Value()
 			if cur != m.spawn.pathCompletionLast {
@@ -1753,6 +1759,18 @@ func (m Model) handleKeySpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.spawnCwdRecentNext()
 		}
 	case "enter":
+		// Form-fill convention: Enter advances to the next field unless
+		// we're already on the last one (folder), in which case it
+		// submits. Non-empty name + cwd are the minimum to spawn —
+		// snapping back to an empty earlier field is friendlier than
+		// rejecting the submit silently.
+		if m.spawn.field < 2 {
+			m.spawn.field++
+			m.spawn.pathCompletionLast = ""
+			m.spawn.pathCompletionIndex = 0
+			m.refocusSpawn()
+			return m, nil
+		}
 		name := strings.TrimSpace(m.spawn.name.Value())
 		if name == "" {
 			m.spawn.field = 0
@@ -3789,7 +3807,7 @@ func (m Model) viewSpawn() string {
 			Render("error: "+m.spawn.err.Error()) + "\n\n")
 	}
 	b.WriteString(dim.Render(
-		"Tab switch field/path · Ctrl+P recent · Enter spawn · Esc cancel"))
+		"Tab complete path · Ctrl+P recent · Enter next field / spawn · Esc cancel"))
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		Width(cw).

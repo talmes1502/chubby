@@ -78,7 +78,7 @@ func rawStatusBar(mode StatusMode, composeHasText bool, broadcastField int, atta
 	case StatusModeHistory:
 		return "Tab columns · ↑↓ select · Enter open · Esc back"
 	case StatusModeSpawn:
-		return "Tab switch field/path · Ctrl+P recent · Enter spawn · Esc cancel · ~ expands"
+		return "Tab complete path · Ctrl+P recent · Enter next field / spawn · Esc cancel · ~ expands"
 	case StatusModeSearch:
 		return "type to filter · Enter keep · Esc clear"
 	case StatusModeRename:

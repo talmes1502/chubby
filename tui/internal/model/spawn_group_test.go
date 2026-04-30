@@ -8,6 +8,42 @@ import (
 	"github.com/USER/chubby/tui/internal/views"
 )
 
+// TestSpawn_EnterAdvancesUntilLastField — Enter on the name and cwd
+// fields advances to the next field (form-fill convention); only Enter
+// on the folder field submits. This is the simpler alternative to
+// auto-advance-on-Tab: Tab purely completes paths, Enter does the
+// "I'm done with this field" gesture.
+func TestSpawn_EnterAdvancesUntilLastField(t *testing.T) {
+	m := Model{
+		mode: ModeSpawn,
+		spawn: spawnState{
+			name:   views.NewSpawnNameInput(),
+			cwd:    views.NewSpawnCwdInput(""),
+			folder: views.NewSpawnFolderInput(""),
+			field:  0,
+		},
+	}
+	m.refocusSpawn()
+	enter := tea.KeyMsg{Type: tea.KeyEnter}
+
+	out, _ := m.handleKeySpawn(enter)
+	m = out.(Model)
+	if m.spawn.field != 1 {
+		t.Fatalf("Enter on name should advance to cwd (field=1), got %d",
+			m.spawn.field)
+	}
+	if !m.spawn.cwd.Focused() {
+		t.Fatalf("after advancing, cwd input should be focused")
+	}
+
+	out, _ = m.handleKeySpawn(enter)
+	m = out.(Model)
+	if m.spawn.field != 2 {
+		t.Fatalf("Enter on cwd should advance to folder (field=2), got %d",
+			m.spawn.field)
+	}
+}
+
 // TestSpawn_TabCyclesThreeFields verifies Tab walks 0→1→2→0 and
 // Shift+Tab walks 0→2→1→0 across the spawn modal's three fields, and
 // that only the active field's textinput is focused at each stop.
