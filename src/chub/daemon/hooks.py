@@ -25,7 +25,8 @@ from typing import Any
 
 from chub.daemon.clock import now_ms
 from chub.daemon.registry import Registry
-from chub.daemon.session import Session
+from chub.daemon.session import Session, SessionStatus
+from chub.proto.errors import ChubError
 
 log = logging.getLogger(__name__)
 
@@ -325,6 +326,18 @@ async def _tail_jsonl(
                         "ts": ts,
                     },
                 )
+            if role == "assistant":
+                # Claude finished a response → flip THINKING back to idle.
+                # Guarded so we don't override the Stop hook's
+                # AWAITING_USER, or step on a freshly-DEAD session.
+                try:
+                    cur = await registry.get(session_id)
+                    if cur.status is SessionStatus.THINKING:
+                        await registry.update_status(
+                            session_id, SessionStatus.IDLE
+                        )
+                except ChubError:
+                    pass
             indexed += 1
             if stop_after is not None and indexed >= stop_after:
                 return

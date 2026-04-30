@@ -178,6 +178,11 @@ def _build_registry(
                 "session is dead; respawn it before injecting",
             )
         await reg.inject(p.session_id, base64.b64decode(p.payload_b64))
+        # Mark the session thinking; the next assistant transcript_message
+        # in _tail_jsonl flips it back to idle. READONLY sessions can't be
+        # injected (they raise above), so this branch only fires for
+        # WRAPPED/SPAWNED/TMUX_ATTACHED.
+        await reg.update_status(p.session_id, SessionStatus.THINKING)
         return {}
 
     async def session_ended(
