@@ -130,6 +130,17 @@ def test_extract_turn_text_renders_tool_blocks_claude_style() -> None:
     assert "6 chars" not in out
 
 
+def test_extract_turn_text_drops_pure_tool_use_turns() -> None:
+    """An assistant record with only tool_use blocks (no accompanying
+    text) would render as just '⏺ Bash' — visual noise. Drop it so the
+    tailer skips the turn entirely."""
+    msg = {
+        "role": "assistant",
+        "content": [{"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}],
+    }
+    assert _extract_turn_text(msg) == ""
+
+
 def test_extract_turn_text_returns_empty_when_only_tool_results() -> None:
     """A user record with only tool_result blocks (Claude's internal
     delivery of tool output back to the assistant) has no

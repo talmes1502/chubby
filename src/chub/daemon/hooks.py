@@ -184,6 +184,7 @@ def _extract_turn_text(message: Any) -> str:
     if not isinstance(content, list):
         return ""
     parts: list[str] = []
+    has_text = False
     for block in content:
         if not isinstance(block, dict):
             continue
@@ -192,9 +193,15 @@ def _extract_turn_text(message: Any) -> str:
             t = block.get("text")
             if isinstance(t, str) and t:
                 parts.append(t)
+                has_text = True
         elif btype == "tool_use":
             parts.append(_summarize_tool_use(block))
         # tool_result and unknown block types are silently dropped.
+    if not has_text:
+        # A turn with only tool_use blocks (no accompanying text) renders
+        # as just "⏺ Bash" — visual noise. Drop it; the tailer skips
+        # empty turns so they won't appear in live or history views.
+        return ""
     return "\n".join(parts)
 
 
