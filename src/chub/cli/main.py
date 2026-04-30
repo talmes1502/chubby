@@ -16,6 +16,7 @@ from chub.cli.commands import (
     note,
     ping,
     promote,
+    purge,
     recolor,
     register_readonly,
     rename,
@@ -50,3 +51,4 @@ app.command(name="attach")(attach.run)
 app.command(name="promote")(promote.run)
 app.command(name="detach")(detach.run)
 app.command(name="tui")(tui.run)
+app.command(name="purge")(purge.run)

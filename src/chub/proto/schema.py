@@ -199,3 +199,11 @@ class DetachSessionParams(_Strict):
 
 class PromoteSessionParams(_Strict):
     id: str
+
+
+# --- purge (Phase 14) ---------------------------------------------------------
+
+
+class PurgeParams(_Strict):
+    run_id: str | None = None
+    session: str | None = None

@@ -36,6 +36,7 @@ from chub.proto.schema import (
     ListSessionsResult,
     MarkIdleParams,
     PromoteSessionParams,
+    PurgeParams,
     PushOutputParams,
     RecolorSessionParams,
     RegisterReadonlyParams,
@@ -310,6 +311,43 @@ def _build_registry(
         await relaunch_wrapper(name=s.name, cwd=s.cwd, tags=list(s.tags))
         return {}
 
+    async def purge(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        p = PurgeParams.model_validate(params)
+        if p.run_id is None and p.session is None:
+            raise ChubError(
+                ErrorCode.INVALID_PAYLOAD, "specify run_id or session"
+            )
+        if p.run_id is not None:
+            await db.conn.execute(
+                "DELETE FROM transcript_fts WHERE hub_run_id = ?", (p.run_id,)
+            )
+            await db.conn.execute(
+                "DELETE FROM sessions WHERE hub_run_id = ?", (p.run_id,)
+            )
+            await db.conn.execute(
+                "DELETE FROM hub_runs WHERE id = ?", (p.run_id,)
+            )
+            await db.conn.commit()
+        else:
+            assert p.session is not None
+            s = await reg.get_by_name(p.session)
+            await db.conn.execute(
+                "DELETE FROM transcript_fts WHERE session_id = ?", (s.id,)
+            )
+            await db.conn.execute(
+                "DELETE FROM sessions WHERE id = ?", (s.id,)
+            )
+            await db.conn.commit()
+            # Drop in-memory state too so list_sessions stops returning it.
+            async with reg._lock:
+                reg._by_id.pop(s.id, None)
+                reg._wrapper_writers.pop(s.id, None)
+                reg._writers.pop(s.id, None)
+                reg._buffers.pop(s.id, None)
+        return {}
+
     async def subscribe_events(
         params: dict[str, Any], ctx: CallContext
     ) -> dict[str, Any]:
@@ -346,6 +384,7 @@ def _build_registry(
     h.register("attach_tmux", attach_tmux)
     h.register("detach_session", detach_session)
     h.register("promote_session", promote_session)
+    h.register("purge", purge)
     return h
 
 
