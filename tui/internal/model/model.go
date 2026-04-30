@@ -64,6 +64,13 @@ type grepState struct {
 	debounceToken int
 }
 
+// toast is an awaiting_user pop-up shown bottom-right for ttl.
+type toast struct {
+	sessionName string
+	color       string
+	expiresAt   time.Time
+}
+
 // historyState backs the three-column miller view: hub-runs on the
 // left, sessions in the selected run in the middle, and the log
 // preview on the right. Tab cycles columns.
@@ -92,6 +99,8 @@ type Model struct {
 	bcast   broadcastState
 	grep    grepState
 	history historyState
+
+	toasts []toast
 }
 
 type tickMsg struct{}
@@ -111,6 +120,7 @@ type historyRunSessionsMsg struct {
 	sessions []Session
 	preview  string
 }
+type toastTickMsg struct{}
 
 // New constructs a Model bound to an already-connected rpc.Client.
 func New(c *rpc.Client) Model {
@@ -124,9 +134,10 @@ func New(c *rpc.Client) Model {
 	}
 }
 
-// Init kicks off initial session refresh, event listening, and tick loop.
+// Init kicks off initial session refresh, event listening, and the
+// background tickers (refresh and toast TTL).
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.refreshSessions(), m.listenEvents(), tickEvery())
+	return tea.Batch(m.refreshSessions(), m.listenEvents(), tickEvery(), toastTick())
 }
 
 func (m Model) refreshSessions() tea.Cmd {
@@ -161,6 +172,12 @@ func tickEvery() tea.Cmd {
 	return tea.Tick(2*time.Second, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
+// toastTick fires every 500ms; the reducer drops expired toasts and
+// re-arms the ticker.
+func toastTick() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return toastTickMsg{} })
+}
+
 // Update is the Bubble Tea reducer.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -189,13 +206,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.output[sid] = cur
 				}
+			case "session_status_changed":
+				sid, _ := subP["session_id"].(string)
+				newStatus, _ := subP["status"].(string)
+				if newStatus == "awaiting_user" {
+					focusedSid := ""
+					if s := m.focusedSession(); s != nil {
+						focusedSid = s.ID
+					}
+					if sid != focusedSid {
+						for _, s := range m.sessions {
+							if s.ID == sid {
+								m.toasts = append(m.toasts, toast{
+									sessionName: s.Name,
+									color:       s.Color,
+									expiresAt:   time.Now().Add(5 * time.Second),
+								})
+								break
+							}
+						}
+					}
+				}
+				return m, tea.Batch(m.refreshSessions(), m.listenEvents())
 			case "session_added", "session_renamed",
-				"session_recolored", "session_status_changed",
-				"session_tagged":
+				"session_recolored", "session_tagged":
 				return m, tea.Batch(m.refreshSessions(), m.listenEvents())
 			}
 		}
 		return m, m.listenEvents()
+	case toastTickMsg:
+		now := time.Now()
+		kept := m.toasts[:0]
+		for _, t := range m.toasts {
+			if t.expiresAt.After(now) {
+				kept = append(kept, t)
+			}
+		}
+		m.toasts = kept
+		return m, toastTick()
 	case tickMsg:
 		return m, tea.Batch(m.refreshSessions(), tickEvery())
 	case errMsg:
@@ -628,7 +676,34 @@ func (m Model) View() string {
 		color = s.Color
 	}
 	composeBar := views.RenderCompose(m.compose, target, color, m.width)
-	return lipgloss.JoinVertical(lipgloss.Left, main, composeBar)
+	body := lipgloss.JoinVertical(lipgloss.Left, main, composeBar)
+	return m.overlayToasts(body)
+}
+
+// overlayToasts renders the current toasts and appends them to the
+// bottom-right of body. Bubble Tea has no real layered compositor, so
+// this approximates the spec by stacking toasts in a right-aligned
+// block beneath the main view (still on-screen, still attention-getting,
+// preserves the rest of the layout).
+func (m Model) overlayToasts(body string) string {
+	if len(m.toasts) == 0 {
+		return body
+	}
+	var stack strings.Builder
+	for _, t := range m.toasts {
+		line := fmt.Sprintf("⚡ %s awaiting", t.sessionName)
+		styled := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			Foreground(lipgloss.Color(t.color)).
+			Render(line)
+		stack.WriteString(styled + "\n")
+	}
+	if m.width > 0 {
+		// Right-align the block within the terminal width.
+		placed := lipgloss.PlaceHorizontal(m.width, lipgloss.Right, stack.String())
+		return body + "\n" + placed
+	}
+	return body + "\n" + stack.String()
 }
 
 func (m Model) viewBroadcast() string {
