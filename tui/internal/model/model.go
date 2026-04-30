@@ -45,6 +45,7 @@ const (
 	ModeHistory
 	ModeReconnecting
 	ModeSpawn
+	ModeSearch
 )
 
 // broadcastState is held in the Model so the reducer can mutate it
@@ -71,6 +72,13 @@ type toast struct {
 	sessionName string
 	color       string
 	expiresAt   time.Time
+}
+
+// searchState backs ModeSearch: a small filter bar over the session
+// rail. The query persists even after returning to ModeMain so the
+// rail keeps its filter; Esc clears it.
+type searchState struct {
+	query textinput.Model
 }
 
 // spawnState backs ModeSpawn: a small modal asking for a new session
@@ -110,6 +118,7 @@ type Model struct {
 	grep    grepState
 	history historyState
 	spawn   spawnState
+	search  searchState
 
 	toasts []toast
 
@@ -157,7 +166,24 @@ func New(c *rpc.Client) Model {
 		bcast:          broadcastState{selected: map[string]bool{}},
 		grep:           grepState{query: views.NewGrepQuery()},
 		groupCollapsed: LoadCollapsedGroups(),
+		search:         searchState{query: views.NewSearchQuery()},
 	}
+}
+
+// filterSessions returns sessions whose Name contains q (case-insensitive
+// substring). An empty q returns the input slice unchanged.
+func filterSessions(sessions []Session, q string) []Session {
+	if q == "" {
+		return sessions
+	}
+	ql := strings.ToLower(q)
+	out := make([]Session, 0, len(sessions))
+	for _, s := range sessions {
+		if strings.Contains(strings.ToLower(s.Name), ql) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // Init kicks off initial session refresh, event listening, and the
@@ -350,6 +376,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleKeyHistory(msg)
 	case ModeSpawn:
 		return m.handleKeySpawn(msg)
+	case ModeSearch:
+		return m.handleKeySearch(msg)
 	case ModeReconnecting:
 		// Swallow keys while we're reconnecting; user can still ctrl+c
 		// because that's handled before the dispatch.
@@ -404,6 +432,11 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.spawn = spawnState{name: views.NewSpawnNameInput(), cwd: cwd}
 		m.mode = ModeSpawn
+		return m, nil
+	case "ctrl+f":
+		m.search.query.SetValue("")
+		m.search.query.Focus()
+		m.mode = ModeSearch
 		return m, nil
 	case "ctrl+h":
 		m.mode = ModeHistory
@@ -524,6 +557,48 @@ func (m Model) handleKeyGrep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return grepDebounceMsg{token: tok}
 	})
 	return m, tea.Batch(cmd, debounce)
+}
+
+func (m Model) handleKeySearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.search.query.SetValue("")
+		m.mode = ModeMain
+		return m, nil
+	case "enter":
+		// Keep the filter; return to ModeMain so user can navigate the
+		// filtered rail. Esc later (in ModeMain) doesn't clear it —
+		// only re-entering search and pressing Esc does.
+		m.mode = ModeMain
+		return m, nil
+	case "up", "k":
+		m.moveRailCursor(-1)
+		return m, nil
+	case "down", "j":
+		m.moveRailCursor(+1)
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.search.query, cmd = m.search.query.Update(msg)
+	// Re-snap cursor onto a visible session if the focused one fell out
+	// of the filter.
+	if m.search.query.Value() != "" {
+		rows := m.railSessionRows()
+		if len(rows) > 0 {
+			found := false
+			for _, r := range rows {
+				if r.SessionIdx == m.focused {
+					found = true
+					break
+				}
+			}
+			if !found {
+				m.focused = rows[0].SessionIdx
+			}
+			m.syncRailCursorToFocus()
+		}
+	}
+	return m, cmd
 }
 
 func (m Model) handleKeySpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -799,6 +874,9 @@ func (m Model) View() string {
 		return m.viewSpawn()
 	case ModeReconnecting:
 		return m.viewReconnecting()
+	case ModeSearch:
+		// Falls through to the main layout below; the rail renderer
+		// adds the search bar based on m.mode == ModeSearch.
 	}
 	leftW := 24
 	rightW := m.width - leftW - 2
@@ -815,7 +893,13 @@ func (m Model) View() string {
 	if s := m.focusedSession(); s != nil {
 		focusedID = s.ID
 	}
-	left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, leftW, h)
+	searchHeader := ""
+	if m.mode == ModeSearch {
+		searchHeader = m.search.query.View()
+	} else if q := m.search.query.Value(); q != "" {
+		searchHeader = "/ " + q
+	}
+	left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h)
 	right := renderViewport(m.focusedSession(), m.output, rightW, h)
 	main := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
@@ -1060,10 +1144,10 @@ func (m Model) railRows() []RailRow {
 	return BuildRailRows(visible, m.sessions, m.groupCollapsed)
 }
 
-// visibleSessions applies the search filter (Feature C). With no
-// filter active this is m.sessions verbatim.
+// visibleSessions applies the search filter. With no filter active
+// this is m.sessions verbatim.
 func (m Model) visibleSessions() []Session {
-	return m.sessions
+	return filterSessions(m.sessions, m.search.query.Value())
 }
 
 // railSessionRows is the subset of rail rows that are sessions, in rail
@@ -1121,9 +1205,13 @@ func (m *Model) cycleFocusedSession(dir int) {
 			break
 		}
 	}
-	next := 0
+	var next int
 	if cur >= 0 {
 		next = (cur + dir + len(sessRows)) % len(sessRows)
+	} else {
+		// Focused session isn't in the visible rail (filter-hidden or
+		// inside a collapsed group). Default to the first visible session.
+		next = 0
 	}
 	m.focused = sessRows[next].SessionIdx
 	m.syncRailCursorToFocus()
@@ -1151,10 +1239,16 @@ var statusGlyph = map[string]string{
 // renderList draws the grouped left rail. rows is the flattened
 // header+session list from BuildRailRows; cursor is the highlighted
 // row; focusedID is the currently-focused session's ID (gets the ▣
-// marker even if it's not the cursor row).
-func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[string]bool, w, h int) string {
+// marker even if it's not the cursor row); searchHeader (optional) is
+// rendered just below the "Sessions" title so the user sees the active
+// filter.
+func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[string]bool, searchHeader string, w, h int) string {
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Render(" Sessions") + "\n")
+	if searchHeader != "" {
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("12")).
+			Render(" "+searchHeader) + "\n")
+	}
 	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	for i, r := range rows {
 		switch r.Kind {
