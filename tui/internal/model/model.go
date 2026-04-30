@@ -210,9 +210,22 @@ type Model struct {
 	// Used to auto-open the spawn modal when the TUI starts and there
 	// are no sessions to focus.
 	initialListReceived bool
+
+	// spinnerFrame indexes into spinnerRunes; advanced ~120ms by
+	// spinnerTickMsg while at least one session is "thinking". When all
+	// sessions are idle, the tick stops re-arming itself to save CPU,
+	// and the next listMsg/evMsg restarts it if a session flips back
+	// into thinking.
+	spinnerFrame int
+	// spinnerRunning tracks whether a spinner tick is currently
+	// scheduled. Without this guard, every listMsg/evMsg that sees a
+	// thinking session would queue a fresh tick — multiplying the
+	// frame advance rate the user actually sees.
+	spinnerRunning bool
 }
 
 type tickMsg struct{}
+type spinnerTickMsg struct{}
 type evMsg rpc.Event
 type listMsg []Session
 type errMsg struct{ err error }
@@ -292,9 +305,11 @@ func filterSessions(sessions []Session, q string) []Session {
 }
 
 // Init kicks off initial session refresh, event listening, and the
-// background tickers (refresh and toast TTL).
+// background tickers (refresh, toast TTL, and spinner). The spinner
+// tick self-arms only while a session is thinking — see spinnerTickMsg
+// in Update — so kicking it off here is cheap even when nothing is.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.refreshSessions(), m.listenEvents(), tickEvery(), toastTick())
+	return tea.Batch(m.refreshSessions(), m.listenEvents(), tickEvery(), toastTick(), spinnerTick())
 }
 
 func (m Model) refreshSessions() tea.Cmd {
@@ -369,6 +384,26 @@ func toastTick() tea.Cmd {
 	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return toastTickMsg{} })
 }
 
+// spinnerTick fires every 120ms; the reducer advances spinnerFrame and
+// re-arms the ticker only while at least one session is thinking. When
+// all sessions are idle the tick stops; the next status flip back to
+// thinking restarts it via listMsg/evMsg.
+func spinnerTick() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinnerTickMsg{} })
+}
+
+// anyThinking reports whether any session is currently in the thinking
+// state — used by the reducer to decide whether to keep the spinner
+// tick running and by listMsg/evMsg to (re)start it on demand.
+func (m Model) anyThinking() bool {
+	for _, s := range m.sessions {
+		if s.Status == "thinking" {
+			return true
+		}
+	}
+	return false
+}
+
 // Update is the Bubble Tea reducer.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -401,6 +436,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.sessions) == 0 && m.mode == ModeMain {
 				cmds = append(cmds, m.autoSpawnDefault())
 			}
+		}
+		// If a session is now thinking but the spinner tick has gone
+		// quiet (because nothing was thinking last tick), re-arm it so
+		// the rail glyph actually animates.
+		if m.anyThinking() && !m.spinnerRunning {
+			m.spinnerRunning = true
+			cmds = append(cmds, spinnerTick())
 		}
 		return m, tea.Batch(cmds...)
 	case evMsg:
@@ -470,6 +512,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.toasts = kept
 		return m, toastTick()
+	case spinnerTickMsg:
+		m.spinnerFrame++
+		// Only re-tick while at least one session is thinking; idle
+		// terminals shouldn't burn a 120ms wakeup forever. listMsg /
+		// session_status_changed restart the tick if a session flips
+		// back into thinking.
+		if m.anyThinking() {
+			m.spinnerRunning = true
+			return m, spinnerTick()
+		}
+		m.spinnerRunning = false
+		return m, nil
 	case reconnectAttemptMsg:
 		return m.attemptReconnect()
 	case reconnectedMsg:
@@ -1746,7 +1800,7 @@ func (m Model) View() string {
 		if fullW < 20 {
 			fullW = 20
 		}
-		main = renderViewport(m.focusedSession(), m.conversation, fullW, h)
+		main = renderViewport(m.focusedSession(), m.conversation, fullW, h, m.spinnerFrame)
 	} else {
 		rows := m.railRows()
 		focusedID := ""
@@ -1759,8 +1813,8 @@ func (m Model) View() string {
 		} else if q := m.search.query.Value(); q != "" {
 			searchHeader = "/ " + q
 		}
-		left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h)
-		right := renderViewport(m.focusedSession(), m.conversation, rightW, h)
+		left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h, m.spinnerFrame)
+		right := renderViewport(m.focusedSession(), m.conversation, rightW, h, m.spinnerFrame)
 		main = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	}
 
@@ -2312,11 +2366,35 @@ func (m *Model) moveRailCursor(dir int) {
 	m.focusRailRow()
 }
 
-var statusGlyph = map[string]string{
-	"idle":          "○",
-	"thinking":      "●",
-	"awaiting_user": "⚡",
-	"dead":          "✕",
+// spinnerFrames is the Braille-dot spinner cycle used to indicate that
+// a session is "thinking" — the Claude wrapper has been injected to and
+// hasn't replied yet. Bright yellow (color 11) so it pops next to dim
+// idle dots in the rail.
+const spinnerFrames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+var spinnerRunes = []rune(spinnerFrames)
+
+var spinnerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
+
+// statusGlyph returns the rail/banner glyph for a session's status.
+// For "thinking", frame indexes into the spinner cycle so successive
+// renders animate; everything else is a static glyph. The returned
+// string is already styled (color/bold) — callers should not wrap it
+// in extra Foreground styles for "thinking" or they'll fight the
+// vivid-yellow accent that distinguishes a working session from idle.
+func statusGlyph(status string, frame int) string {
+	switch status {
+	case "thinking":
+		return spinnerStyle.Render(string(spinnerRunes[frame%len(spinnerRunes)]))
+	case "awaiting_user":
+		return "⚡"
+	case "dead":
+		return "✕"
+	case "idle":
+		return "○"
+	default:
+		return "·"
+	}
 }
 
 // renderList draws the grouped left rail. rows is the flattened
@@ -2325,7 +2403,7 @@ var statusGlyph = map[string]string{
 // marker even if it's not the cursor row); searchHeader (optional) is
 // rendered just below the "Sessions" title so the user sees the active
 // filter.
-func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[string]bool, searchHeader string, w, h int) string {
+func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[string]bool, searchHeader string, w, h, spinnerFrame int) string {
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Render(" Sessions") + "\n")
 	if searchHeader != "" {
@@ -2355,10 +2433,7 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 				marker = "▸ "
 			}
 			col := lipgloss.Color(s.Color)
-			glyph := statusGlyph[s.Status]
-			if glyph == "" {
-				glyph = "·"
-			}
+			glyph := statusGlyph(s.Status, spinnerFrame)
 			line := fmt.Sprintf("  %s%s %s", marker,
 				lipgloss.NewStyle().Foreground(col).Render(s.Name),
 				glyph)
@@ -2376,18 +2451,18 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 // (bold). The dot (U+25CF) acts as a swatch, also in the session's color.
 // cwd / kind / status are dimmed so they read as metadata rather than
 // content.
-func renderSessionBanner(s *Session) string {
+func renderSessionBanner(s *Session, spinnerFrame int) string {
 	col := lipgloss.Color(s.Color)
 	colorStyle := lipgloss.NewStyle().Foreground(col).Bold(true)
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	glyph := statusGlyph[s.Status]
-	if glyph == "" {
-		glyph = "·"
-	}
+	glyph := statusGlyph(s.Status, spinnerFrame)
 	bar := colorStyle.Render("┃")
 	name := colorStyle.Render(s.Name)
 	swatch := lipgloss.NewStyle().Foreground(col).Render("●")
-	meta := dim.Render(fmt.Sprintf("%s · %s · %s %s", s.Cwd, s.Kind, glyph, s.Status))
+	// dim styles the metadata segment, but the glyph itself is already
+	// styled by statusGlyph (e.g. bright yellow for the spinner) — we
+	// keep it outside the dim wrapper so the spinner stays vivid.
+	meta := dim.Render(fmt.Sprintf("%s · %s · ", s.Cwd, s.Kind)) + glyph + dim.Render(" "+s.Status)
 	return fmt.Sprintf("%s %s  %s  %s", bar, name, swatch, meta)
 }
 
@@ -2397,7 +2472,7 @@ func renderSessionBanner(s *Session) string {
 // lines. The previous implementation rendered the raw PTY byte stream,
 // which was unreadable inside lipgloss because Claude's cursor-
 // positioning escapes don't compose with lipgloss frames.
-func renderViewport(s *Session, conversation map[string][]Turn, w, h int) string {
+func renderViewport(s *Session, conversation map[string][]Turn, w, h, spinnerFrame int) string {
 	if s == nil {
 		dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 		bold := lipgloss.NewStyle().Bold(true)
@@ -2416,7 +2491,7 @@ func renderViewport(s *Session, conversation map[string][]Turn, w, h int) string
 	frame := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		Width(w).Height(h)
-	header := renderSessionBanner(s)
+	header := renderSessionBanner(s, spinnerFrame)
 	if s.Status == "dead" {
 		hint := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true).
 			Render("session is dead — press Ctrl+P to respawn")
