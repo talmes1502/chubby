@@ -445,7 +445,7 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.spawn = spawnState{name: views.NewSpawnNameInput(), cwd: cwd}
 		m.mode = ModeSpawn
 		return m, nil
-	case "ctrl+f":
+	case "ctrl+k":
 		m.search.query.SetValue("")
 		m.search.query.Focus()
 		m.mode = ModeSearch
@@ -1111,7 +1111,7 @@ func (m Model) viewHelp() string {
   Tab (in compose)   autocomplete @name
 
   Ctrl+N             new session in focused cwd
-  Ctrl+F             search session list
+  Ctrl+K             search session list
   Ctrl+B             broadcast modal
   /                  grep transcripts (current run)
   Ctrl+H             history panel (past hub-runs)
