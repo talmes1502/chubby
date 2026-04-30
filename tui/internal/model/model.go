@@ -1929,12 +1929,35 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 	return lipgloss.NewStyle().Width(w).Height(h).Border(lipgloss.RoundedBorder()).Render(b.String())
 }
 
+// renderSessionBanner builds the colored top-of-viewport header:
+//
+//	┃ <name>  ●  <cwd> · <kind> · <status-glyph> <status>
+//
+// The bar (U+2503) and session-name are rendered in the session's color
+// (bold). The dot (U+25CF) acts as a swatch, also in the session's color.
+// cwd / kind / status are dimmed so they read as metadata rather than
+// content.
+func renderSessionBanner(s *Session) string {
+	col := lipgloss.Color(s.Color)
+	colorStyle := lipgloss.NewStyle().Foreground(col).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	glyph := statusGlyph[s.Status]
+	if glyph == "" {
+		glyph = "·"
+	}
+	bar := colorStyle.Render("┃")
+	name := colorStyle.Render(s.Name)
+	swatch := lipgloss.NewStyle().Foreground(col).Render("●")
+	meta := dim.Render(fmt.Sprintf("%s · %s · %s %s", s.Cwd, s.Kind, glyph, s.Status))
+	return fmt.Sprintf("%s %s  %s  %s", bar, name, swatch, meta)
+}
+
 // renderViewport draws the focused session's structured conversation:
-// the session name as a header line, then user prompts marked with a
-// coloured arrow and assistant responses in the default fg, separated
-// by blank lines. The previous implementation rendered the raw PTY
-// byte stream, which was unreadable inside lipgloss because Claude's
-// cursor-positioning escapes don't compose with lipgloss frames.
+// a colored session banner, then user prompts marked with a coloured
+// arrow and assistant responses in the default fg, separated by blank
+// lines. The previous implementation rendered the raw PTY byte stream,
+// which was unreadable inside lipgloss because Claude's cursor-
+// positioning escapes don't compose with lipgloss frames.
 func renderViewport(s *Session, conversation map[string][]Turn, w, h int) string {
 	if s == nil {
 		return lipgloss.NewStyle().Width(w).Height(h).Border(lipgloss.RoundedBorder()).
@@ -1943,10 +1966,7 @@ func renderViewport(s *Session, conversation map[string][]Turn, w, h int) string
 	frame := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		Width(w).Height(h)
-	header := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(s.Color)).
-		Bold(true).
-		Render(s.Name)
+	header := renderSessionBanner(s)
 	if s.Status == "dead" {
 		hint := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true).
 			Render("session is dead — press Ctrl+P to respawn")
