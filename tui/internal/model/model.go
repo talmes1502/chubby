@@ -397,6 +397,15 @@ type Model struct {
 	// turns.
 	thinkingStartedAt map[string]time.Time
 
+	// generationStartedAt records when each session emitted its first
+	// assistant `text` block since the most recent user message. The
+	// banner subtracts thinkingStartedAt from this to render Claude's
+	// "thought for Ns" suffix, and uses its presence to flip the status
+	// label from "Thinking…" to "Generating…". Cleared when a new user
+	// turn arrives or the session goes back to awaiting_user so the
+	// next round starts from a clean slate.
+	generationStartedAt map[string]time.Time
+
 	// startupFocusName, when non-empty, is the session name passed via
 	// CHUBBY_FOCUS_SESSION (i.e. ``chubby tui --focus <name>``).
 	// Resolved on the FIRST listMsg by scanning m.sessions for a Name
@@ -554,7 +563,8 @@ func New(c *rpc.Client) Model {
 		scrollOffset:      map[string]int{},
 		newSinceScroll:    map[string]int{},
 		lastUsage:         map[string]sessionUsage{},
-		thinkingStartedAt: map[string]time.Time{},
+		thinkingStartedAt:   map[string]time.Time{},
+		generationStartedAt: map[string]time.Time{},
 		startupFocusName:  os.Getenv("CHUBBY_FOCUS_SESSION"),
 	}
 }
@@ -770,6 +780,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// recent turn twice.
 				m.appendTranscriptTurn(sid, role, text, int64(ts))
 				appended := len(m.conversation[sid]) > prevLen
+				// Track the thinking→generating transition so the banner
+				// can show "Generating…" and "thought for Ns" the way
+				// Claude's UI does. A user turn ends the previous round,
+				// so wipe the marker. The first assistant turn with text
+				// after a thinking-start records the moment generation
+				// began. Subsequent assistant chunks keep the original
+				// timestamp (don't overwrite — that's the moment text
+				// streaming actually started).
+				if appended {
+					switch role {
+					case "user":
+						delete(m.generationStartedAt, sid)
+					case "assistant":
+						if strings.TrimSpace(text) != "" {
+							if m.generationStartedAt == nil {
+								m.generationStartedAt = map[string]time.Time{}
+							}
+							if _, set := m.generationStartedAt[sid]; !set {
+								m.generationStartedAt[sid] = time.Now()
+							}
+						}
+					}
+				}
 				// D7: when the user is scrolled UP from the bottom,
 				// preserve their reading position and instead increment
 				// the unread counter so they see "↓ N new" guidance.
@@ -810,8 +843,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if sid != "" {
 					if newStatus == "thinking" {
 						m.thinkingStartedAt[sid] = time.Now()
+						// New round begins — wipe the previous round's
+						// generation marker so "thought for Ns" doesn't
+						// carry over from the prior turn.
+						delete(m.generationStartedAt, sid)
 					} else {
 						delete(m.thinkingStartedAt, sid)
+					}
+					if newStatus == "awaiting_user" {
+						delete(m.generationStartedAt, sid)
 					}
 				}
 				if newStatus == "awaiting_user" {
@@ -3325,7 +3365,8 @@ func (m Model) View() string {
 	railActive := m.activePane == PaneRail && !m.railCollapsed
 	rightCol := renderViewport(m.focusedSession(), m.conversation, convoW, h, m.spinnerFrame,
 		m.scrollOffset[focusedSID], m.newSinceScroll[focusedSID], convoActive,
-		m.lastUsage[focusedSID], m.thinkingStartedAt[focusedSID])
+		m.lastUsage[focusedSID], m.thinkingStartedAt[focusedSID],
+		m.generationStartedAt[focusedSID])
 	rightStack := lipgloss.JoinVertical(lipgloss.Left, rightCol, composeBar)
 	if m.slashPopupVisible() {
 		popup := views.RenderSlashPopup(m.slashPopupCmds, m.slashPopupCursor, convoW)
@@ -4466,6 +4507,7 @@ func renderSessionBanner(
 	scrolledUp bool,
 	usage sessionUsage,
 	thinkingStartedAt time.Time,
+	generationStartedAt time.Time,
 	isThinking bool,
 ) string {
 	col := lipgloss.Color(s.Color)
@@ -4493,7 +4535,8 @@ func renderSessionBanner(
 	// Line 2: activity. Branches on isThinking + whether we have
 	// recorded any usage at all. Returning just line1 is allowed when
 	// there's nothing useful to show on line 2 (no tokens yet, idle).
-	line2 := buildBannerActivityLine(s, spinnerFrame, usage, thinkingStartedAt, isThinking)
+	line2 := buildBannerActivityLine(s, spinnerFrame, usage,
+		thinkingStartedAt, generationStartedAt, isThinking)
 	if line2 == "" {
 		return line1
 	}
@@ -4503,15 +4546,26 @@ func renderSessionBanner(
 // buildBannerActivityLine constructs the 2nd banner line. Returns ""
 // when there's nothing to render (no usage data + not thinking) so
 // the caller can fall back to the original single-line banner shape.
+//
+// While thinking, the line mirrors Claude Code's UI exactly:
+//
+//	✢ Thinking… (Xm Ys · ↑ Nk tokens)
+//	✢ Generating… (Xm Ys · ↑ Nk tokens · thought for Zs)
+//
+// The "Generating…" label and "thought for" suffix kick in once we've
+// observed an assistant text block since thinkingStartedAt — that's
+// the moment text streaming actually started, with everything before
+// it being extended-thinking blocks.
 func buildBannerActivityLine(
 	s *Session,
 	spinnerFrame int,
 	usage sessionUsage,
 	thinkingStartedAt time.Time,
+	generationStartedAt time.Time,
 	isThinking bool,
 ) string {
+	_ = spinnerFrame // glyph is now static (✢) — keep the param for callers
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	col := lipgloss.Color(s.Color)
 	hasUsage := usage.InputTokens > 0 || usage.OutputTokens > 0 ||
 		usage.CacheReadInputTokens > 0
 	if !isThinking && !hasUsage {
@@ -4522,29 +4576,30 @@ func buildBannerActivityLine(
 		if !thinkingStartedAt.IsZero() {
 			elapsed = time.Since(thinkingStartedAt)
 		}
-		viewSamples := make([]views.UsageSample, 0, len(usage.samples))
-		for _, sm := range usage.samples {
-			viewSamples = append(viewSamples, views.UsageSample{
-				Ts: sm.Ts, OutputTokens: sm.OutputTokens,
-			})
+		// Use the input-token count (prompt size) since that's what
+		// Claude's own banner shows. The output count is interesting
+		// but Claude reserves it for the "↓" suffix during streaming —
+		// we can revisit if users ask for it.
+		tokensStr := views.FormatTokens(usage.InputTokens)
+		parts := []string{
+			views.FormatElapsed(elapsed),
+			"↑ " + tokensStr + " tokens",
 		}
-		tps := views.TokensPerSecond(viewSamples, time.Now(), 2*time.Second)
-		// Reuse the existing thinking-spinner glyph so the second
-		// line's leader matches the rail; statusGlyph styles it for us.
-		spinner := statusGlyph("thinking", spinnerFrame)
-		elapsedStr := views.FormatElapsed(elapsed)
-		tokensStr := views.FormatTokens(usage.OutputTokens)
-		statusText := views.ThinkingStatusText(elapsed, tps)
-		slider := lipgloss.NewStyle().Foreground(col).
-			Render(views.RenderSlider(tps, 10))
-		// "  spinner Xs · ↓ Yk tokens · status ▰▰…"
+		label := "Thinking…"
+		if !generationStartedAt.IsZero() && !thinkingStartedAt.IsZero() {
+			label = "Generating…"
+			thoughtFor := generationStartedAt.Sub(thinkingStartedAt)
+			if thoughtFor > 0 {
+				parts = append(parts,
+					"thought for "+views.FormatElapsed(thoughtFor))
+			}
+		}
+		colorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(s.Color)).Bold(true)
 		return fmt.Sprintf(
-			"%s %s · %s · %s %s",
-			spinner,
-			dim.Render(elapsedStr),
-			dim.Render("↓ "+tokensStr+" tokens"),
-			dim.Render(statusText),
-			slider,
+			"%s %s %s",
+			colorStyle.Render("✢"),
+			label,
+			dim.Render("("+strings.Join(parts, " · ")+")"),
 		)
 	}
 	// Idle / awaiting — show static totals only.
@@ -4589,9 +4644,11 @@ func renderViewport(
 	active bool,
 	usage sessionUsage,
 	thinkingStartedAt time.Time,
+	generationStartedAt time.Time,
 ) string {
 	r := renderViewportFull(s, conversation, w, h, spinnerFrame,
-		scrollOffset, newCount, active, usage, thinkingStartedAt)
+		scrollOffset, newCount, active, usage, thinkingStartedAt,
+		generationStartedAt)
 	return r.view
 }
 
@@ -4602,6 +4659,7 @@ func renderViewportFull(
 	active bool,
 	usage sessionUsage,
 	thinkingStartedAt time.Time,
+	generationStartedAt time.Time,
 ) viewportRender {
 	borderColor := inactivePaneBorderColor
 	if active {
@@ -4631,7 +4689,7 @@ func renderViewportFull(
 		Width(w).Height(h)
 	isThinking := s.Status == "thinking"
 	header := renderSessionBanner(s, spinnerFrame, scrollOffset > 0,
-		usage, thinkingStartedAt, isThinking)
+		usage, thinkingStartedAt, generationStartedAt, isThinking)
 	// Banner may now span two lines (activity row). Count its actual
 	// rendered height so visibleH below subtracts the right amount.
 	bannerLines := strings.Count(header, "\n") + 1

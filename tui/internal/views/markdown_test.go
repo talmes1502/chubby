@@ -48,3 +48,14 @@ func TestRenderMarkdown_RendererCacheReused(t *testing.T) {
 		t.Fatalf("renderer should be cached per width: r1=%p r2=%p", r1, r2)
 	}
 }
+
+func TestRenderMarkdown_CollapsesBlankRuns(t *testing.T) {
+	// A list followed by a paragraph used to ship 3+ consecutive newlines
+	// in glamour's default layout. The post-process should keep them at
+	// most 2 (= one blank line) so the output reads as densely as
+	// Claude's own UI.
+	got := RenderMarkdown("- one\n- two\n\nparagraph", 80)
+	if strings.Contains(got, "\n\n\n") {
+		t.Fatalf("expected blank runs to be collapsed to \\n\\n, got %q", got)
+	}
+}

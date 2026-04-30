@@ -17,12 +17,18 @@
 package views
 
 import (
+	"regexp"
 	"strings"
 	"sync"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/ansi"
 )
+
+// blankRunRE matches three or more consecutive newlines. Glamour's
+// default block layout emits these around lists and headers; Claude's
+// own UI is denser, so we collapse them down to a single blank line.
+var blankRunRE = regexp.MustCompile(`\n{3,}`)
 
 var (
 	mdMu        sync.Mutex
@@ -256,5 +262,8 @@ func RenderMarkdown(src string, width int) string {
 	if err != nil {
 		return src
 	}
-	return strings.Trim(out, "\n")
+	out = strings.Trim(out, "\n")
+	// Collapse glamour's wider default block spacing to match Claude's
+	// denser layout (single blank line between blocks, never more).
+	return blankRunRE.ReplaceAllString(out, "\n\n")
 }
