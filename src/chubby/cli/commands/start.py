@@ -160,4 +160,7 @@ def run(
     typer.echo("opening tui...")
     from chubby.cli.commands import tui as tui_mod
 
-    tui_mod.run(force_download=False)
+    # Pass explicit values for every option — calling a typer-decorated
+    # function directly leaves un-passed kwargs as OptionInfo sentinels,
+    # which then leak into env and break os.execvpe().
+    tui_mod.run(force_download=False, focus=None, detached=False)
