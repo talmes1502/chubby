@@ -99,7 +99,13 @@ def _diag(msg: str) -> None:
 def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--name", default=os.environ.get("CHUB_NAME"))
-    p.add_argument("--cwd", default=os.getcwd())
+    # cwd default is "" (not os.getcwd()) so that ``chub-claude --name x``
+    # with no --cwd falls through to the HOME fallback in _run. The daemon
+    # always passes a resolved --cwd; only direct invocations get here
+    # with cwd="". (Treating an absent --cwd as "wherever I happen to be"
+    # was a footgun: daemon-spawned wrappers inherit chubd's cwd, which
+    # is rarely what the user means.)
+    p.add_argument("--cwd", default="")
     p.add_argument("--tags", default="")
     return p.parse_known_args(argv[1:])
 
@@ -404,7 +410,15 @@ async def _run() -> int:
     if not name:
         sys.exit("chub-claude: --name or CHUB_NAME required")
 
-    _diag(f"starting: name={name} cwd={args.cwd} passthrough={passthrough}")
+    # Tolerate an empty --cwd: fall back to $HOME, then ~, then "/" as a
+    # last resort. The daemon resolves this up front for spawn_session
+    # callers; this fallback is for direct ``chub-claude --name x``
+    # invocations (and as a defensive backstop).
+    cwd = args.cwd or ""
+    if not cwd:
+        cwd = os.environ.get("HOME") or os.path.expanduser("~") or "/"
+
+    _diag(f"starting: name={name} cwd={cwd} passthrough={passthrough}")
 
     sock = Path(os.environ.get("CHUB_SOCK", str(paths.sock_path())))
     client = WrapperClient(sock)
@@ -425,7 +439,7 @@ async def _run() -> int:
         while True:
             res = await _run_one_claude(
                 client=client,
-                cwd=args.cwd,
+                cwd=cwd,
                 passthrough=passthrough,
                 resume=resume,
                 is_first_iteration=is_first,

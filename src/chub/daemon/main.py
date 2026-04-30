@@ -192,6 +192,13 @@ def _build_registry(
         params: dict[str, Any], ctx: CallContext
     ) -> dict[str, Any]:
         p = SpawnSessionParams.model_validate(params)
+        # Empty cwd → default to $HOME. Belt-and-suspenders: the wrapper
+        # has its own fallback too, but resolving here means the session
+        # row in the registry shows a real path instead of "" which makes
+        # the TUI rail and `chub diag` output legible.
+        cwd = p.cwd
+        if not cwd:
+            cwd = os.environ.get("HOME") or "/"
         proc_env = {
             **os.environ,
             "CHUB_NAME": p.name,
@@ -213,7 +220,7 @@ def _build_registry(
         try:
             await asyncio.create_subprocess_exec(
                 sys.executable, "-m", "chub.wrapper.main",
-                "--name", p.name, "--cwd", p.cwd, "--tags", ",".join(p.tags),
+                "--name", p.name, "--cwd", cwd, "--tags", ",".join(p.tags),
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=stderr_fp,
                 stderr=stderr_fp,

@@ -100,7 +100,11 @@ class InjectParams(_Strict):
 
 class SpawnSessionParams(_Strict):
     name: str
-    cwd: str
+    # Empty string means "default to $HOME" — the daemon's spawn_session
+    # handler resolves it before launching the wrapper. Made optional so
+    # callers (TUI spawn modal, ``chub-claude --name x`` with no --cwd)
+    # don't have to invent a sensible default themselves.
+    cwd: str = ""
     tags: list[str] = []
 
 
