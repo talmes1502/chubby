@@ -15,6 +15,7 @@ import asyncio
 import base64
 import collections
 import os
+import re
 import shutil
 import signal
 import struct
@@ -37,6 +38,26 @@ from chub.wrapper.pty import PtySession
 _TRUST_PROMPT_NEEDLE = b"trust this folder"
 _TRUST_DISMISS_WINDOW_S = 5.0
 _TRUST_DISMISS_POLL_S = 0.2
+
+# Strip the most common visual ANSI escape sequences before substring
+# matching: CSI ``...`` letter (covers SGR colors, cursor moves like
+# ``\x1b[1C`` that Claude uses to render words with single-space gaps),
+# and OSC ``...`` BEL/ST hyperlinks. After stripping, words that looked
+# like ``trust\x1b[1Cthis\x1b[1Cfolder`` collapse to ``trustthisfolder``,
+# which we normalize by also stripping spaces from the needle/haystack.
+_ANSI_CSI_RE = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
+_ANSI_OSC_RE = re.compile(rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+_WHITESPACE_RE = re.compile(rb"\s+")
+
+
+def _normalize_for_match(buf: bytes) -> bytes:
+    """Strip ANSI escapes and whitespace so Claude's PTY-rendered prompts
+    can be matched as plain substrings regardless of how the renderer
+    spaced the words."""
+    buf = _ANSI_CSI_RE.sub(b"", buf)
+    buf = _ANSI_OSC_RE.sub(b"", buf)
+    buf = _WHITESPACE_RE.sub(b"", buf)
+    return buf.lower()
 
 
 def _diag(msg: str) -> None:
@@ -137,8 +158,8 @@ async def _run() -> int:
         dialog and accept the default ("Yes") by pressing Enter.
 
         Daemon-spawned wrappers run with stdin=DEVNULL, so without this the
-        dialog blocks forever, claude eventually exits, the wrapper sees
-        PTY EOF, and the session ends up DEAD. This bails out after
+        dialog blocks forever — claude is alive but the user sees a blank
+        viewport with no input being received. This bails out after
         ``_TRUST_DISMISS_WINDOW_S`` seconds either way: if the dialog
         didn't appear by then, the user is past the first-run gate.
 
@@ -146,13 +167,18 @@ async def _run() -> int:
         """
         if os.environ.get("CHUB_NO_AUTO_TRUST") == "1":
             return
+        # Normalize the needle the same way as the haystack so the spaces
+        # in ``trust this folder`` don't trip on Claude's per-letter cursor
+        # advance rendering.
+        needle = _normalize_for_match(_TRUST_PROMPT_NEEDLE)
         deadline = time.monotonic() + _TRUST_DISMISS_WINDOW_S
         while time.monotonic() < deadline:
             await asyncio.sleep(_TRUST_DISMISS_POLL_S)
             if pty.closed.is_set():
                 return
-            joined = b"".join(recent_output).lower()
-            if _TRUST_PROMPT_NEEDLE in joined:
+            joined = _normalize_for_match(b"".join(recent_output))
+            if needle in joined:
+                _diag("trust dialog detected — sending Enter")
                 await pty.write_user(b"\r")
                 return
 
