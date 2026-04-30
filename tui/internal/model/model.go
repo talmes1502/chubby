@@ -131,6 +131,10 @@ type Model struct {
 	// rail (may be a group header or a session). Up/Down walks this;
 	// Tab/Shift+Tab walks m.focused (session-only).
 	railCursor int
+
+	// completion tracks @-name autocomplete state in the compose bar.
+	completionIndex   int    // which match in the cycle is active
+	completionPartial string // the partial we last completed for, to detect input change
 }
 
 type tickMsg struct{}
@@ -390,6 +394,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "tab":
+		if m.tryComplete() {
+			return m, nil
+		}
 		m.cycleFocusedSession(+1)
 		return m, nil
 	case "shift+tab":
@@ -909,7 +916,7 @@ func (m Model) View() string {
 		target = "@" + s.Name
 		color = s.Color
 	}
-	composeBar := views.RenderCompose(m.compose, target, color, m.width)
+	composeBar := views.RenderCompose(m.compose, target, color, m.composeGhost(), m.width)
 	body := lipgloss.JoinVertical(lipgloss.Left, main, composeBar)
 	return m.overlayToasts(body)
 }
@@ -1187,6 +1194,58 @@ func (m *Model) focusRailRow() {
 	if r.Kind == RailRowSession {
 		m.focused = r.SessionIdx
 	}
+}
+
+// tryComplete attempts to autocomplete a trailing "@<partial>" in the
+// compose bar. Returns true if it actually mutated the input. With one
+// match it inserts the full name + space. With multiple matches it
+// cycles via m.completionIndex on repeated Tab presses.
+func (m *Model) tryComplete() bool {
+	val := m.compose.Value()
+	partial, _, ok := extractTrailingAt(val)
+	if !ok {
+		return false
+	}
+	matches := matchSessionNames(m.sessions, partial)
+	if len(matches) == 0 {
+		return false
+	}
+	if m.completionPartial != partial {
+		m.completionIndex = 0
+		m.completionPartial = partial
+	} else {
+		m.completionIndex = (m.completionIndex + 1) % len(matches)
+	}
+	chosen := matches[m.completionIndex]
+	newVal, did := completeAt(val, chosen)
+	if !did {
+		return false
+	}
+	m.compose.SetValue(newVal)
+	m.compose.CursorEnd()
+	// Keep completionPartial set so a subsequent Tab on the same partial
+	// (after the user backspaces back to "@<partial>") cycles forward.
+	return true
+}
+
+// composeGhost returns the dim suffix to render after the compose
+// textinput's content: shows the next completion match for the
+// trailing "@<partial>". Empty string means no ghost.
+func (m Model) composeGhost() string {
+	val := m.compose.Value()
+	partial, _, ok := extractTrailingAt(val)
+	if !ok || partial == "" {
+		return ""
+	}
+	matches := matchSessionNames(m.sessions, partial)
+	if len(matches) == 0 {
+		return ""
+	}
+	pick := matches[0]
+	if len(pick) <= len(partial) {
+		return ""
+	}
+	return pick[len(partial):]
 }
 
 // cycleFocusedSession advances focus by `dir` (+1 or -1) over the

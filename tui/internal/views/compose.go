@@ -21,8 +21,10 @@ func NewCompose() textinput.Model {
 
 // RenderCompose draws the compose bar with a colored target prefix
 // (the focused session's name + color). w is the total bar width
-// including the rounded border.
-func RenderCompose(t textinput.Model, target, color string, w int) string {
+// including the rounded border. ghost (optional) is rendered as dim
+// suffix after the textinput content — used to preview @-name
+// autocompletion on the next Tab.
+func RenderCompose(t textinput.Model, target, color, ghost string, w int) string {
 	if w < 8 {
 		w = 8
 	}
@@ -31,5 +33,11 @@ func RenderCompose(t textinput.Model, target, color string, w int) string {
 		Foreground(lipgloss.Color(color)).
 		Bold(true).
 		Render(target)
-	return style.Render(prefix + " " + t.View())
+	body := t.View()
+	if ghost != "" {
+		body += lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")).
+			Render(ghost)
+	}
+	return style.Render(prefix + " " + body)
 }
