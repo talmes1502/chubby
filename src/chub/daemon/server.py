@@ -63,6 +63,11 @@ class Server:
             except FileNotFoundError:
                 pass
 
+    async def wait_closed(self) -> None:
+        """Block until the underlying server closes (for any reason)."""
+        if self._server is not None:
+            await self._server.wait_closed()
+
     async def _handle_conn(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         sock: socket.socket = writer.get_extra_info("socket")
         uid = _peer_uid(sock)

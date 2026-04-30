@@ -82,3 +82,30 @@ async def test_register_wrapped_then_list(short_home: Path, monkeypatch) -> None
     finally:
         stop.set()
         await server_task
+
+
+async def test_serve_exits_when_server_dies(short_home: Path, monkeypatch) -> None:
+    """If the underlying asyncio.Server closes for any reason (not just
+    because we set stop_event), serve() should still proceed to cleanup
+    and release the PID lock so a new daemon can start.
+    """
+    monkeypatch.setenv("CHUB_HOME", str(short_home))
+    pid_path = short_home / "hub.pid"
+
+    real_start = chubd_main.Server.start
+
+    async def start_then_close(self: chubd_main.Server) -> None:
+        await real_start(self)
+        # Simulate the asyncio.Server dying (e.g. because of a fatal
+        # internal error in the accept loop).
+        assert self._server is not None
+        self._server.close()
+
+    monkeypatch.setattr(chubd_main.Server, "start", start_then_close)
+
+    stop = asyncio.Event()
+    # serve() must return on its own without us having to set stop.
+    await asyncio.wait_for(chubd_main.serve(stop_event=stop), timeout=2.0)
+
+    # PID lock file must be gone so a fresh daemon can start.
+    assert not pid_path.exists()

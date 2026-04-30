@@ -475,7 +475,18 @@ async def serve(*, stop_event: asyncio.Event | None = None) -> None:
             server = Server(sock_path=sock_path, registry=handlers)
             await server.start()
             try:
-                await stop_event.wait()
+                server_closed_task = asyncio.create_task(server.wait_closed())
+                stop_task = asyncio.create_task(stop_event.wait())
+                done, pending = await asyncio.wait(
+                    {server_closed_task, stop_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for t in pending:
+                    t.cancel()
+                if server_closed_task in done and not stop_event.is_set():
+                    log.warning(
+                        "chubd: server closed unexpectedly; shutting down"
+                    )
             finally:
                 await server.stop()
         finally:
