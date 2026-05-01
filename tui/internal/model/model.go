@@ -4546,52 +4546,51 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("12")).
 			Render(" "+searchHeader) + "\n")
 	}
-	separatorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true)
 	folderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
+	// cursorBg is the subtle row-tint used to mark the cursor's current
+	// position. We avoid in-line glyphs (`>`, `▸`, `▣`) entirely: ASCII
+	// glyphs eat a column even when invisible, and Unicode "ambiguous"
+	// chars like ▣/▸ render as 2 cells on macOS Terminal but as 1 cell
+	// in go-runewidth, which shifts the row and breaks indent alignment
+	// (this is the bug that made `taltal` look nested under `mets`).
+	// A row-level Background tint costs zero columns and reads cleanly.
+	cursorBg := lipgloss.Color("237")
 	for i, r := range rows {
+		var line string
 		switch r.Kind {
 		case RailRowUnfiledSeparator:
-			// Dim, non-interactive separator between the folder block
-			// and the unfiled-sessions block. Skipped by cursor
-			// navigation in moveRailCursor.
-			b.WriteString(separatorStyle.Render("  "+r.GroupName) + "\n")
+			// Folder block ends, unfiled block begins. A blank row is
+			// the convention used by Finder, VS Code, GitHub — vertical
+			// whitespace reads unambiguously as "different group"
+			// without a label that could be misread as a header.
+			b.WriteString("\n")
+			continue
 		case RailRowFolder:
-			// Folders use a 📁 glyph; honor the collapsed state via the
-			// same shared map used elsewhere.
+			// Folders use a 📁 glyph; collapsed state appends a ▸ to
+			// signal "expand me" without breaking the indent column.
 			glyph := "📁"
 			if collapsed[r.GroupName] {
 				glyph = "📁▸"
 			}
-			cursorMark := " "
-			if i == cursor {
-				cursorMark = ">"
-			}
-			line := fmt.Sprintf("%s %s %s", cursorMark, glyph, r.GroupName)
-			b.WriteString(folderStyle.Render(line) + "\n")
+			line = folderStyle.Render(fmt.Sprintf("  %s %s", glyph, r.GroupName))
 		case RailRowSession:
 			s := r.Session
-			// All sessions render at the same indent so unfiled siblings
-			// align visually. Focus is indicated by bolding the colored
-			// name (color is already on every name). Cursor uses an ASCII
-			// ">" — Unicode triangles like ▣/▸ are East-Asian-Width
-			// "ambiguous"; macOS Terminal renders them as 2 cells while
-			// runewidth treats them as 1, which shifted only the focused
-			// row right and made it look nested under its sibling.
-			marker := "  "
-			if i == cursor {
-				marker = "> "
-			}
 			col := lipgloss.Color(s.Color)
 			nameStyle := lipgloss.NewStyle().Foreground(col)
 			if s.ID == focusedID {
+				// Focus is conveyed by bold + the already-applied color;
+				// no extra marker so the column never shifts.
 				nameStyle = nameStyle.Bold(true)
 			}
 			glyph := statusGlyph(s.Status, spinnerFrame)
-			line := fmt.Sprintf("  %s%s %s", marker,
-				nameStyle.Render(s.Name),
-				glyph)
-			b.WriteString(lipgloss.NewStyle().Width(w).Render(line) + "\n")
+			line = fmt.Sprintf("    %s %s",
+				nameStyle.Render(s.Name), glyph)
 		}
+		rowStyle := lipgloss.NewStyle().Width(w)
+		if i == cursor {
+			rowStyle = rowStyle.Background(cursorBg)
+		}
+		b.WriteString(rowStyle.Render(line) + "\n")
 	}
 	borderColor := inactivePaneBorderColor
 	if active {
