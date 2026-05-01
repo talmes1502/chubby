@@ -1796,21 +1796,26 @@ func (m Model) handleKeySpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// openSpawnModal seeds spawnState (cwd defaults to focused session's
-// cwd or $HOME, folder defaults to the focused session's currently-
-// assigned folder when there is one) and switches to ModeSpawn.
-// Pointer receiver because we mutate m.mode and m.spawn. Called by
-// Ctrl+N and by the auto-open path in listMsg when the first list
-// comes back empty.
+// openSpawnModal seeds spawnState (cwd defaults to the directory the
+// user launched chubby from, folder defaults to the focused session's
+// currently-assigned folder when there is one) and switches to
+// ModeSpawn. Pointer receiver because we mutate m.mode and m.spawn.
+// Called by Ctrl+N and by the auto-open path in listMsg when the first
+// list comes back empty.
 func (m *Model) openSpawnModal() {
-	cwd := ""
 	folder := ""
 	if s := m.focusedSession(); s != nil {
-		cwd = s.Cwd
 		// Pre-fill folder with the focused session's current folder
 		// (TUI-side). If it's not in any folder, leave the field empty
 		// — the new session lands in the unfiled list.
 		folder = m.folders.FolderForSession(s.ID)
+	}
+	// cwd defaults to the chubby process's working directory — that's
+	// where the user invoked the binary from, which is the most natural
+	// "current folder" expectation. Fall back to $HOME on getwd error.
+	cwd := ""
+	if wd, err := os.Getwd(); err == nil {
+		cwd = wd
 	}
 	if cwd == "" {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -4565,16 +4570,25 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 			b.WriteString(folderStyle.Render(line) + "\n")
 		case RailRowSession:
 			s := r.Session
+			// All sessions render at the same indent so unfiled siblings
+			// align visually. Focus is indicated by bolding the colored
+			// name (color is already on every name). Cursor uses an ASCII
+			// ">" — Unicode triangles like ▣/▸ are East-Asian-Width
+			// "ambiguous"; macOS Terminal renders them as 2 cells while
+			// runewidth treats them as 1, which shifted only the focused
+			// row right and made it look nested under its sibling.
 			marker := "  "
-			if s.ID == focusedID {
-				marker = "▣ "
-			} else if i == cursor {
-				marker = "▸ "
+			if i == cursor {
+				marker = "> "
 			}
 			col := lipgloss.Color(s.Color)
+			nameStyle := lipgloss.NewStyle().Foreground(col)
+			if s.ID == focusedID {
+				nameStyle = nameStyle.Bold(true)
+			}
 			glyph := statusGlyph(s.Status, spinnerFrame)
 			line := fmt.Sprintf("  %s%s %s", marker,
-				lipgloss.NewStyle().Foreground(col).Render(s.Name),
+				nameStyle.Render(s.Name),
 				glyph)
 			b.WriteString(lipgloss.NewStyle().Width(w).Render(line) + "\n")
 		}
