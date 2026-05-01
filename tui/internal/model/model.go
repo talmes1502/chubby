@@ -4547,32 +4547,37 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 			Render(" "+searchHeader) + "\n")
 	}
 	folderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
-	// cursorBg is the subtle row-tint used to mark the cursor's current
-	// position. We avoid in-line glyphs (`>`, `▸`, `▣`) entirely: ASCII
-	// glyphs eat a column even when invisible, and Unicode "ambiguous"
-	// chars like ▣/▸ render as 2 cells on macOS Terminal but as 1 cell
-	// in go-runewidth, which shifts the row and breaks indent alignment
-	// (this is the bug that made `taltal` look nested under `mets`).
-	// A row-level Background tint costs zero columns and reads cleanly.
-	cursorBg := lipgloss.Color("237")
+	separatorStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("240")).Italic(true)
+	// Cursor indicator is a leading 1-cell color stripe in the leftmost
+	// column. `│` (U+2502, Box Drawings Light Vertical) is Narrow-width
+	// in Unicode — guaranteed 1 cell on every terminal — so the stripe
+	// never shifts the indent. A row-wide Background tint was tried and
+	// rejected as visually too heavy ("looks like a black box"); the
+	// stripe gives a clear "you are here" without painting a rectangle.
+	stripeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
+	leftCol := func(active bool) string {
+		if active {
+			return stripeStyle.Render("│")
+		}
+		return " "
+	}
 	for i, r := range rows {
-		var line string
 		switch r.Kind {
 		case RailRowUnfiledSeparator:
-			// Folder block ends, unfiled block begins. A blank row is
-			// the convention used by Finder, VS Code, GitHub — vertical
-			// whitespace reads unambiguously as "different group"
-			// without a label that could be misread as a header.
-			b.WriteString("\n")
+			// Folder block ends, unfiled block begins. A dim italic
+			// "unfiled" label (no parens, lowercase) reads as a hint
+			// rather than a header that could be misread as a folder.
+			b.WriteString("  " + separatorStyle.Render("unfiled") + "\n")
 			continue
 		case RailRowFolder:
-			// Folders use a 📁 glyph; collapsed state appends a ▸ to
-			// signal "expand me" without breaking the indent column.
 			glyph := "📁"
 			if collapsed[r.GroupName] {
 				glyph = "📁▸"
 			}
-			line = folderStyle.Render(fmt.Sprintf("  %s %s", glyph, r.GroupName))
+			b.WriteString(leftCol(i == cursor) + " " +
+				folderStyle.Render(fmt.Sprintf("%s %s", glyph, r.GroupName)) +
+				"\n")
 		case RailRowSession:
 			s := r.Session
 			col := lipgloss.Color(s.Color)
@@ -4583,14 +4588,9 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 				nameStyle = nameStyle.Bold(true)
 			}
 			glyph := statusGlyph(s.Status, spinnerFrame)
-			line = fmt.Sprintf("    %s %s",
-				nameStyle.Render(s.Name), glyph)
+			b.WriteString(leftCol(i == cursor) + "   " +
+				nameStyle.Render(s.Name) + " " + glyph + "\n")
 		}
-		rowStyle := lipgloss.NewStyle().Width(w)
-		if i == cursor {
-			rowStyle = rowStyle.Background(cursorBg)
-		}
-		b.WriteString(rowStyle.Render(line) + "\n")
 	}
 	borderColor := inactivePaneBorderColor
 	if active {
