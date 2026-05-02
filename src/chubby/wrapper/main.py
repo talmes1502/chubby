@@ -438,6 +438,161 @@ async def _run_one_claude(
     return result
 
 
+def _shell_path() -> str:
+    """Pick the user's interactive shell for the post-claude phase.
+
+    $SHELL wins if set (per POSIX); otherwise pick a platform default
+    (zsh on macOS, bash on Linux, /bin/sh as a last resort). Pure
+    function so the test suite can pin exact behavior without
+    monkey-patching os.environ in every case.
+    """
+    if v := os.environ.get("SHELL"):
+        return v
+    if sys.platform == "darwin":
+        return "/bin/zsh"
+    if os.path.exists("/bin/bash"):
+        return "/bin/bash"
+    return "/bin/sh"
+
+
+def _post_claude_hint(session_id: str | None) -> bytes:
+    """Format the inline "claude exited" banner shown in the chubby
+    pane (and on the wrapper's own stdout) right before the shell
+    prompt comes up. Dim style + bracket markers so it reads as
+    chubby chrome, not a claude message."""
+    if session_id:
+        msg = f"─── claude exited · resume with: claude --resume {session_id} ───"
+    else:
+        msg = "─── claude exited ───"
+    return f"\r\n\x1b[2m{msg}\x1b[0m\r\n\r\n".encode()
+
+
+async def _run_shell(
+    *,
+    client: WrapperClient,
+    cwd: str,
+) -> _RunOneResult:
+    """Drop into the user's $SHELL on the same chubby-managed PTY
+    after claude exits. Reuses PtySession + the same client.push_chunk
+    / inject_to_pty pumps as _run_one_claude — no trust-prompt
+    detection, no session-id capture, no register: this is just the
+    underlying shell, not another claude. Returns when the shell
+    exits (user types `exit` or Ctrl+D); if /detach fired during
+    the shell phase, shutdown_requested is set so the caller can
+    distinguish.
+    """
+    result = _RunOneResult()
+    shell = _shell_path()
+    _diag(f"about to spawn shell argv={[shell, '-i']}")
+    pty = PtySession([shell, "-i"], cwd=cwd)
+    await pty.start()
+    _diag(f"shell pid={pty.pid} ({shell})")
+
+    seq = 0
+    _resize_tasks: set[asyncio.Task[None]] = set()
+
+    async def pump_pty_to_daemon_and_term() -> None:
+        nonlocal seq
+        async for chunk in pty.iter_output():
+            try:
+                os.write(sys.stdout.fileno(), chunk)
+            except OSError:
+                pass
+            seq += 1
+            try:
+                await client.push_chunk(seq=seq, data=chunk)
+            except ChubError:
+                pass
+
+    async def pump_term_to_pty() -> None:
+        loop = asyncio.get_running_loop()
+
+        def _read_stdin() -> bytes:
+            buf = sys.stdin.buffer
+            read1 = getattr(buf, "read1", None)
+            if read1 is not None:
+                return bytes(read1(4096))
+            return bytes(buf.read(4096))
+
+        while not pty.closed.is_set():
+            chunk = await loop.run_in_executor(None, _read_stdin)
+            if not chunk:
+                return
+            await pty.write_user(chunk)
+
+    async def listen_for_inject() -> None:
+        events = await client.events()
+        while True:
+            try:
+                msg = await events.get()
+            except asyncio.CancelledError:
+                raise
+            if not isinstance(msg, Event):
+                continue
+            if msg.method == "inject_to_pty":
+                payload = base64.b64decode(msg.params["payload_b64"])
+                auto_newline = msg.params.get("auto_newline", True)
+                if auto_newline and not payload.endswith(b"\n") and not payload.endswith(b"\r"):
+                    payload += b"\r"
+                await pty.write_user(payload)
+            elif msg.method == "resize_pty":
+                try:
+                    rows = int(msg.params.get("rows", 0))
+                    cols = int(msg.params.get("cols", 0))
+                except (TypeError, ValueError):
+                    continue
+                if rows > 0 and cols > 0:
+                    try:
+                        await pty.resize(rows, cols)
+                    except Exception:
+                        pass
+            elif msg.method == "shutdown":
+                _diag("shutdown event during shell — SIGTERMing")
+                result.shutdown_requested = True
+                pty.signal_child(signal.SIGTERM)
+            # Note: we intentionally don't handle restart_claude here.
+            # Reviving claude inside the shell phase is a feature we
+            # can layer on later by SIGTERMing the shell and bouncing
+            # back into the claude loop.
+
+    def on_winch(*_args: Any) -> None:
+        try:
+            import fcntl
+            import termios
+
+            buf = fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, b"\x00" * 8)
+            rows, cols = struct.unpack("HHHH", buf)[:2]
+            t = asyncio.create_task(pty.resize(rows, cols))
+            _resize_tasks.add(t)
+            t.add_done_callback(_resize_tasks.discard)
+        except Exception:
+            pass
+
+    try:
+        signal.signal(signal.SIGWINCH, on_winch)
+    except (AttributeError, ValueError):
+        pass
+    on_winch()
+
+    pump_task = asyncio.create_task(pump_pty_to_daemon_and_term())
+    stdin_task = asyncio.create_task(pump_term_to_pty())
+    inject_task = asyncio.create_task(listen_for_inject())
+
+    try:
+        await pump_task
+    finally:
+        for t in (stdin_task, inject_task):
+            if not t.done():
+                t.cancel()
+        for t in (stdin_task, inject_task):
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+        await pty.terminate()
+    return result
+
+
 async def _run() -> int:
     args, passthrough = parse_args(sys.argv)
     name = args.name
@@ -492,7 +647,34 @@ async def _run() -> int:
                 _diag("wrapper exiting: shutdown requested by daemon")
                 return 0
             if not res.restart_requested:
-                _diag("wrapper exiting: claude exited normally")
+                # Claude exited (Ctrl+C×2, /exit, etc.). Drop into
+                # the user's $SHELL on the same PTY so the chubby
+                # session keeps living — same mental model as a
+                # terminal tab where you ran `claude` and now it
+                # exited; you're back at a shell prompt. To
+                # actually terminate the chubby session: type
+                # `exit` (or Ctrl+D) in the shell, /detach from
+                # chubby, or kill the wrapper PID.
+                #
+                # Push a one-line "claude exited · resume with …"
+                # banner before the shell starts so the resume
+                # command is visible to the user and surfaces in
+                # the chubby pane via the daemon broadcast path.
+                hint = _post_claude_hint(res.session_id)
+                try:
+                    os.write(sys.stdout.fileno(), hint)
+                except OSError:
+                    pass
+                try:
+                    seq_hint = int(time.time() * 1000)
+                    await client.push_chunk(seq=seq_hint, data=hint)
+                except ChubError:
+                    pass
+                shell_res = await _run_shell(client=client, cwd=cwd)
+                if shell_res.shutdown_requested:
+                    _diag("wrapper exiting: shutdown during shell")
+                else:
+                    _diag("wrapper exiting: shell exited")
                 return 0
             # Prefer the freshly-captured sessionId; fall back to the
             # previous one if capture failed (network blip, claude bailed
