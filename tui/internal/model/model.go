@@ -993,6 +993,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.refreshSessions()
 	case spawnDoneMsg:
 		m.mode = ModeMain
+		// doSpawn writes the new session's folder assignment to disk
+		// via SaveFolders, but the in-memory m.folders is stale until
+		// reloaded. Without this reload, BuildRailRows falls back to
+		// the pre-spawn snapshot and the new session lands in
+		// "unfiled" until the next manual /movetofolder or restart.
+		m.folders = LoadFolders()
 		return m, m.refreshSessions()
 	case MigrationDoneMsg:
 		// Reload folders so any newly-assigned sessions show up in the

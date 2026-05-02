@@ -165,6 +165,39 @@ func TestSpawnWithFolder_AssignsToFolder(t *testing.T) {
 	}
 }
 
+// TestSpawnDoneMsg_ReloadsInMemoryFolders verifies that handling a
+// spawnDoneMsg refreshes m.folders from disk. Without this, doSpawn's
+// SaveFolders write would land but the rail would keep showing the
+// new session under "unfiled" until a manual reload.
+func TestSpawnDoneMsg_ReloadsInMemoryFolders(t *testing.T) {
+	withTempChubbyHome(t)
+
+	// Pre-seed folders.json on disk as if doSpawn had just finished
+	// writing — the in-memory m.folders below intentionally lags so we
+	// can prove the message handler reloads it.
+	st := FoldersState{Folders: map[string][]string{
+		"priority": {"new-sid-42"},
+	}}
+	if err := SaveFolders(st); err != nil {
+		t.Fatalf("SaveFolders: %v", err)
+	}
+
+	m := Model{
+		mode:    ModeSpawn,
+		folders: FoldersState{}, // empty — needs to be reloaded
+	}
+	out, _ := m.Update(spawnDoneMsg{})
+	mm := out.(Model)
+
+	if got := mm.folders.FolderForSession("new-sid-42"); got != "priority" {
+		t.Fatalf("expected m.folders reloaded with 'priority' assignment for new-sid-42, "+
+			"got folder=%q (state=%v)", got, mm.folders.Folders)
+	}
+	if mm.mode != ModeMain {
+		t.Fatalf("expected mode to flip back to ModeMain, got %v", mm.mode)
+	}
+}
+
 // TestSpawnWithEmptyFolder_LeavesUnfiled: empty folder field means
 // the new session lands in the unfiled bucket (folders.json untouched).
 func TestSpawnWithEmptyFolder_LeavesUnfiled(t *testing.T) {
