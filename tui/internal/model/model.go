@@ -1059,6 +1059,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case EventSessionStatusChanged:
 				sid, _ := subP["session_id"].(string)
 				newStatus, _ := subP["status"].(string)
+				// Mirror the daemon's status change into the local
+				// sessions list — the rail glyph reads s.Status, so
+				// without this update the spinner would keep spinning
+				// (or any other glyph stay stale) until the next full
+				// refreshSessions round-trip.
+				if sid != "" {
+					for i := range m.sessions {
+						if m.sessions[i].ID == sid {
+							m.sessions[i].Status = SessionStatus(newStatus)
+							break
+						}
+					}
+				}
 				// Track when a session enters thinking so the banner
 				// can show elapsed time. Clear on any other status
 				// transition so the timer resets between turns.
@@ -1745,14 +1758,17 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.compose.SetValue(cur + "\n")
 		return m, nil
 	}
-	// Default: forward to compose textinput.
-	var cmd tea.Cmd
-	m.compose, cmd = m.compose.Update(msg)
-	// Recompute popup state every time the compose value may have
-	// changed. Cheap (linear over a tiny catalog) and keeps the popup
-	// in lock-step with what the user sees.
-	m.updateSlashPopup()
-	return m, cmd
+	// Default: forward the keystroke straight to claude's PTY. As of
+	// the embedded-PTY pivot the chubby compose bar is gone — claude
+	// has its own prompt rendering inside the pane and that's where
+	// typing should land. routeKeyToPty handles printables, Enter,
+	// Backspace, arrows, etc. via inject_raw (which doesn't flip
+	// status to THINKING — only the legacy compose-Enter prompt
+	// submission via plain inject does that).
+	if m.activePane == PaneConversation || m.railCollapsed {
+		return m, m.routeKeyToPty(msg)
+	}
+	return m, nil
 }
 
 func (m Model) handleKeyBroadcast(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -3302,12 +3318,14 @@ func (m Model) View() string {
 		color = s.Color
 	}
 
-	// Render the conversation viewport and harvest any path mentions
-	// before applying styling — the harvest also feeds m.editor.recentPaths
-	// indirectly through View, but View can't mutate m. Tests drive the
-	// path-detection via UpdateRecentPaths() called from the message
-	// handlers instead.
-	composeBar := views.RenderCompose(m.compose, target, color, m.composeGhost(), convoW)
+	// As of the embedded-PTY pivot, claude's own prompt (rendered
+	// inside pane.View()) IS the input. Chubby's redundant compose
+	// bar at the bottom is gone — typing in the conversation pane
+	// flows straight through to claude's PTY via inject_raw. The
+	// `target` / `color` derived above stay around for the @-name
+	// retarget heuristic in keystroke routing.
+	_ = target
+	_ = color
 	focusedSID := ""
 	if s := m.focusedSession(); s != nil {
 		focusedSID = s.ID
@@ -3321,7 +3339,7 @@ func (m Model) View() string {
 		m.scrollOffset[focusedSID], m.newSinceScroll[focusedSID], convoActive,
 		m.lastUsage[focusedSID], m.thinkingStartedAt[focusedSID],
 		m.generationStartedAt[focusedSID], m.pty[focusedSID])
-	rightStack := lipgloss.JoinVertical(lipgloss.Left, rightCol, composeBar)
+	rightStack := rightCol
 	if m.slashPopupVisible() {
 		popup := views.RenderSlashPopup(m.slashPopupCmds, m.slashPopupCursor, convoW)
 		rightStack = lipgloss.JoinVertical(lipgloss.Left, rightStack, popup)
