@@ -782,17 +782,41 @@ func newRailCommandInput() textinput.Model {
 // railCommandView returns the rendered chubby command palette for
 // the rail's footer. Returns "" outside ModeRailCommand (renderList
 // then shows a dim ":  for chubby command" hint instead).
+//
+// Renders ghost-text after the cursor: dim suffix showing what Tab
+// would complete to. Same UX as fish/zsh autosuggestions and the
+// compose-bar slash-command preview that lived here pre-pivot.
 func (m Model) railCommandView() string {
 	if m.mode != ModeRailCommand && m.railCmdErr == nil {
 		return ""
 	}
 	view := views.Cyan.Render(m.railCmd.View())
+	if ghost := m.railCommandGhost(); ghost != "" {
+		view += views.Dim.Render(ghost)
+	}
 	if m.railCmdErr != nil {
 		view += "\n " + lipgloss.NewStyle().
 			Foreground(lipgloss.Color("203")).
 			Render(m.railCmdErr.Error())
 	}
 	return view
+}
+
+// railCommandGhost returns the dim suffix shown after the cursor —
+// the portion of the first autocomplete match that the user hasn't
+// typed yet. Returns "" when there's no useful suggestion (empty
+// input, no match, or the typed value already matches a candidate
+// exactly with no continuation).
+func (m Model) railCommandGhost() string {
+	cur := m.railCmd.Value()
+	if cur == "" {
+		return ""
+	}
+	completed, ok, _ := m.chubCommandComplete(cur, 0)
+	if !ok || !strings.HasPrefix(completed, cur) {
+		return ""
+	}
+	return completed[len(cur):]
 }
 
 // handleKeyRailCommand drives the bottom-of-rail chubby command
