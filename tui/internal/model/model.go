@@ -1665,9 +1665,11 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.doRespawn(s.Name, s.Cwd, s.Tags)
 	case "?":
-		// Only intercept '?' as the help key when compose is empty,
-		// otherwise the user can't type a literal '?' mid-prompt.
-		if m.compose.Value() == "" {
+		// '?' opens the help overlay only when the rail is active —
+		// otherwise the user can't type a literal '?' into claude's
+		// prompt. Switch to the rail (Tab) and then press '?' to
+		// see help.
+		if m.activePane == PaneRail && !m.railCollapsed {
 			m.mode = ModeHelp
 			return m, nil
 		}
