@@ -83,7 +83,7 @@ func TestRenderList_ShowsSpinnerForThinkingSession(t *testing.T) {
 	rows := []RailRow{
 		{Kind: RailRowSession, Session: Session{ID: "s1", Name: "alpha", Color: "#fff", Status: "thinking"}},
 	}
-	out := renderList(rows, 0, "s1", map[string]bool{}, "", 40, 10, 0, true)
+	out := renderList(rows, 0, "s1", map[string]bool{}, "", 40, 10, 0, true, "")
 	if !strings.Contains(out, string(spinnerRunes[0])) {
 		t.Fatalf("expected spinner frame %q in rail output, got: %q", string(spinnerRunes[0]), out)
 	}

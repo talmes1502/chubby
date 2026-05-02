@@ -19,36 +19,76 @@ import (
 	"github.com/USER/chubby/tui/internal/views"
 )
 
-// splitChubCommand recognises a chubby-side slash command head ("/color",
-// "/rename", "/tag", "/refresh-claude") at the start of the trimmed
-// compose text and returns (head, remainder-trimmed, true). The
-// remainder may be empty — the caller decides how to surface a usage
-// error. Returns false for anything else, leaving the regular inject
-// path to handle it.
-//
-// Heads are checked longest-first so "/refresh-claude" wins over a
-// hypothetical "/refresh"; today there's no overlap, but the ordering
-// is the right invariant.
-func splitChubCommand(s string) (cmd, arg string, ok bool) {
-	// Longest-first so "/removefromfolder" wins over a future
-	// "/remove*" and "/movetofolder" wins over a future "/move*".
-	for _, head := range []string{
-		"/removefromfolder",
-		"/movetofolder",
-		"/refresh-claude",
-		"/detach",
-		"/color",
-		"/rename",
-		"/tag",
-	} {
-		if s == head {
+// ChubCommand identifies a chubby-side slash command. Typed-string
+// (rather than iota) so the value is the same string the user types
+// — useful when storing palette history or logging, and lets us
+// pass it through string formatting unchanged.
+type ChubCommand string
+
+const (
+	ChubCmdColor            ChubCommand = "/color"
+	ChubCmdRename           ChubCommand = "/rename"
+	ChubCmdTag              ChubCommand = "/tag"
+	ChubCmdRefreshClaude    ChubCommand = "/refresh-claude"
+	ChubCmdMoveToFolder     ChubCommand = "/movetofolder"
+	ChubCmdRemoveFromFolder ChubCommand = "/removefromfolder"
+	ChubCmdDetach           ChubCommand = "/detach"
+)
+
+// chubCommandHeads is the dispatch table for splitChubCommand:
+// ordered longest-first so "/removefromfolder" wins over a future
+// "/remove*" and "/movetofolder" wins over a future "/move*".
+var chubCommandHeads = []ChubCommand{
+	ChubCmdRemoveFromFolder,
+	ChubCmdMoveToFolder,
+	ChubCmdRefreshClaude,
+	ChubCmdDetach,
+	ChubCmdColor,
+	ChubCmdRename,
+	ChubCmdTag,
+}
+
+// splitChubCommand recognises a chubby-side slash command head at the
+// start of the trimmed compose text and returns (cmd, remainder-
+// trimmed, true). The remainder may be empty — the caller decides
+// how to surface a usage error. Returns ("", "", false) for anything
+// else, leaving the regular inject path to handle it.
+func splitChubCommand(s string) (cmd ChubCommand, arg string, ok bool) {
+	for _, head := range chubCommandHeads {
+		hs := string(head)
+		if s == hs {
 			return head, "", true
 		}
-		if strings.HasPrefix(s, head+" ") {
-			return head, strings.TrimSpace(s[len(head)+1:]), true
+		if strings.HasPrefix(s, hs+" ") {
+			return head, strings.TrimSpace(s[len(hs)+1:]), true
 		}
 	}
 	return "", "", false
+}
+
+// dispatchChubCommand is the single entry point for routing a parsed
+// ChubCommand to its tea.Cmd handler. Both the rail palette and the
+// legacy compose-bar's sendComposed call this — one switch, one
+// truth. Returns nil for unknown commands (caller's responsibility
+// to surface a usage error if appropriate).
+func (m Model) dispatchChubCommand(cmd ChubCommand, arg string) tea.Cmd {
+	switch cmd {
+	case ChubCmdColor:
+		return m.doChubColor(arg)
+	case ChubCmdRename:
+		return m.doChubRename(arg)
+	case ChubCmdTag:
+		return m.doChubTag(arg)
+	case ChubCmdRefreshClaude:
+		return m.doChubRefreshClaude()
+	case ChubCmdMoveToFolder:
+		return m.doChubMoveToFolder(arg)
+	case ChubCmdRemoveFromFolder:
+		return m.doChubRemoveFromFolder()
+	case ChubCmdDetach:
+		return m.doChubDetach()
+	}
+	return nil
 }
 
 // chubColorRE matches a strict #RRGGBB hex literal.

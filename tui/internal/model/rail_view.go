@@ -61,7 +61,7 @@ const (
 // rendered just below the "Sessions" title so the user sees the active
 // filter; active toggles the border color so the user sees which pane
 // owns arrow / paging keys (D8).
-func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[string]bool, searchHeader string, w, h, spinnerFrame int, active bool) string {
+func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[string]bool, searchHeader string, w, h, spinnerFrame int, active bool, cmdView string) string {
 	var b strings.Builder
 	b.WriteString(views.Bold.Render(" Sessions") + "\n")
 	if searchHeader != "" {
@@ -113,6 +113,18 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 				nameStyle.Render(s.Name) + " " + glyph + "\n")
 		}
 	}
+	// Bottom-of-rail chubby command palette. cmdView is non-empty
+	// when ModeRailCommand is active (or a stale error is being
+	// shown). Rendered as the last line(s) of the rail body so it
+	// sits flush above the bottom border.
+	body := b.String()
+	if cmdView != "" {
+		body += "\n" + cmdView
+	} else {
+		// Always show a dim hint when the palette is dormant — the
+		// gesture (':') isn't discoverable otherwise.
+		body += "\n" + views.DimItalic.Render(" :  for chubby command")
+	}
 	borderColor := inactivePaneBorderColor
 	if active {
 		borderColor = activePaneBorderColor
@@ -121,5 +133,5 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 		Width(w).Height(h).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
-		Render(b.String())
+		Render(body)
 }

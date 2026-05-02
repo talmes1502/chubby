@@ -72,6 +72,11 @@ const (
 	// independently in editorState.visible: a user can leave ModeEditor
 	// (Esc back to ModeMain) while the pane stays on-screen.
 	ModeEditor
+	// ModeRailCommand: the bottom-of-rail command palette is taking
+	// input. Activated by ':' from the rail. Accepts the same
+	// /movetofolder / /color / /tag / /detach / /rename /
+	// /refresh-claude commands the old compose bar handled.
+	ModeRailCommand
 )
 
 // renameTarget says whether ModeRename is editing a session name or a
@@ -267,6 +272,23 @@ type Model struct {
 	// The conversation pane reads from m.pty[focused] and renders its
 	// View() inside the rounded frame.
 	pty          map[string]*ptypane.Pane
+	// ptyLineBuffer mirrors what the user has typed into the focused
+	// session's prompt since the last Enter / line-clear. It lets us
+	// intercept chubby slash commands typed directly into claude's
+	// prompt — e.g. "/color blue" + Enter — by inspecting the buffer
+	// at the moment Enter is pressed. If the buffer matches a
+	// ChubCommand head we send a line-clear to claude (so the typed
+	// text doesn't leak into a real prompt) and dispatch the chubby
+	// handler instead. Heuristic: any non-text key (arrows, Ctrl+C,
+	// Esc) clears the buffer because we can't reliably track claude's
+	// own line state through those.
+	ptyLineBuffer string
+	// railCmd is the bottom-of-rail chubby command palette. Hidden
+	// (focused=false) outside ModeRailCommand. The textinput
+	// retains its value across modes so the user can re-open the
+	// palette and continue editing if they Esc'd out by accident.
+	railCmd      textinput.Model
+	railCmdErr   error
 	width        int
 	height       int
 	err          error
@@ -559,6 +581,7 @@ func New(c *rpc.Client) Model {
 		thinkingStartedAt:   map[string]time.Time{},
 		generationStartedAt: map[string]time.Time{},
 		pty:               map[string]*ptypane.Pane{},
+		railCmd:           views.NewRailCommand(),
 		startupFocusName:  os.Getenv("CHUBBY_FOCUS_SESSION"),
 	}
 }
@@ -641,12 +664,19 @@ func (m Model) loadHistory(sid string) tea.Cmd {
 }
 
 // routeKeyToPty forwards a Bubble Tea key to the focused session's
-// wrapped claude PTY via the existing inject RPC. Used when the
-// conversation pane is active and the user pressed a navigation key
-// (PgUp/Up/etc.) that should drive claude's own scroll/navigation
-// instead of chubby's parsed-Turn scroll. Returns nil when there's
-// no focused session or the key has no PTY-byte encoding.
-func (m Model) routeKeyToPty(msg tea.KeyMsg) tea.Cmd {
+// wrapped claude PTY via inject_raw. Pointer receiver because we
+// also maintain m.ptyLineBuffer — a shadow copy of the user's
+// current line — so chubby slash commands typed directly into
+// claude's prompt (e.g. "/color blue" + Enter) get intercepted and
+// dispatched without leaking through to claude. Without the
+// interception they'd land as plain prompts in claude's chat.
+//
+// Heuristic: we track printable runes + Backspace as edits to the
+// buffer. Anything else (arrows, Ctrl+*, Esc, Tab) clears the
+// buffer because we can't reliably mirror claude's own line state
+// through those keys. Misses are tolerable — chubby commands work
+// when typed cleanly without arrow-edits, which is the common case.
+func (m *Model) routeKeyToPty(msg tea.KeyMsg) tea.Cmd {
 	s := m.focusedSession()
 	if s == nil {
 		return nil
@@ -657,12 +687,48 @@ func (m Model) routeKeyToPty(msg tea.KeyMsg) tea.Cmd {
 	}
 	sid := s.ID
 	c := m.client
+
+	// Update the local line buffer based on what the user pressed.
+	switch msg.Type {
+	case tea.KeyRunes:
+		m.ptyLineBuffer += string(msg.Runes)
+	case tea.KeySpace:
+		m.ptyLineBuffer += " "
+	case tea.KeyBackspace:
+		if n := len(m.ptyLineBuffer); n > 0 {
+			// Trim one rune off the tail (UTF-8 safe).
+			r := []rune(m.ptyLineBuffer)
+			m.ptyLineBuffer = string(r[:len(r)-1])
+		}
+	case tea.KeyEnter:
+		// Intercept chubby slash commands at submit-time.
+		trimmed := strings.TrimSpace(m.ptyLineBuffer)
+		m.ptyLineBuffer = ""
+		if cmd, arg, ok := splitChubCommand(trimmed); ok {
+			// Send Ctrl+U to claude to clear its input line BEFORE
+			// dispatching, so the typed "/color blue" doesn't land
+			// as a real prompt if claude was about to read it.
+			clearCmd := func() tea.Msg {
+				_, _ = c.Call(context.Background(), "inject_raw",
+					map[string]any{
+						"session_id":  sid,
+						"payload_b64": base64.StdEncoding.EncodeToString([]byte{0x15}), // Ctrl+U
+					})
+				return nil
+			}
+			return tea.Batch(clearCmd, m.dispatchChubCommand(cmd, arg))
+		}
+		// Not a chubby command — fall through to normal Enter forward.
+	default:
+		// Any other key (arrows, function keys, ctrl chords) clears
+		// the buffer; claude's own line state is opaque to us.
+		m.ptyLineBuffer = ""
+	}
+
 	return func() tea.Msg {
-		// inject_raw — like inject, but doesn't flip the session
-		// into THINKING. Navigation keys forwarded to claude shouldn't
-		// claim "Claude is now generating"; if the keystroke does
-		// happen to drive a model response, the JSONL tailer will
-		// flip status correctly when the assistant message lands.
+		// inject_raw doesn't flip status to THINKING; the JSONL
+		// tailer will set THINKING on its own once an assistant
+		// message lands (if the keystroke happens to drive one).
 		_, _ = c.Call(context.Background(), "inject_raw",
 			map[string]any{
 				"session_id":  sid,
@@ -688,6 +754,67 @@ func (m Model) ptyResponderFor(sid string) ptypane.Responder {
 				})
 		}()
 	}
+}
+
+// railCommandView returns the rendered chubby command palette for
+// the rail's footer. Returns "" outside ModeRailCommand (renderList
+// then shows a dim ":  for chubby command" hint instead).
+func (m Model) railCommandView() string {
+	if m.mode != ModeRailCommand && m.railCmdErr == nil {
+		return ""
+	}
+	view := views.Cyan.Render(m.railCmd.View())
+	if m.railCmdErr != nil {
+		view += "\n " + lipgloss.NewStyle().
+			Foreground(lipgloss.Color("203")).
+			Render(m.railCmdErr.Error())
+	}
+	return view
+}
+
+// handleKeyRailCommand drives the bottom-of-rail chubby command
+// palette (':' from the rail). Enter parses + dispatches the typed
+// command via splitChubCommand; Esc cancels; everything else flows
+// into the textinput. The palette restores ModeMain on completion
+// so the next keystroke goes back to PTY routing.
+func (m Model) handleKeyRailCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = ModeMain
+		m.railCmd.Blur()
+		m.railCmdErr = nil
+		return m, nil
+	case "enter":
+		raw := strings.TrimSpace(m.railCmd.Value())
+		if raw == "" {
+			m.mode = ModeMain
+			m.railCmd.Blur()
+			return m, nil
+		}
+		// Allow the user to type the command without the leading "/"
+		// — palette UX is friendlier when the prompt is already "':"
+		// and they don't have to also type "/".
+		if !strings.HasPrefix(raw, "/") {
+			raw = "/" + raw
+		}
+		cmd, arg, ok := splitChubCommand(raw)
+		if !ok {
+			m.railCmdErr = fmt.Errorf("unknown command: %s", raw)
+			return m, nil
+		}
+		// Reset palette state and bounce back to main mode; the
+		// chub_commands.go helpers each return their own tea.Cmd
+		// that posts chubCommandDoneMsg / composeFailedMsg.
+		m.railCmd.SetValue("")
+		m.railCmd.Blur()
+		m.railCmdErr = nil
+		m.mode = ModeMain
+		return m, m.dispatchChubCommand(cmd, arg)
+	}
+	var teaCmd tea.Cmd
+	m.railCmd, teaCmd = m.railCmd.Update(msg)
+	m.railCmdErr = nil // any keystroke clears stale error
+	return m, teaCmd
 }
 
 // loadPtyBuffer fetches the daemon's per-session PTY replay ring so
@@ -1426,6 +1553,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleKeyAttach(msg)
 	case ModeEditor:
 		return m.handleKeyEditor(msg)
+	case ModeRailCommand:
+		return m.handleKeyRailCommand(msg)
 	case ModeHelp:
 		// Any key dismisses the overlay.
 		m.mode = ModeMain
@@ -1671,6 +1800,17 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// see help.
 		if m.activePane == PaneRail && !m.railCollapsed {
 			m.mode = ModeHelp
+			return m, nil
+		}
+	case ":":
+		// ':' from the rail opens the chubby command palette at the
+		// bottom of the rail — same vim-style gesture as the input's
+		// own ":" prompt prefix. Forwarded to claude's PTY when the
+		// conversation pane is active.
+		if m.activePane == PaneRail && !m.railCollapsed {
+			m.mode = ModeRailCommand
+			m.railCmd.Focus()
+			m.railCmdErr = nil
 			return m, nil
 		}
 	case "ctrl+h":
@@ -2901,25 +3041,7 @@ func (m Model) sendComposed() tea.Cmd {
 	// so the doChub* helpers can produce a usage error. Without this we
 	// would burn a list_sessions/inject round-trip on a typo.
 	if cmd, arg, ok := splitChubCommand(trimmed); ok {
-		switch cmd {
-		case "/color":
-			return m.doChubColor(arg)
-		case "/rename":
-			return m.doChubRename(arg)
-		case "/tag":
-			return m.doChubTag(arg)
-		case "/refresh-claude":
-			_ = arg // /refresh-claude takes no args; ignore any tail.
-			return m.doChubRefreshClaude()
-		case "/movetofolder":
-			return m.doChubMoveToFolder(arg)
-		case "/removefromfolder":
-			_ = arg // takes no args; ignore any tail.
-			return m.doChubRemoveFromFolder()
-		case "/detach":
-			_ = arg // /detach takes no args; ignore any tail.
-			return m.doChubDetach()
-		}
+		return m.dispatchChubCommand(cmd, arg)
 	}
 	target := ""
 	if strings.HasPrefix(text, "@") {
@@ -3356,6 +3478,7 @@ func (m Model) View() string {
 	}
 
 	var body string
+	cmdView := m.railCommandView()
 	switch {
 	case railVisible && editorVisible:
 		rows := m.railRows()
@@ -3364,7 +3487,7 @@ func (m Model) View() string {
 			focusedID = s.ID
 		}
 		searchHeader := m.searchHeaderText()
-		left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h, m.spinnerFrame, railActive)
+		left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h, m.spinnerFrame, railActive, cmdView)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, rightStack, editorCol)
 	case !railVisible && editorVisible:
 		body = lipgloss.JoinHorizontal(lipgloss.Top, rightStack, editorCol)
@@ -3375,7 +3498,7 @@ func (m Model) View() string {
 			focusedID = s.ID
 		}
 		searchHeader := m.searchHeaderText()
-		left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h, m.spinnerFrame, railActive)
+		left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h, m.spinnerFrame, railActive, cmdView)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, rightStack)
 	default:
 		body = rightStack
