@@ -308,7 +308,17 @@ async def _run_one_claude(
                 continue
             if msg.method == "inject_to_pty":
                 payload = base64.b64decode(msg.params["payload_b64"])
-                if not payload.endswith(b"\n") and not payload.endswith(b"\r"):
+                # auto_newline (default True for back-compat) appends a
+                # \r if the payload doesn't already end in one. The
+                # legacy compose-bar path relies on this — typed text
+                # arrives without a newline and the wrapper "submits"
+                # it. Raw keystroke routing (single chars from the
+                # embedded-PTY pane) MUST opt out: with auto_newline
+                # the user's "k" becomes "k\r", which claude reads as
+                # "submit the prompt 'k'", turning every character
+                # into its own prompt.
+                auto_newline = msg.params.get("auto_newline", True)
+                if auto_newline and not payload.endswith(b"\n") and not payload.endswith(b"\r"):
                     payload += b"\r"
                 await pty.write_user(payload)
             elif msg.method == "resize_pty":

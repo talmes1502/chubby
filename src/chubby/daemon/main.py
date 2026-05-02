@@ -195,13 +195,13 @@ def _build_registry(
     async def inject_raw(
         params: dict[str, Any], ctx: CallContext
     ) -> dict[str, Any]:
-        """Like inject, but does NOT flip the session into THINKING.
+        """Like inject, but: (a) does NOT flip the session into
+        THINKING, and (b) does NOT auto-append \\r to the payload.
 
-        Used by the TUI for navigation/scroll keystrokes (PgUp, arrows
-        in pane mode, etc.) that the user wants forwarded to claude's
-        PTY without claiming "Claude is now generating." Returns
-        immediately on a dead/readonly session — same envelope as
-        inject so callers can fan out the same way.
+        Used by the TUI for per-keystroke forwarding from the embedded
+        PTY pane — printables, arrows, scroll keys, etc. The compose-
+        bar prompt-submit path keeps using plain inject (which both
+        flips status and auto-newlines).
         """
         p = InjectParams.model_validate(params)
         s = await reg.get(p.session_id)
@@ -215,7 +215,11 @@ def _build_registry(
                 ErrorCode.SESSION_DEAD,
                 "session is dead; respawn it before injecting",
             )
-        await reg.inject(p.session_id, base64.b64decode(p.payload_b64))
+        await reg.inject(
+            p.session_id,
+            base64.b64decode(p.payload_b64),
+            auto_newline=False,
+        )
         return {}
 
     async def get_pty_buffer(

@@ -249,7 +249,19 @@ class Registry:
     async def detach_wrapper(self, session_id: str) -> None:
         self._wrapper_writers.pop(session_id, None)
 
-    async def inject(self, session_id: str, payload: bytes) -> None:
+    async def inject(
+        self, session_id: str, payload: bytes, *, auto_newline: bool = True
+    ) -> None:
+        """Forward bytes to the wrapped session's PTY.
+
+        ``auto_newline`` (default True for the legacy compose-bar
+        flow) tells the wrapper to append \\r if the payload doesn't
+        already end in one — handy when sending typed-text prompts.
+        For per-keystroke routing (the embedded-PTY pane) the caller
+        passes False so each char isn't auto-submitted. Without this
+        flag, every keystroke became its own prompt because "k" got
+        rewritten to "k\\r".
+        """
         s = await self.get(session_id)
         if s.kind is SessionKind.TMUX_ATTACHED:
             from chubby.daemon.attach.tmux import inject_tmux
@@ -268,6 +280,7 @@ class Registry:
                     params={
                         "session_id": session_id,
                         "payload_b64": base64.b64encode(payload).decode(),
+                        "auto_newline": auto_newline,
                     },
                 )
             )
