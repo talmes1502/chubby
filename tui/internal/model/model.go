@@ -26,42 +26,12 @@ import (
 )
 
 // Turn is a single transcript entry — a user prompt or an assistant
-// response. Text is the prose body only. Tool calls (Bash, Edit,
-// Read, …) live in Tools as structured records so the viewport can
-// render each one as a styled box matching Claude Code's UI.
-type Turn struct {
-	Role  string
-	Text  string
-	Tools []ToolCall
-	Ts    int64
-}
-
-// ToolCall describes a single tool invocation made by the model
-// during an assistant turn. ID matches Claude's tool_use_id so the
-// tailer can splice in ResultPreview when the matching tool_result
-// arrives in a follow-up record.
-type ToolCall struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Summary       string `json:"summary"`
-	ResultPreview string `json:"result_preview"`
-	ResultIsError bool   `json:"result_is_error"`
-}
-
 // turnsCap is the per-session retention cap. Beyond this we trim the
 // oldest entries so the model stays bounded for long sessions.
 const turnsCap = 500
 
-// Session mirrors the SessionDict schema returned by chubbyd's list_sessions.
-type Session struct {
-	ID     string   `json:"id"`
-	Name   string   `json:"name"`
-	Color  string   `json:"color"`
-	Kind   string   `json:"kind"`
-	Status string   `json:"status"`
-	Cwd    string   `json:"cwd"`
-	Tags   []string `json:"tags"`
-}
+// Turn / ToolCall / Session live in types.go — see that file for
+// SessionStatus / SessionKind / TurnRole typed-string enums.
 
 // ActivePane identifies which of the two main-view panes (rail vs
 // conversation) currently receives arrow / paging input when compose
@@ -653,7 +623,7 @@ func (m Model) loadHistory(sid string) tea.Cmd {
 		turns := make([]Turn, 0, len(r.Turns))
 		for _, t := range r.Turns {
 			turns = append(turns, Turn{
-				Role:  t.Role,
+				Role:  TurnRole(t.Role),
 				Text:  t.Text,
 				Tools: t.ToolCalls,
 				Ts:    t.Ts,
@@ -701,7 +671,7 @@ func spinnerTick() tea.Cmd {
 // tick running and by listMsg/evMsg to (re)start it on demand.
 func (m Model) anyThinking() bool {
 	for _, s := range m.sessions {
-		if s.Status == "thinking" {
+		if s.Status == StatusThinking {
 			return true
 		}
 	}
@@ -741,7 +711,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		now := time.Now()
 		for _, s := range m.sessions {
-			if s.Status == "thinking" {
+			if s.Status == StatusThinking {
 				if _, ok := m.thinkingStartedAt[s.ID]; !ok {
 					m.thinkingStartedAt[s.ID] = now
 				}
@@ -844,7 +814,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// canonically seeded the conversation via
 				// get_session_history; without dedup the user sees each
 				// recent turn twice.
-				m.appendTranscriptTurn(sid, role, text, tools, int64(ts))
+				m.appendTranscriptTurn(sid, TurnRole(role), text, tools, int64(ts))
 				appended := len(m.conversation[sid]) > prevLen
 				// Track the thinking→generating transition so the banner
 				// can show "Generating…" and "thought for Ns" the way
@@ -855,10 +825,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// timestamp (don't overwrite — that's the moment text
 				// streaming actually started).
 				if appended {
-					switch role {
-					case "user":
+					switch TurnRole(role) {
+					case RoleUser:
 						delete(m.generationStartedAt, sid)
-					case "assistant":
+					case RoleAssistant:
 						if strings.TrimSpace(text) != "" {
 							if m.generationStartedAt == nil {
 								m.generationStartedAt = map[string]time.Time{}
@@ -1465,7 +1435,7 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.openNewFolderModal()
 	case "ctrl+p":
 		s := m.focusedSession()
-		if s == nil || s.Status != "dead" {
+		if s == nil || s.Status != StatusDead {
 			return m, nil
 		}
 		return m, m.doRespawn(s.Name, s.Cwd, s.Tags)
@@ -1610,7 +1580,7 @@ func (m Model) handleKeyBroadcast(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "a":
 			// Select all live, non-readonly sessions (the only ones broadcast can target).
 			for _, s := range m.sessions {
-				if s.Status != "dead" && s.Kind != "readonly" {
+				if s.Status != StatusDead && s.Kind != KindReadonly {
 					m.bcast.selected[s.ID] = true
 				}
 			}
@@ -1620,7 +1590,7 @@ func (m Model) handleKeyBroadcast(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "i":
 			// Invert selection (over the broadcast-eligible set).
 			for _, s := range m.sessions {
-				if s.Status == "dead" || s.Kind == "readonly" {
+				if s.Status == StatusDead || s.Kind == KindReadonly {
 					continue
 				}
 				m.bcast.selected[s.ID] = !m.bcast.selected[s.ID]
@@ -2394,7 +2364,7 @@ func (m Model) doDetachSelected(expectedN int) tea.Cmd {
 		// Simpler join: candidate cwd → session.id where session.cwd matches.
 		byCwd := map[string]string{}
 		for _, s := range r.Sessions {
-			if s.Status != "dead" {
+			if s.Status != StatusDead {
 				byCwd[s.Cwd] = s.ID
 			}
 		}
@@ -3552,7 +3522,7 @@ func (m Model) wrapWithChrome(body string) string {
 	composeHasText := m.compose.Value() != ""
 	idle := 0
 	for _, s := range m.sessions {
-		if s.Status == "awaiting_user" {
+		if s.Status == StatusAwaitingUser {
 			idle++
 		}
 	}
@@ -4242,7 +4212,7 @@ const transcriptDedupWindow = 5
 // sees duplicates. The historyTurnsMsg REPLACE path is the canonical
 // seed and is intentionally NOT deduped — only live events run through
 // here.
-func (m *Model) appendTranscriptTurn(sid, role, text string, tools []ToolCall, ts int64) {
+func (m *Model) appendTranscriptTurn(sid string, role TurnRole, text string, tools []ToolCall, ts int64) {
 	turns := m.conversation[sid]
 	n := len(turns)
 	start := n - transcriptDedupWindow
@@ -4268,12 +4238,12 @@ func (m *Model) appendTranscriptTurn(sid, role, text string, tools []ToolCall, t
 // turnSignature builds a dedup key combining role, text, and tool-use
 // IDs. Two turns with the same text but different tool_use IDs are
 // distinct events and shouldn't collide.
-func turnSignature(role, text string, tools []ToolCall) string {
+func turnSignature(role TurnRole, text string, tools []ToolCall) string {
 	if len(tools) == 0 {
-		return role + "|" + text
+		return string(role) + "|" + text
 	}
 	var b strings.Builder
-	b.WriteString(role)
+	b.WriteString(string(role))
 	b.WriteString("|")
 	b.WriteString(text)
 	for _, t := range tools {
@@ -4318,7 +4288,7 @@ func formatConversation(turns []Turn) string {
 		if i > 0 {
 			b.WriteString("\n\n")
 		}
-		if t.Role == "user" {
+		if t.Role == RoleUser {
 			b.WriteString("▸ ")
 		}
 		b.WriteString(t.Text)
@@ -4527,15 +4497,15 @@ var spinnerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(tru
 // string is already styled (color/bold) — callers should not wrap it
 // in extra Foreground styles for "thinking" or they'll fight the
 // vivid-yellow accent that distinguishes a working session from idle.
-func statusGlyph(status string, frame int) string {
+func statusGlyph(status SessionStatus, frame int) string {
 	switch status {
-	case "thinking":
+	case StatusThinking:
 		return spinnerStyle.Render(string(spinnerRunes[frame%len(spinnerRunes)]))
-	case "awaiting_user":
+	case StatusAwaitingUser:
 		return "⚡"
-	case "dead":
+	case StatusDead:
 		return "✕"
-	case "idle":
+	case StatusIdle:
 		return "○"
 	default:
 		return "·"
@@ -4671,7 +4641,7 @@ func renderSessionBanner(
 		bar, name, swatch,
 		dim.Render(fmt.Sprintf("%s · %s", s.Cwd, s.Kind)))
 	if !isThinking {
-		line1 += dim.Render(" · " + s.Status)
+		line1 += dim.Render(" · " + string(s.Status))
 	}
 	if scrolledUp {
 		hint := lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true).
@@ -4834,13 +4804,13 @@ func renderViewportFull(
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
 		Width(w).Height(h)
-	isThinking := s.Status == "thinking"
+	isThinking := s.Status == StatusThinking
 	header := renderSessionBanner(s, spinnerFrame, scrollOffset > 0,
 		usage, thinkingStartedAt, generationStartedAt, isThinking)
 	// Banner may now span two lines (activity row). Count its actual
 	// rendered height so visibleH below subtracts the right amount.
 	bannerLines := strings.Count(header, "\n") + 1
-	if s.Status == "dead" {
+	if s.Status == StatusDead {
 		hint := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true).
 			Render("session is dead — press Ctrl+P to respawn")
 		body := header + "\n\n" + hint
@@ -4920,7 +4890,7 @@ func renderTurns(turns []Turn, sessionColor string, innerWidth int) string {
 			b.WriteString("\n")
 		}
 		switch t.Role {
-		case "user":
+		case RoleUser:
 			// User prompts are typed into the compose bar — usually plain
 			// text, sometimes paths. Keep the path-mention accent and
 			// skip glamour (running plain prose through it adds noise).

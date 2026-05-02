@@ -69,7 +69,7 @@ func TestStatusGlyph_OtherStatuses(t *testing.T) {
 		"unknown":       "·",
 	}
 	for status, want := range cases {
-		got := statusGlyph(status, 0)
+		got := statusGlyph(SessionStatus(status), 0)
 		if got != want {
 			t.Fatalf("statusGlyph(%q): want %q got %q", status, want, got)
 		}
