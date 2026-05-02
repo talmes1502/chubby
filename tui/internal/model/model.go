@@ -587,7 +587,7 @@ func New(c *rpc.Client) Model {
 		thinkingStartedAt:   map[string]time.Time{},
 		generationStartedAt: map[string]time.Time{},
 		pty:               map[string]*ptypane.Pane{},
-		railCmd:           views.NewRailCommand(),
+		railCmd:           newRailCommandInput(),
 		startupFocusName:  os.Getenv("CHUBBY_FOCUS_SESSION"),
 	}
 }
@@ -768,6 +768,15 @@ func (m Model) ptyResponderFor(sid string) ptypane.Responder {
 				})
 		}()
 	}
+}
+
+// newRailCommandInput wires NewRailCommand to the ChubCommand-derived
+// placeholder so the palette's hint text stays in sync as new
+// commands are added.
+func newRailCommandInput() textinput.Model {
+	t := views.NewRailCommand()
+	t.Placeholder = ChubCommandPlaceholder()
+	return t
 }
 
 // railCommandView returns the rendered chubby command palette for

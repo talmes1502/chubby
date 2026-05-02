@@ -62,6 +62,22 @@ func AllChubCommands() []ChubCommand {
 	return out
 }
 
+// ChubCommandPlaceholder is the placeholder text shown in the rail
+// command palette when it's empty. Generated from the ChubCommand
+// constants so adding a new command (movetofolder, color, …) shows
+// up automatically without a second source to keep in sync.
+func ChubCommandPlaceholder() string {
+	parts := make([]string, len(chubCommandHeads))
+	for i, h := range chubCommandHeads {
+		parts[i] = string(h)
+	}
+	// Sort alphabetically for stable display order — chubCommandHeads
+	// is dispatch-ordered (longest-first), which is the wrong sort
+	// for human reading.
+	sort.Strings(parts)
+	return strings.Join(parts, ", ") + "  (Tab to complete)"
+}
+
 // splitChubCommand recognises a chubby-side command head at the
 // start of the trimmed text and returns (cmd, remainder-trimmed,
 // true). Accepts both bare names ("color blue") and slash-prefixed

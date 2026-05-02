@@ -81,6 +81,61 @@ func TestOpenMacosTerminalCmd_InheritsCurrentProfile(t *testing.T) {
 	}
 }
 
+// TestOpenExternalClaude_HonorsTermProgramITerm — when $TERM_PROGRAM
+// is iTerm.app, the AppleScript should drive iTerm via its
+// `create window with default profile` API, NOT Terminal.app's
+// `do script`. Earlier behavior always used Terminal.app, which made
+// /detach pop a Terminal.app window even from inside iTerm.
+func TestOpenExternalClaude_HonorsTermProgramITerm(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skipf("skipping macos-only test on %s", runtime.GOOS)
+	}
+	t.Setenv("TERM_PROGRAM", "iTerm.app")
+	var capturedScript string
+	prev := execCommand
+	t.Cleanup(func() { execCommand = prev })
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		if len(args) >= 2 {
+			capturedScript = args[1]
+		}
+		return exec.Command("/usr/bin/true")
+	}
+	if err := OpenExternalClaude("the-sid", "/tmp/proj"); err != nil {
+		t.Fatalf("OpenExternalClaude: %v", err)
+	}
+	if !strings.Contains(capturedScript, `tell application "iTerm"`) {
+		t.Fatalf("expected iTerm tell, got: %s", capturedScript)
+	}
+	if strings.Contains(capturedScript, `tell application "Terminal"`) {
+		t.Fatalf("should NOT have routed to Terminal.app: %s", capturedScript)
+	}
+}
+
+// TestOpenExternalClaude_DefaultsToTerminalApp — unknown / empty
+// TERM_PROGRAM falls through to Terminal.app, the lowest-common-
+// denominator default.
+func TestOpenExternalClaude_DefaultsToTerminalApp(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skipf("skipping macos-only test on %s", runtime.GOOS)
+	}
+	t.Setenv("TERM_PROGRAM", "")
+	var capturedScript string
+	prev := execCommand
+	t.Cleanup(func() { execCommand = prev })
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		if len(args) >= 2 {
+			capturedScript = args[1]
+		}
+		return exec.Command("/usr/bin/true")
+	}
+	if err := OpenExternalClaude("the-sid", "/tmp/proj"); err != nil {
+		t.Fatalf("OpenExternalClaude: %v", err)
+	}
+	if !strings.Contains(capturedScript, `tell application "Terminal"`) {
+		t.Fatalf("expected Terminal.app fallback, got: %s", capturedScript)
+	}
+}
+
 // TestOpenLinuxTerminalCmd_PicksFirstAvailable verifies the Linux
 // branch honours the priority list: when execLookPath claims
 // gnome-terminal is on $PATH, that's the binary we exec — even if

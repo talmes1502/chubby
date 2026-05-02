@@ -11,9 +11,13 @@ import "github.com/charmbracelet/bubbles/textinput"
 // rail column. The ':' prompt mirrors vim's command-line — the
 // keystroke that opens the palette is the same character that
 // prefixes the prompt, so the visual matches the gesture.
+//
+// Placeholder is left empty here on purpose; the model package fills
+// it via t.Placeholder = model.ChubCommandPlaceholder() so the hint
+// text is derived from the ChubCommand enum and stays in sync as
+// commands are added.
 func NewRailCommand() textinput.Model {
 	t := textinput.New()
-	t.Placeholder = "movetofolder, color, tag, detach …  (Tab to complete)"
 	t.Prompt = ": "
 	t.CharLimit = 0
 	t.Focus()

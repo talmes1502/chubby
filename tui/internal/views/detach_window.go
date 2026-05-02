@@ -6,6 +6,7 @@ package views
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 )
@@ -37,7 +38,7 @@ func OpenExternalClaude(claudeSessionID, cwd string) error {
 	cmdLine := fmt.Sprintf("cd %q && claude --resume %q", cwd, claudeSessionID)
 	switch runtime.GOOS {
 	case "darwin":
-		return openMacosTerminalCmd(cmdLine)
+		return openMacTerminal(cmdLine)
 	case "linux":
 		return openLinuxTerminalCmd(cmdLine)
 	default:
@@ -46,6 +47,56 @@ func OpenExternalClaude(claudeSessionID, cwd string) error {
 			runtime.GOOS, claudeSessionID, cwd,
 		)
 	}
+}
+
+// macTerminalDriver maps a $TERM_PROGRAM value to the function that
+// knows how to spawn a new window of that terminal running cmdLine.
+// Lookup is dynamic so adding support for a new terminal is a
+// one-line entry, not a switch-statement edit.
+var macTerminalDrivers = map[string]func(cmdLine string) error{
+	"iTerm.app":      openItermCmd,
+	"Apple_Terminal": openMacosTerminalCmd,
+	// Add new entries here as the need surfaces:
+	//   "WezTerm":      openWeztermCmd,
+	//   "ghostty":      openGhosttyCmd,
+	//   "WarpTerminal": openWarpCmd,
+	//   "vscode":       openVscodeTerminalCmd,
+}
+
+// openMacTerminal dispatches to the driver matching the current
+// $TERM_PROGRAM. Generic detection — chubby reads whichever value
+// macOS sets for the active terminal app and routes to the
+// corresponding script. Empty / unknown TERM_PROGRAM falls back
+// to Terminal.app (the universal default that every Mac has).
+func openMacTerminal(cmdLine string) error {
+	term := os.Getenv("TERM_PROGRAM")
+	if driver, ok := macTerminalDrivers[term]; ok {
+		return driver(cmdLine)
+	}
+	// Unknown terminal — fall back to Apple Terminal. The detached
+	// window opens there instead of in the user's chosen app, but at
+	// least the session is reachable. Adding a driver for the
+	// missing terminal is the proper fix.
+	return openMacosTerminalCmd(cmdLine)
+}
+
+// openItermCmd opens a new iTerm2 window running cmdLine. Uses
+// iTerm's AppleScript dialect: `create window with default profile`
+// returns the new window, then we send `cmdLine` to its current
+// session. Falls back to Terminal.app if the iTerm script errors
+// (e.g., older iTerm without scripting support).
+func openItermCmd(cmdLine string) error {
+	script := fmt.Sprintf(`
+tell application "iTerm"
+    activate
+    set newWindow to create window with default profile
+    tell current session of newWindow
+        write text %q
+    end tell
+end tell
+`, cmdLine)
+	cmd := execCommand("osascript", "-e", script)
+	return cmd.Start()
 }
 
 // openMacosTerminalCmd asks Terminal.app via osascript to open a fresh
