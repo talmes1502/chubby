@@ -1691,9 +1691,8 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.editor.visible = !m.editor.visible
 		return m, nil
 	case "enter":
-		// D8: rail-pane Enter (with empty compose) focuses the cursored
-		// session OR toggles a folder header's collapse. Conversation-
-		// pane Enter (or any non-empty compose) falls through to send.
+		// Rail-pane Enter (with empty compose) focuses the cursored
+		// session OR toggles a folder header's collapse.
 		if m.compose.Value() == "" && m.activePane == PaneRail {
 			rows := m.railRows()
 			if m.railCursor >= 0 && m.railCursor < len(rows) {
@@ -1712,6 +1711,15 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		}
+		// Conversation-pane Enter with empty compose: forward a bare
+		// "\r" to claude's PTY so trust prompts / Y/N choices /
+		// "press Enter to confirm" widgets work without typing
+		// anything in the compose bar. inject_raw is used (not
+		// plain inject) so this doesn't claim "Claude is now
+		// generating" for a confirmation keystroke.
+		if m.compose.Value() == "" {
+			return m, m.routeKeyToPty(msg)
 		}
 		return m, m.sendComposed()
 	case "shift+enter":
