@@ -549,8 +549,25 @@ async def _tail_jsonl(
                         "ts": ts,
                     },
                 )
-            if role == "assistant":
-                # Claude finished a response → flip THINKING back to idle.
+            if role == "assistant" and not tool_calls:
+                # Claude finished a turn → flip THINKING back to idle.
+                #
+                # We DELIBERATELY skip the flip when the assistant message
+                # contained tool_use blocks. A tool-call message means
+                # Claude is mid-turn — either running the tool or paused
+                # at a "Do you want to proceed?" permission prompt — and
+                # the next message will carry the tool_result + further
+                # reasoning. Flipping to IDLE here would stop the rail
+                # spinner while Claude is still working / waiting on the
+                # user's permission, which is the bug the agent-subtask
+                # case surfaced (see tests/.../test_assistant_turn_*).
+                #
+                # Only when an assistant message is purely text — no
+                # tool_use blocks — does the turn really end from
+                # chubby's vantage point. Stop hook (mark_idle) flips us
+                # to AWAITING_USER moments later; this branch is the
+                # safety net for cases where Stop never fires.
+                #
                 # Guarded so we don't override the Stop hook's
                 # AWAITING_USER, or step on a freshly-DEAD session.
                 try:

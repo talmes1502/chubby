@@ -114,3 +114,62 @@ async def test_assistant_turn_does_not_override_awaiting_user(tmp_path: Path) ->
         assert cur.status is SessionStatus.AWAITING_USER
     finally:
         await db.close()
+
+
+async def test_assistant_tool_use_keeps_thinking(tmp_path: Path) -> None:
+    """An assistant message that contains a tool_use block must NOT
+    flip the session out of THINKING — Claude is mid-turn (running
+    the tool, or paused at a "Do you want to proceed?" permission
+    prompt). The next message will carry the tool_result + further
+    reasoning; flipping early stops the rail spinner while Claude is
+    still working."""
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "let me check"},
+                        {
+                            "type": "tool_use",
+                            "id": "tu1",
+                            "name": "Read",
+                            "input": {"file_path": "/tmp/x.py"},
+                        },
+                    ],
+                },
+            }
+        )
+        + "\n"
+    )
+
+    db = await Database.open(tmp_path / "s.db")
+    try:
+        subs = _FakeSubs()
+        reg = Registry(hub_run_id="hr_t", db=db, subs=subs)  # type: ignore[arg-type]
+        s = Session(
+            id="s_tu",
+            hub_run_id="hr_t",
+            name="tu",
+            color="#abc123",
+            kind=SessionKind.WRAPPED,
+            cwd=str(tmp_path),
+            created_at=1,
+            last_activity_at=1,
+            status=SessionStatus.THINKING,
+            claude_session_id="ghi",
+        )
+        reg._by_id[s.id] = s
+
+        await asyncio.wait_for(
+            _tail_jsonl(reg, s.id, transcript, stop_after=1),
+            timeout=3.0,
+        )
+        cur = await reg.get(s.id)
+        # Status MUST remain THINKING — Claude has just emitted a
+        # tool call and the next event will be the tool_result.
+        assert cur.status is SessionStatus.THINKING
+    finally:
+        await db.close()
