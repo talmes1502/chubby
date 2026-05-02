@@ -51,7 +51,7 @@ func TestSendComposed_MoveToFolderRejectsEmptyArg(t *testing.T) {
 		mode:     ModeMain,
 		compose:  views.NewCompose(),
 	}
-	m.compose.SetValue("/movetofolder")
+	m.compose.SetValue("movetofolder")
 	msg := runCmd(m.sendComposed())
 	if _, ok := msg.(composeFailedMsg); !ok {
 		t.Fatalf("expected composeFailedMsg, got %T (%v)", msg, msg)
@@ -76,7 +76,7 @@ func TestSendComposed_RoutesRemoveFromFolder(t *testing.T) {
 		mode:     ModeMain,
 		compose:  views.NewCompose(),
 	}
-	m.compose.SetValue("/removefromfolder")
+	m.compose.SetValue("removefromfolder")
 	msg := runCmd(m.sendComposed())
 	if _, ok := msg.(chubCommandDoneMsg); !ok {
 		t.Fatalf("expected chubCommandDoneMsg, got %T (%v)", msg, msg)
@@ -95,8 +95,8 @@ func TestSplitChubCommand_MovetoFolderArg(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected ok=true")
 	}
-	if cmd != "/movetofolder" {
-		t.Fatalf("cmd=%q want /movetofolder", cmd)
+	if cmd != "movetofolder" {
+		t.Fatalf("cmd=%q want movetofolder", cmd)
 	}
 	if arg != "backend" {
 		t.Fatalf("arg=%q want backend", arg)
@@ -106,12 +106,12 @@ func TestSplitChubCommand_MovetoFolderArg(t *testing.T) {
 // TestSplitChubCommand_RemoveFromFolderNoArg: bare command with no
 // arg is recognized.
 func TestSplitChubCommand_RemoveFromFolderNoArg(t *testing.T) {
-	cmd, arg, ok := splitChubCommand("/removefromfolder")
+	cmd, arg, ok := splitChubCommand("removefromfolder")
 	if !ok {
 		t.Fatalf("expected ok=true")
 	}
-	if cmd != "/removefromfolder" {
-		t.Fatalf("cmd=%q want /removefromfolder", cmd)
+	if cmd != "removefromfolder" {
+		t.Fatalf("cmd=%q want removefromfolder", cmd)
 	}
 	if arg != "" {
 		t.Fatalf("arg=%q want empty", arg)

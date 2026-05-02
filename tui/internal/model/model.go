@@ -289,6 +289,12 @@ type Model struct {
 	// palette and continue editing if they Esc'd out by accident.
 	railCmd      textinput.Model
 	railCmdErr   error
+	// railCmdCycleLast / railCmdCycleIdx drive Tab-cycle through
+	// completions: when the user repeatedly presses Tab without
+	// editing the input, we step through matches; any edit resets
+	// the cycle. Mirrors the spawn-cwd path-completion pattern.
+	railCmdCycleLast string
+	railCmdCycleIdx  int
 	width        int
 	height       int
 	err          error
@@ -701,22 +707,30 @@ func (m *Model) routeKeyToPty(msg tea.KeyMsg) tea.Cmd {
 			m.ptyLineBuffer = string(r[:len(r)-1])
 		}
 	case tea.KeyEnter:
-		// Intercept chubby slash commands at submit-time.
+		// Intercept chubby slash commands at submit-time. Inline
+		// interception REQUIRES a leading "/" — without it we'd
+		// hijack legitimate prompts that happen to start with one
+		// of our command words ("rename this var" → /rename foo).
+		// The rail palette skips this gate (users explicitly opened
+		// the chubby command surface there).
 		trimmed := strings.TrimSpace(m.ptyLineBuffer)
 		m.ptyLineBuffer = ""
-		if cmd, arg, ok := splitChubCommand(trimmed); ok {
-			// Send Ctrl+U to claude to clear its input line BEFORE
-			// dispatching, so the typed "/color blue" doesn't land
-			// as a real prompt if claude was about to read it.
-			clearCmd := func() tea.Msg {
-				_, _ = c.Call(context.Background(), "inject_raw",
-					map[string]any{
-						"session_id":  sid,
-						"payload_b64": base64.StdEncoding.EncodeToString([]byte{0x15}), // Ctrl+U
-					})
-				return nil
+		if strings.HasPrefix(trimmed, "/") {
+			if cmd, arg, ok := splitChubCommand(trimmed); ok {
+				// Send Ctrl+U to claude to clear its input line
+				// BEFORE dispatching, so the typed "/color blue"
+				// doesn't land as a real prompt if claude was about
+				// to read it.
+				clearCmd := func() tea.Msg {
+					_, _ = c.Call(context.Background(), "inject_raw",
+						map[string]any{
+							"session_id":  sid,
+							"payload_b64": base64.StdEncoding.EncodeToString([]byte{0x15}), // Ctrl+U
+						})
+					return nil
+				}
+				return tea.Batch(clearCmd, m.dispatchChubCommand(cmd, arg))
 			}
-			return tea.Batch(clearCmd, m.dispatchChubCommand(cmd, arg))
 		}
 		// Not a chubby command — fall through to normal Enter forward.
 	default:
@@ -784,6 +798,26 @@ func (m Model) handleKeyRailCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.railCmd.Blur()
 		m.railCmdErr = nil
 		return m, nil
+	case "tab":
+		// Tab-cycles through chubby command + arg completions.
+		// First press snaps to the first match; subsequent presses
+		// without edits walk the candidate list. Any edit (handled
+		// in the default branch below) resets the cycle.
+		cur := m.railCmd.Value()
+		if cur != m.railCmdCycleLast {
+			m.railCmdCycleIdx = 0
+		}
+		newVal, ok, total := m.chubCommandComplete(cur, m.railCmdCycleIdx)
+		if !ok {
+			return m, nil
+		}
+		m.railCmd.SetValue(newVal)
+		m.railCmd.SetCursor(len(newVal))
+		m.railCmdCycleLast = newVal
+		if total > 1 {
+			m.railCmdCycleIdx++
+		}
+		return m, nil
 	case "enter":
 		raw := strings.TrimSpace(m.railCmd.Value())
 		if raw == "" {
@@ -814,6 +848,10 @@ func (m Model) handleKeyRailCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var teaCmd tea.Cmd
 	m.railCmd, teaCmd = m.railCmd.Update(msg)
 	m.railCmdErr = nil // any keystroke clears stale error
+	// Reset Tab-cycle anchor — the user has edited the buffer, so
+	// the next Tab restarts the cycle from the new prefix.
+	m.railCmdCycleLast = ""
+	m.railCmdCycleIdx = 0
 	return m, teaCmd
 }
 

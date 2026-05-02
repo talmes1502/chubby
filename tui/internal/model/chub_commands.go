@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -20,24 +21,29 @@ import (
 )
 
 // ChubCommand identifies a chubby-side slash command. Typed-string
-// (rather than iota) so the value is the same string the user types
-// — useful when storing palette history or logging, and lets us
-// pass it through string formatting unchanged.
+// (rather than iota) so the value matches what the user types in
+// the rail palette — useful for logging and so palette history
+// could round-trip through display unchanged.
+//
+// Bare names (no leading "/") because the rail palette doesn't
+// require a slash prefix; splitChubCommand strips one if present
+// so inline-in-claude usage (which still uses "/" as the chubby-
+// vs-claude disambiguator) keeps working.
 type ChubCommand string
 
 const (
-	ChubCmdColor            ChubCommand = "/color"
-	ChubCmdRename           ChubCommand = "/rename"
-	ChubCmdTag              ChubCommand = "/tag"
-	ChubCmdRefreshClaude    ChubCommand = "/refresh-claude"
-	ChubCmdMoveToFolder     ChubCommand = "/movetofolder"
-	ChubCmdRemoveFromFolder ChubCommand = "/removefromfolder"
-	ChubCmdDetach           ChubCommand = "/detach"
+	ChubCmdColor            ChubCommand = "color"
+	ChubCmdRename           ChubCommand = "rename"
+	ChubCmdTag              ChubCommand = "tag"
+	ChubCmdRefreshClaude    ChubCommand = "refresh-claude"
+	ChubCmdMoveToFolder     ChubCommand = "movetofolder"
+	ChubCmdRemoveFromFolder ChubCommand = "removefromfolder"
+	ChubCmdDetach           ChubCommand = "detach"
 )
 
 // chubCommandHeads is the dispatch table for splitChubCommand:
-// ordered longest-first so "/removefromfolder" wins over a future
-// "/remove*" and "/movetofolder" wins over a future "/move*".
+// ordered longest-first so "removefromfolder" wins over a future
+// "remove*" and "movetofolder" wins over a future "move*".
 var chubCommandHeads = []ChubCommand{
 	ChubCmdRemoveFromFolder,
 	ChubCmdMoveToFolder,
@@ -48,12 +54,22 @@ var chubCommandHeads = []ChubCommand{
 	ChubCmdTag,
 }
 
-// splitChubCommand recognises a chubby-side slash command head at the
-// start of the trimmed compose text and returns (cmd, remainder-
-// trimmed, true). The remainder may be empty — the caller decides
-// how to surface a usage error. Returns ("", "", false) for anything
-// else, leaving the regular inject path to handle it.
+// AllChubCommands returns the dispatch table — used by the rail
+// palette's Tab-autocomplete to enumerate matchable heads.
+func AllChubCommands() []ChubCommand {
+	out := make([]ChubCommand, len(chubCommandHeads))
+	copy(out, chubCommandHeads)
+	return out
+}
+
+// splitChubCommand recognises a chubby-side command head at the
+// start of the trimmed text and returns (cmd, remainder-trimmed,
+// true). Accepts both bare names ("color blue") and slash-prefixed
+// ("/color blue") so the rail palette and inline-in-claude paths
+// can share parser. Returns ("", "", false) for anything else.
 func splitChubCommand(s string) (cmd ChubCommand, arg string, ok bool) {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "/")
 	for _, head := range chubCommandHeads {
 		hs := string(head)
 		if s == hs {
@@ -64,6 +80,103 @@ func splitChubCommand(s string) (cmd ChubCommand, arg string, ok bool) {
 		}
 	}
 	return "", "", false
+}
+
+// chubCommandArgs returns the autocomplete candidates for a given
+// command's argument slot. Empty slice = "free-text arg, no
+// suggestions" (e.g. /rename takes any name). Used by the rail
+// palette's Tab completer.
+func (m Model) chubCommandArgs(cmd ChubCommand) []string {
+	switch cmd {
+	case ChubCmdColor:
+		// Friendly color names + palette indexes. Hex codes are
+		// open-ended so we don't enumerate them.
+		out := make([]string, 0, len(chubColorNames)+len(chubPalette))
+		for name := range chubColorNames {
+			out = append(out, name)
+		}
+		sort.Strings(out)
+		for i := range chubPalette {
+			out = append(out, fmt.Sprintf("%d", i))
+		}
+		return out
+	case ChubCmdMoveToFolder:
+		// Existing folder names, alphabetical. Plus a hint that
+		// any new name creates the folder — communicated via
+		// placeholder, not enumerated here.
+		return m.folders.AllFolderNames()
+	}
+	return nil
+}
+
+// chubCommandComplete picks the next completion for a typed prefix,
+// cycling through matches on repeated calls (cycleIdx % matches).
+// Returns the completed string + whether a completion was applied.
+//
+// Three states based on what's typed:
+//   1) empty / partial command head — complete the head, e.g. "co"
+//      → "color", "move" → "movetofolder".
+//   2) full command + space + partial arg — complete the arg from
+//      the head's argument table.
+//   3) full command, no args yet — append a space if the head takes
+//      args, otherwise no-op.
+func (m Model) chubCommandComplete(input string, cycleIdx int) (out string, ok bool, total int) {
+	input = strings.TrimSpace(input)
+	hasSlash := strings.HasPrefix(input, "/")
+	bare := strings.TrimPrefix(input, "/")
+	prefix := ""
+	if hasSlash {
+		prefix = "/"
+	}
+	// State 2 / 3: we have a complete command head + maybe an arg.
+	for _, head := range chubCommandHeads {
+		hs := string(head)
+		if bare == hs {
+			args := m.chubCommandArgs(head)
+			if len(args) == 0 {
+				return input, false, 0
+			}
+			pick := args[cycleIdx%len(args)]
+			return prefix + hs + " " + pick, true, len(args)
+		}
+		if strings.HasPrefix(bare, hs+" ") {
+			argPartial := strings.TrimSpace(bare[len(hs)+1:])
+			args := m.chubCommandArgs(head)
+			matches := matchPrefixCI(args, argPartial)
+			if len(matches) == 0 {
+				return input, false, 0
+			}
+			return prefix + hs + " " + matches[cycleIdx%len(matches)],
+				true, len(matches)
+		}
+	}
+	// State 1: complete the command head itself.
+	matches := []string{}
+	for _, head := range chubCommandHeads {
+		hs := string(head)
+		if bare == "" || strings.HasPrefix(hs, bare) {
+			matches = append(matches, hs)
+		}
+	}
+	sort.Strings(matches)
+	if len(matches) == 0 {
+		return input, false, 0
+	}
+	return prefix + matches[cycleIdx%len(matches)], true, len(matches)
+}
+
+// matchPrefixCI returns items that start with prefix (case-insensitive),
+// preserving original case in the output. Sorted alphabetically.
+func matchPrefixCI(items []string, prefix string) []string {
+	pl := strings.ToLower(prefix)
+	out := []string{}
+	for _, it := range items {
+		if pl == "" || strings.HasPrefix(strings.ToLower(it), pl) {
+			out = append(out, it)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // dispatchChubCommand is the single entry point for routing a parsed

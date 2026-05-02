@@ -13,7 +13,7 @@ import "github.com/charmbracelet/bubbles/textinput"
 // prefixes the prompt, so the visual matches the gesture.
 func NewRailCommand() textinput.Model {
 	t := textinput.New()
-	t.Placeholder = "/movetofolder, /color, /tag, /detach …"
+	t.Placeholder = "movetofolder, color, tag, detach …  (Tab to complete)"
 	t.Prompt = ": "
 	t.CharLimit = 0
 	t.Focus()

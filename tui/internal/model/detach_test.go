@@ -138,7 +138,7 @@ func (d *fakeReleaseDaemon) lastCall() (string, map[string]any) {
 	return c.method, c.params
 }
 
-// TestSendComposed_RoutesDetachToReleaseRPC — typing "/detach" with a
+// TestSendComposed_RoutesDetachToReleaseRPC — typing "detach" with a
 // focused session calls release_session over RPC, then invokes
 // openExternalClaudeFn with the captured (claude_session_id, cwd). On
 // success we surface chubCommandDoneMsg with a "released" toast.
@@ -162,7 +162,7 @@ func TestSendComposed_RoutesDetachToReleaseRPC(t *testing.T) {
 		mode:     ModeMain,
 		compose:  views.NewCompose(),
 	}
-	m.compose.SetValue("/detach")
+	m.compose.SetValue("detach")
 	msg := runCmd(m.sendComposed())
 	done, ok := msg.(chubCommandDoneMsg)
 	if !ok {
@@ -210,7 +210,7 @@ func TestDetach_NoFocusedSessionFails(t *testing.T) {
 		mode:     ModeMain,
 		compose:  views.NewCompose(),
 	}
-	m.compose.SetValue("/detach")
+	m.compose.SetValue("detach")
 	msg := runCmd(m.sendComposed())
 	if _, ok := msg.(composeFailedMsg); !ok {
 		t.Fatalf("expected composeFailedMsg, got %T (%v)", msg, msg)
@@ -251,7 +251,7 @@ func TestDetach_RPCErrorBecomesComposeFailed(t *testing.T) {
 		mode:     ModeMain,
 		compose:  views.NewCompose(),
 	}
-	m.compose.SetValue("/detach")
+	m.compose.SetValue("detach")
 	msg := runCmd(m.sendComposed())
 	failed, ok := msg.(composeFailedMsg)
 	if !ok {
@@ -287,7 +287,7 @@ func TestDetach_SpawnErrorStillReleases(t *testing.T) {
 		mode:     ModeMain,
 		compose:  views.NewCompose(),
 	}
-	m.compose.SetValue("/detach")
+	m.compose.SetValue("detach")
 	msg := runCmd(m.sendComposed())
 	done, ok := msg.(chubCommandDoneMsg)
 	if !ok {
@@ -302,17 +302,17 @@ func TestDetach_SpawnErrorStillReleases(t *testing.T) {
 }
 
 // TestSplitChubCommand_RecognizesDetach — the splitter must surface
-// "/detach" as a chub-side command head so sendComposed routes it
+// "detach" as a chub-side command head so sendComposed routes it
 // before the inject path. (Belt-and-suspenders for the longest-first
 // invariant: a future "/detach-foo" wouldn't change this test's
 // behaviour because we pass the bare head.)
 func TestSplitChubCommand_RecognizesDetach(t *testing.T) {
-	cmd, arg, ok := splitChubCommand("/detach")
+	cmd, arg, ok := splitChubCommand("detach")
 	if !ok {
 		t.Fatal("expected /detach to be recognised as a chub command")
 	}
-	if cmd != "/detach" {
-		t.Fatalf("cmd = %q, want /detach", cmd)
+	if cmd != "detach" {
+		t.Fatalf("cmd = %q, want detach", cmd)
 	}
 	if arg != "" {
 		t.Fatalf("arg = %q, want empty", arg)
