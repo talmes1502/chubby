@@ -1650,15 +1650,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.String() == "ctrl+c" {
-		// Ctrl+C is "tmux detach" — exit the TUI but leave wrappers
-		// alive. Stash the focused session's resume hint so main()
-		// can print it after the alt-screen tears down. Skipped when
-		// no session is focused or the JSONL hasn't been bound yet
-		// (no id to resume from).
-		m.exitHint = m.buildExitHint()
-		return m, tea.Quit
-	}
+	// Ctrl+C is NOT a chubby chord — it follows the standard
+	// terminal convention of "interrupt the focused process". When
+	// the conversation pane is active and we're in main mode, the
+	// Ctrl+C byte (0x03) is forwarded to claude's PTY via the
+	// regular key-routing path below; claude responds the same way
+	// it would in a plain terminal. In modals, Ctrl+C falls through
+	// to the modal's Esc-cancel behavior because every handleKey*
+	// also intercepts it. To quit chubby itself: 'q' from the rail.
 	switch m.mode {
 	case ModeBroadcast:
 		return m.handleKeyBroadcast(msg)
