@@ -272,6 +272,13 @@ type Model struct {
 	// The conversation pane reads from m.pty[focused] and renders its
 	// View() inside the rounded frame.
 	pty          map[string]*ptypane.Pane
+	// exitHint is the post-quit message chubby-tui's main() prints to
+	// stderr after the alt-screen tears down — currently used to show
+	// the focused session's `claude --resume <id>` command when the
+	// user Ctrl+C's so they can drop straight into claude without
+	// having to re-open chubby. Empty when no session was focused or
+	// the session's JSONL hasn't been bound yet.
+	exitHint     string
 	// ptyLineBuffer mirrors what the user has typed into the focused
 	// session's prompt since the last Enter / line-clear. It lets us
 	// intercept chubby slash commands typed directly into claude's
@@ -777,6 +784,42 @@ func newRailCommandInput() textinput.Model {
 	t := views.NewRailCommand()
 	t.Placeholder = ChubCommandPlaceholder()
 	return t
+}
+
+// ExitHint returns the post-quit message main() should print after
+// the alt-screen tears down. Empty when no hint was generated
+// (clean quit with no focused-session resume command). Exposed
+// (capitalized) so the cmd/chubby-tui main() can read it from the
+// final Model returned by tea.Program.Run.
+func (m Model) ExitHint() string {
+	return m.exitHint
+}
+
+// buildExitHint formats a "claude --resume <id>" line for the
+// focused session — the user's escape hatch from chubby into a
+// plain claude session. Returns "" when there's no focused session
+// or its JSONL hasn't been bound yet (the wrapper only learns its
+// claude_session_id once claude itself starts up; very brief race
+// at session creation).
+func (m Model) buildExitHint() string {
+	s := m.focusedSession()
+	if s == nil {
+		return "chubby: detached (no focused session)\n" +
+			"          (wrappers still running — `chubby start` to reopen)"
+	}
+	if s.ClaudeSessionID == "" {
+		return fmt.Sprintf(
+			"chubby: detached from %q\n"+
+				"          (no claude_session_id yet — `chubby start` to reopen)",
+			s.Name,
+		)
+	}
+	return fmt.Sprintf(
+		"chubby: detached from %q\n"+
+			"  to resume: claude --resume %s\n"+
+			"  (wrappers still running — `chubby start` to reopen)",
+		s.Name, s.ClaudeSessionID,
+	)
 }
 
 // railCommandView returns the rendered chubby command palette for
@@ -1608,6 +1651,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
+		// Ctrl+C is "tmux detach" — exit the TUI but leave wrappers
+		// alive. Stash the focused session's resume hint so main()
+		// can print it after the alt-screen tears down. Skipped when
+		// no session is focused or the JSONL hasn't been bound yet
+		// (no id to resume from).
+		m.exitHint = m.buildExitHint()
 		return m, tea.Quit
 	}
 	switch m.mode {

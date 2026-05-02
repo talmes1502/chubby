@@ -53,8 +53,18 @@ func main() {
 	// terminal's native text-selection (and copy/paste). We don't have any
 	// mouse handlers, so dropping the option restores normal selection.
 	p := tea.NewProgram(model.New(c), tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
+	final, err := p.Run()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	// On Ctrl+C the Model stashes a "to resume: claude --resume <id>"
+	// line in ExitHint so the user can drop straight into claude
+	// without re-opening chubby. Printed AFTER the alt-screen tears
+	// down so it survives in the parent shell's scrollback.
+	if m, ok := final.(model.Model); ok {
+		if hint := m.ExitHint(); hint != "" {
+			fmt.Fprintln(os.Stderr, hint)
+		}
 	}
 }

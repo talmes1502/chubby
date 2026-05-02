@@ -78,14 +78,20 @@ type ToolCall struct {
 // Session mirrors the SessionDict schema returned by chubbyd's
 // list_sessions RPC. Status and Kind are typed-string enums so
 // equality checks are typo-safe at compile time.
+//
+// ClaudeSessionID is the JSONL transcript id (the value `claude
+// --resume <id>` takes). May be empty when the wrapper just
+// started — claude binds the JSONL on first use, the daemon's
+// transcript watcher fills the field via session_id_resolved.
 type Session struct {
-	ID     string        `json:"id"`
-	Name   string        `json:"name"`
-	Color  string        `json:"color"`
-	Kind   SessionKind   `json:"kind"`
-	Status SessionStatus `json:"status"`
-	Cwd    string        `json:"cwd"`
-	Tags   []string      `json:"tags"`
+	ID              string        `json:"id"`
+	Name            string        `json:"name"`
+	Color           string        `json:"color"`
+	Kind            SessionKind   `json:"kind"`
+	Status          SessionStatus `json:"status"`
+	Cwd             string        `json:"cwd"`
+	Tags            []string      `json:"tags"`
+	ClaudeSessionID string        `json:"claude_session_id"`
 }
 
 // EventMethod identifies the daemon-side broadcast events the TUI
