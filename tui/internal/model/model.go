@@ -729,6 +729,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.focused >= len(m.sessions) {
 			m.focused = 0
 		}
+		// Seed thinkingStartedAt for any session the snapshot brings
+		// already in `thinking` state — without this, the banner shows
+		// "Thinking… (0s)" forever because we never observed the
+		// session_status_changed transition (it happened before the TUI
+		// subscribed). Setting "now" gives the elapsed counter a real
+		// anchor; clear stale entries for sessions no longer thinking
+		// so a flipped status retires the banner.
+		if m.thinkingStartedAt == nil {
+			m.thinkingStartedAt = map[string]time.Time{}
+		}
+		now := time.Now()
+		for _, s := range m.sessions {
+			if s.Status == "thinking" {
+				if _, ok := m.thinkingStartedAt[s.ID]; !ok {
+					m.thinkingStartedAt[s.ID] = now
+				}
+			} else {
+				delete(m.thinkingStartedAt, s.ID)
+			}
+		}
 		// `chubby tui --focus <name>` passes CHUBBY_FOCUS_SESSION=<name>;
 		// we resolve it on the first list because it's the first time
 		// we have the name->index mapping. We clear the field so a later refresh
