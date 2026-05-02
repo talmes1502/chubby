@@ -192,6 +192,32 @@ def _build_registry(
         await reg.update_status(p.session_id, SessionStatus.THINKING)
         return {}
 
+    async def inject_raw(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        """Like inject, but does NOT flip the session into THINKING.
+
+        Used by the TUI for navigation/scroll keystrokes (PgUp, arrows
+        in pane mode, etc.) that the user wants forwarded to claude's
+        PTY without claiming "Claude is now generating." Returns
+        immediately on a dead/readonly session — same envelope as
+        inject so callers can fan out the same way.
+        """
+        p = InjectParams.model_validate(params)
+        s = await reg.get(p.session_id)
+        if s.kind is SessionKind.READONLY:
+            raise ChubError(
+                ErrorCode.INJECTION_NOT_SUPPORTED,
+                "session is read-only; restart via chubby-claude",
+            )
+        if s.status is SessionStatus.DEAD:
+            raise ChubError(
+                ErrorCode.SESSION_DEAD,
+                "session is dead; respawn it before injecting",
+            )
+        await reg.inject(p.session_id, base64.b64decode(p.payload_b64))
+        return {}
+
     async def get_pty_buffer(
         params: dict[str, Any], ctx: CallContext
     ) -> dict[str, Any]:
@@ -753,6 +779,7 @@ def _build_registry(
     h.register("recolor_session", recolor_session)
     h.register("push_output", push_output)
     h.register("inject", inject)
+    h.register("inject_raw", inject_raw)
     h.register("resize_pty", resize_pty)
     h.register("get_pty_buffer", get_pty_buffer)
     h.register("session_ended", session_ended)

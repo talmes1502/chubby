@@ -640,6 +640,38 @@ func (m Model) loadHistory(sid string) tea.Cmd {
 	}
 }
 
+// routeKeyToPty forwards a Bubble Tea key to the focused session's
+// wrapped claude PTY via the existing inject RPC. Used when the
+// conversation pane is active and the user pressed a navigation key
+// (PgUp/Up/etc.) that should drive claude's own scroll/navigation
+// instead of chubby's parsed-Turn scroll. Returns nil when there's
+// no focused session or the key has no PTY-byte encoding.
+func (m Model) routeKeyToPty(msg tea.KeyMsg) tea.Cmd {
+	s := m.focusedSession()
+	if s == nil {
+		return nil
+	}
+	bs := ptypane.KeyToBytes(msg)
+	if len(bs) == 0 {
+		return nil
+	}
+	sid := s.ID
+	c := m.client
+	return func() tea.Msg {
+		// inject_raw — like inject, but doesn't flip the session
+		// into THINKING. Navigation keys forwarded to claude shouldn't
+		// claim "Claude is now generating"; if the keystroke does
+		// happen to drive a model response, the JSONL tailer will
+		// flip status correctly when the assistant message lands.
+		_, _ = c.Call(context.Background(), "inject_raw",
+			map[string]any{
+				"session_id":  sid,
+				"payload_b64": base64.StdEncoding.EncodeToString(bs),
+			})
+		return nil
+	}
+}
+
 // loadPtyBuffer fetches the daemon's per-session PTY replay ring so
 // the TUI can prime the vt emulator with claude's current screen
 // state. Without this, a TUI that attaches mid-session sees an empty
@@ -1452,13 +1484,14 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		// Compose forwarding fallthrough is below; only intercept these
 		// when the compose bar is empty so the user can still type 'k'.
-		// D8: dispatch by active pane — rail moves the cursor, conversation
-		// scrolls.
+		// Rail walks its cursor; conversation pane forwards the key to
+		// the focused session's PTY so claude/its TUI handles its own
+		// scroll/nav semantics.
 		if m.compose.Value() == "" {
 			if m.activePane == PaneRail {
 				m.moveRailCursor(-1)
 			} else {
-				m.scrollUp(1)
+				return m, m.routeKeyToPty(msg)
 			}
 			return m, nil
 		}
@@ -1467,7 +1500,7 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.activePane == PaneRail {
 				m.moveRailCursor(+1)
 			} else {
-				m.scrollDown(1)
+				return m, m.routeKeyToPty(msg)
 			}
 			return m, nil
 		}
@@ -1476,7 +1509,7 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.activePane == PaneRail {
 				m.moveRailCursor(-5)
 			} else {
-				m.scrollUp(m.halfViewportPage())
+				return m, m.routeKeyToPty(msg)
 			}
 			return m, nil
 		}
@@ -1485,7 +1518,7 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.activePane == PaneRail {
 				m.moveRailCursor(+5)
 			} else {
-				m.scrollDown(m.halfViewportPage())
+				return m, m.routeKeyToPty(msg)
 			}
 			return m, nil
 		}
