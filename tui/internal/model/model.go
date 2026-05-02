@@ -22,6 +22,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/USER/chubby/tui/internal/rpc"
+	"github.com/USER/chubby/tui/internal/ptypane"
 	"github.com/USER/chubby/tui/internal/views"
 )
 
@@ -261,6 +262,11 @@ type Model struct {
 	// because Bubble Tea's lipgloss frame doesn't honor cursor positioning
 	// escapes that Claude emits constantly.
 	conversation map[string][]Turn
+	// pty maps session id → live PTY view. Populated lazily on the
+	// first pty_chunk event for a session; freed on session removal.
+	// The conversation pane reads from m.pty[focused] and renders its
+	// View() inside the rounded frame.
+	pty          map[string]*ptypane.Pane
 	width        int
 	height       int
 	err          error
@@ -552,6 +558,7 @@ func New(c *rpc.Client) Model {
 		lastUsage:         map[string]sessionUsage{},
 		thinkingStartedAt:   map[string]time.Time{},
 		generationStartedAt: map[string]time.Time{},
+		pty:               map[string]*ptypane.Pane{},
 		startupFocusName:  os.Getenv("CHUBBY_FOCUS_SESSION"),
 	}
 }
@@ -633,6 +640,72 @@ func (m Model) loadHistory(sid string) tea.Cmd {
 	}
 }
 
+// loadPtyBuffer fetches the daemon's per-session PTY replay ring so
+// the TUI can prime the vt emulator with claude's current screen
+// state. Without this, a TUI that attaches mid-session sees an empty
+// pane until claude says something new — and even then loses the
+// scrollback that was in the wrapper's buffer when we attached.
+func (m Model) loadPtyBuffer(sid string) tea.Cmd {
+	c := m.client
+	return func() tea.Msg {
+		raw, err := c.Call(context.Background(), "get_pty_buffer",
+			map[string]any{"session_id": sid})
+		if err != nil {
+			return nil
+		}
+		var r struct {
+			BufferB64 string `json:"buffer_b64"`
+		}
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return nil
+		}
+		if r.BufferB64 == "" {
+			return nil
+		}
+		chunk, err := base64.StdEncoding.DecodeString(r.BufferB64)
+		if err != nil {
+			return nil
+		}
+		return ptyReplayMsg{sid: sid, chunk: chunk}
+	}
+}
+
+// ptyReplayMsg carries the result of a get_pty_buffer RPC. The
+// reducer feeds the chunk into the per-session pane the same way it
+// feeds live pty_chunk events.
+type ptyReplayMsg struct {
+	sid   string
+	chunk []byte
+}
+
+// resizeAllPtys fires the daemon's resize_pty RPC for every session
+// the TUI knows about, so each wrapper updates its PTY size and
+// claude redraws to fit chubby's new conversation-pane dimensions.
+// Failures are silent (per-session): a stale wrapper or a session
+// that just died shouldn't fail the whole resize fan-out. Returns
+// nil when there are no sessions to resize.
+func (m Model) resizeAllPtys(w, h int) tea.Cmd {
+	if w < 10 || h < 5 || len(m.sessions) == 0 {
+		return nil
+	}
+	c := m.client
+	sids := make([]string, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		sids = append(sids, s.ID)
+	}
+	return func() tea.Msg {
+		for _, sid := range sids {
+			_, _ = c.Call(context.Background(), "resize_pty",
+				map[string]any{
+					"session_id": sid,
+					"rows":       h,
+					"cols":       w,
+				})
+		}
+		return nil
+	}
+}
+
 func (m Model) listenEvents() tea.Cmd {
 	c := m.client
 	return func() tea.Msg {
@@ -693,7 +766,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// per-session scrollOffsets past the new max — clamp them so
 		// the next render doesn't show empty space above the banner.
 		m.clampAllScrollOffsets()
-		return m, nil
+		// Resize every PTY pane to the new conversation-pane inner
+		// dimensions, and tell the daemon to push the new size down
+		// to each session's wrapper so claude redraws correctly.
+		// Resize calls are idempotent if the size hasn't changed.
+		w, h := m.lastViewportInnerW, m.lastViewportInnerH
+		if w >= 10 && h >= 5 {
+			for sid, pane := range m.pty {
+				pane.Resize(w, h)
+				_ = sid // resize_pty RPC fired below in batch
+			}
+		}
+		return m, m.resizeAllPtys(w, h)
 	case listMsg:
 		m.sessions = []Session(msg)
 		if m.focused >= len(m.sessions) {
@@ -743,6 +827,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.historyLoaded[s.ID] {
 				m.historyLoaded[s.ID] = true
 				cmds = append(cmds, m.loadHistory(s.ID))
+				// Prime the live PTY pane with the daemon's recent
+				// buffer so attaching mid-session shows claude's
+				// current screen instead of an empty box.
+				cmds = append(cmds, m.loadPtyBuffer(s.ID))
 			}
 		}
 		// First listMsg + no sessions: auto-spawn a "temp" session at
@@ -850,6 +938,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Auto-detect file paths in the new turn so Ctrl+] can
 				// open the most-recent mention without re-rendering.
 				m.harvestPathsFromText(text)
+			case EventPtyChunk:
+				sid, _ := subP["session_id"].(string)
+				b64, _ := subP["chunk_b64"].(string)
+				if sid != "" && b64 != "" {
+					if chunk, err := base64.StdEncoding.DecodeString(b64); err == nil {
+						pane := m.pty[sid]
+						if pane == nil {
+							w, h := m.lastViewportInnerW, m.lastViewportInnerH
+							if w < 10 {
+								w = 80
+							}
+							if h < 5 {
+								h = 24
+							}
+							pane = ptypane.New(w, h)
+							if m.pty == nil {
+								m.pty = map[string]*ptypane.Pane{}
+							}
+							m.pty[sid] = pane
+						}
+						pane.Write(chunk)
+					}
+				}
 			case EventToolResult:
 				sid, _ := subP["session_id"].(string)
 				tuid, _ := subP["tool_use_id"].(string)
@@ -1066,6 +1177,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case respawnDoneMsg:
 		return m, m.refreshSessions()
+	case ptyReplayMsg:
+		// First-attach replay: feed the daemon's buffered ring into
+		// the per-session vt emulator so the pane shows claude's
+		// current screen instead of starting blank. Subsequent live
+		// pty_chunk events still flow into the same pane.
+		if msg.sid == "" || len(msg.chunk) == 0 {
+			return m, nil
+		}
+		pane := m.pty[msg.sid]
+		if pane == nil {
+			w, h := m.lastViewportInnerW, m.lastViewportInnerH
+			if w < 10 {
+				w = 80
+			}
+			if h < 5 {
+				h = 24
+			}
+			pane = ptypane.New(w, h)
+			if m.pty == nil {
+				m.pty = map[string]*ptypane.Pane{}
+			}
+			m.pty[msg.sid] = pane
+		}
+		pane.Write(msg.chunk)
+		return m, nil
 	case historyTurnsMsg:
 		// Replace any partially-live conversation with the loaded history.
 		// If live events arrived during the load, they're discarded — the
@@ -3106,7 +3242,7 @@ func (m Model) View() string {
 	rightCol := renderViewport(m.focusedSession(), m.conversation, convoW, h, m.spinnerFrame,
 		m.scrollOffset[focusedSID], m.newSinceScroll[focusedSID], convoActive,
 		m.lastUsage[focusedSID], m.thinkingStartedAt[focusedSID],
-		m.generationStartedAt[focusedSID])
+		m.generationStartedAt[focusedSID], m.pty[focusedSID])
 	rightStack := lipgloss.JoinVertical(lipgloss.Left, rightCol, composeBar)
 	if m.slashPopupVisible() {
 		popup := views.RenderSlashPopup(m.slashPopupCmds, m.slashPopupCursor, convoW)

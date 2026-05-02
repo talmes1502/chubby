@@ -12,6 +12,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/USER/chubby/tui/internal/ptypane"
 	"github.com/USER/chubby/tui/internal/views"
 )
 
@@ -46,10 +47,11 @@ func renderViewport(
 	usage sessionUsage,
 	thinkingStartedAt time.Time,
 	generationStartedAt time.Time,
+	pane *ptypane.Pane,
 ) string {
 	r := renderViewportFull(s, conversation, w, h, spinnerFrame,
 		scrollOffset, newCount, active, usage, thinkingStartedAt,
-		generationStartedAt)
+		generationStartedAt, pane)
 	return r.view
 }
 
@@ -61,10 +63,26 @@ func renderViewportFull(
 	usage sessionUsage,
 	thinkingStartedAt time.Time,
 	generationStartedAt time.Time,
+	pane *ptypane.Pane,
 ) viewportRender {
 	borderColor := inactivePaneBorderColor
 	if active {
 		borderColor = activePaneBorderColor
+	}
+	// Live PTY view takes precedence — claude renders its own UI
+	// inside our frame, with no parsed-Turn rendering on top. The
+	// banner / scroll-offset / new-count machinery is bypassed
+	// entirely; vt's emulator owns the screen state.
+	if pane != nil && s != nil {
+		// Resize the pane to match the current frame inner area so
+		// claude redraws to fit if the user has resized since the
+		// pane was created. Cheap when dimensions haven't changed.
+		pane.Resize(w-2, h-2)
+		frame := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(borderColor).
+			Width(w).Height(h)
+		return viewportRender{view: frame.Render(pane.View())}
 	}
 	if s == nil {
 		dim := views.Dim

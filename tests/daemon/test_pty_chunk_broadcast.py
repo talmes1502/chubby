@@ -88,6 +88,67 @@ async def test_record_chunk_no_writer_no_broadcast(tmp_path: Path) -> None:
         await db.close()
 
 
+async def test_pty_ring_replay_buffer(tmp_path: Path) -> None:
+    """The registry's per-session pty ring is what get_pty_buffer
+    returns — recent PTY bytes a TUI can replay to reconstruct
+    claude's current screen on attach. The ring is bounded
+    (64 KB by default) but holds far more than the FTS buffer,
+    which gets cleared every 200 ms."""
+    db = await Database.open(tmp_path / "s.db")
+    try:
+        subs = _FakeSubs()
+        reg = Registry(hub_run_id="hr_t", db=db, subs=subs)  # type: ignore[arg-type]
+        s = await reg.register(
+            name="ring", kind=SessionKind.WRAPPED, cwd=str(tmp_path),
+        )
+        await reg.attach_log_writer(
+            s.id,
+            LogWriter(tmp_path / "logs", color="#abc123", session_name="ring"),
+        )
+
+        # Three small chunks; ring should accumulate them all.
+        await reg.record_chunk(s.id, b"line1\r\n", role="assistant")
+        await reg.record_chunk(s.id, b"line2\r\n", role="assistant")
+        await reg.record_chunk(s.id, b"line3\r\n", role="assistant")
+
+        buf = reg.get_pty_buffer(s.id)
+        assert buf == b"line1\r\nline2\r\nline3\r\n", (
+            f"expected concatenated ring, got {buf!r}"
+        )
+    finally:
+        await db.close()
+
+
+async def test_pty_ring_caps_at_max(tmp_path: Path) -> None:
+    """Writing past the cap trims to the most-recent N bytes — the
+    tail must be intact (that's the bit the TUI vt emulator needs
+    to reconstruct the visible screen)."""
+    db = await Database.open(tmp_path / "s.db")
+    try:
+        subs = _FakeSubs()
+        reg = Registry(hub_run_id="hr_t", db=db, subs=subs)  # type: ignore[arg-type]
+        # Lower the cap for a focused test.
+        reg._pty_ring_cap = 16  # type: ignore[misc]
+        s = await reg.register(
+            name="big", kind=SessionKind.WRAPPED, cwd=str(tmp_path),
+        )
+        await reg.attach_log_writer(
+            s.id,
+            LogWriter(tmp_path / "logs", color="#abc123", session_name="big"),
+        )
+
+        await reg.record_chunk(s.id, b"AAAAAAAAAA", role="assistant")     # 10
+        await reg.record_chunk(s.id, b"BBBBBBBBBB", role="assistant")     # 10  -> 20 total -> trim to last 16
+        buf = reg.get_pty_buffer(s.id)
+        assert len(buf) == 16, f"expected ring size 16, got {len(buf)}"
+        # Tail must be intact: the last 16 bytes of "AAAAAAAAAA" + "BBBBBBBBBB".
+        assert buf == (b"AAAAAAAAAA" + b"BBBBBBBBBB")[-16:], (
+            f"ring tail wrong: {buf!r}"
+        )
+    finally:
+        await db.close()
+
+
 async def test_record_chunk_multiple_sessions_isolated(tmp_path: Path) -> None:
     """Two sessions with distinct writers should produce two distinct
     pty_chunk broadcasts addressed to the correct session_id. Cross-

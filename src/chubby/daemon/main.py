@@ -35,6 +35,8 @@ from chubby.proto.schema import (
     GetHubRunParams,
     GetHubRunResult,
     GetSessionHistoryParams,
+    GetPtyBufferParams,
+    GetPtyBufferResult,
     InjectParams,
     ListHubRunsParams,
     ListHubRunsResult,
@@ -189,6 +191,22 @@ def _build_registry(
         # WRAPPED/SPAWNED/TMUX_ATTACHED.
         await reg.update_status(p.session_id, SessionStatus.THINKING)
         return {}
+
+    async def get_pty_buffer(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        """Return the recent PTY bytes for a session so a TUI that
+        attaches mid-conversation can prime its vt emulator and
+        reconstruct claude's current screen. Capped at 64 KB on the
+        registry side; b64-encoded over the wire to keep arbitrary
+        ANSI / NUL bytes JSON-safe."""
+        p = GetPtyBufferParams.model_validate(params)
+        # Verify the session exists; raises SESSION_NOT_FOUND otherwise.
+        await reg.get(p.session_id)
+        data = reg.get_pty_buffer(p.session_id)
+        return GetPtyBufferResult(
+            buffer_b64=base64.b64encode(data).decode("ascii"),
+        ).model_dump()
 
     async def resize_pty(
         params: dict[str, Any], ctx: CallContext
@@ -736,6 +754,7 @@ def _build_registry(
     h.register("push_output", push_output)
     h.register("inject", inject)
     h.register("resize_pty", resize_pty)
+    h.register("get_pty_buffer", get_pty_buffer)
     h.register("session_ended", session_ended)
     h.register("spawn_session", spawn_session)
     h.register("search_transcripts", search_transcripts)

@@ -40,9 +40,21 @@ class Registry:
         self._wrapper_writers: dict[str, WriteCallable] = {}
         self._writers: dict[str, LogWriter] = {}
         self._buffers: dict[str, bytearray] = {}
+        # _pty_ring keeps the most recent PTY bytes per session
+        # (capped at _pty_ring_cap) so a TUI that attaches mid-session
+        # can replay enough state to reconstruct claude's current
+        # screen. Distinct from _buffers, which is the FTS-flush
+        # staging area and gets cleared every 200 ms.
+        self._pty_ring: dict[str, bytearray] = {}
         self._flush_tasks: dict[str, asyncio.Task[None]] = {}
         self._notify_tasks: set[asyncio.Task[None]] = set()
         self._tmux_stops: dict[str, asyncio.Event] = {}
+
+    # _pty_ring_cap bounds memory per session — claude's tighter
+    # outputs (200-300 bytes per turn) mean 64 KB easily holds a
+    # dozen turns of scrollback, which is more than enough to
+    # reconstruct the visible screen on attach.
+    _pty_ring_cap = 64 * 1024
 
     async def _persist(self, s: Session) -> None:
         if self.db is not None:
@@ -218,6 +230,7 @@ class Registry:
             self._wrapper_writers.pop(sid, None)
             self._writers.pop(sid, None)
             self._buffers.pop(sid, None)
+            self._pty_ring.pop(sid, None)
             self._tmux_stops.pop(sid, None)
             t = self._flush_tasks.pop(sid, None)
             if t is not None and not t.done():
@@ -290,6 +303,17 @@ class Registry:
             )
         )
 
+    def get_pty_buffer(self, session_id: str) -> bytes:
+        """Return the bounded PTY replay ring for a session — recent
+        bytes the TUI can pump through its vt emulator to reconstruct
+        the current screen on attach. Empty bytes if the session has
+        no recorded output yet.
+        """
+        ring = self._pty_ring.get(session_id)
+        if ring is None:
+            return b""
+        return bytes(ring)
+
     async def attach_log_writer(self, session_id: str, writer: LogWriter) -> None:
         self._writers[session_id] = writer
         self._buffers[session_id] = bytearray()
@@ -300,6 +324,14 @@ class Registry:
             return
         await w.append(data)
         self._buffers.setdefault(session_id, bytearray()).extend(data)
+        # Append to the bounded replay ring so a TUI attaching mid-
+        # session can prime its vt emulator with the recent state.
+        ring = self._pty_ring.setdefault(session_id, bytearray())
+        ring.extend(data)
+        if len(ring) > self._pty_ring_cap:
+            # Trim to last cap bytes — keep the tail so the most
+            # recent screen state is intact.
+            del ring[: len(ring)-self._pty_ring_cap]
         # Broadcast the raw PTY chunk so live TUI subscribers can pump
         # it through their per-session vt emulator. Base64 because
         # JSON-RPC params don't tolerate arbitrary bytes (PTY output

@@ -121,4 +121,9 @@ const (
 	// transcript to a previously-unbound session — TUI should re-fetch
 	// history because earlier loadHistory returned empty.
 	EventSessionIDResolved EventMethod = "session_id_resolved"
+	// EventPtyChunk carries a base64-encoded slice of raw PTY bytes
+	// for one session. The TUI feeds the bytes into its per-session
+	// vt emulator (m.pty[sid]) so the conversation pane shows
+	// claude's UI live.
+	EventPtyChunk EventMethod = "pty_chunk"
 )

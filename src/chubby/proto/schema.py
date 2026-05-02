@@ -104,6 +104,14 @@ class ResizePtyParams(_Strict):
     cols: int
 
 
+class GetPtyBufferParams(_Strict):
+    session_id: str
+
+
+class GetPtyBufferResult(_Strict):
+    buffer_b64: str
+
+
 class SpawnSessionParams(_Strict):
     name: str
     # Required and non-empty. Sessions are organized around a project
