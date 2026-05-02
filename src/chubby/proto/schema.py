@@ -98,6 +98,12 @@ class InjectParams(_Strict):
     payload_b64: str
 
 
+class ResizePtyParams(_Strict):
+    session_id: str
+    rows: int
+    cols: int
+
+
 class SpawnSessionParams(_Strict):
     name: str
     # Required and non-empty. Sessions are organized around a project

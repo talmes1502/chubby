@@ -311,6 +311,23 @@ async def _run_one_claude(
                 if not payload.endswith(b"\n") and not payload.endswith(b"\r"):
                     payload += b"\r"
                 await pty.write_user(payload)
+            elif msg.method == "resize_pty":
+                # Live PTY pane in chubby's TUI tells us its
+                # conversation-pane dimensions; mirror them onto our
+                # PTY so claude redraws to fit. The kernel SIGWINCHes
+                # claude automatically once the size changes.
+                try:
+                    rows = int(msg.params.get("rows", 0))
+                    cols = int(msg.params.get("cols", 0))
+                except (TypeError, ValueError):
+                    continue
+                if rows > 0 and cols > 0:
+                    try:
+                        await pty.resize(rows, cols)
+                    except Exception:
+                        # Resize failures shouldn't kill the wrapper;
+                        # claude will adapt at the next natural redraw.
+                        pass
             elif msg.method == "restart_claude":
                 _diag("restart_claude event received — SIGTERMing claude")
                 result.restart_requested = True

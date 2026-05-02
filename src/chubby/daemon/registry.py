@@ -260,6 +260,36 @@ class Registry:
             )
         )
 
+    async def resize(self, session_id: str, rows: int, cols: int) -> None:
+        """Forward a window-size change to the wrapper for ``session_id``.
+
+        The wrapper applies it to its PTY via ``pty.setwinsize``,
+        which sends SIGWINCH to claude. Used by the live PTY pane so
+        every TUI client's view-frame size is reflected back to the
+        running claude.
+        """
+        s = await self.get(session_id)
+        if s.kind is SessionKind.TMUX_ATTACHED:
+            # Tmux owns its own resize loop; chubby doesn't drive it.
+            return
+        write = self._wrapper_writers.get(session_id)
+        if write is None:
+            raise ChubError(
+                ErrorCode.WRAPPER_UNREACHABLE, "no wrapper for session"
+            )
+        await write(
+            encode_message(
+                Event(
+                    method="resize_pty",
+                    params={
+                        "session_id": session_id,
+                        "rows": int(rows),
+                        "cols": int(cols),
+                    },
+                )
+            )
+        )
+
     async def attach_log_writer(self, session_id: str, writer: LogWriter) -> None:
         self._writers[session_id] = writer
         self._buffers[session_id] = bytearray()
@@ -270,6 +300,22 @@ class Registry:
             return
         await w.append(data)
         self._buffers.setdefault(session_id, bytearray()).extend(data)
+        # Broadcast the raw PTY chunk so live TUI subscribers can pump
+        # it through their per-session vt emulator. Base64 because
+        # JSON-RPC params don't tolerate arbitrary bytes (PTY output
+        # contains ANSI escapes, NUL, etc.). Subscribers that don't
+        # care about PTY chunks (legacy / FTS-only consumers) ignore
+        # the event method.
+        if self.subs is not None:
+            await self.subs.broadcast(
+                "pty_chunk",
+                {
+                    "session_id": session_id,
+                    "chunk_b64": base64.b64encode(bytes(data)).decode("ascii"),
+                    "role": role,
+                    "ts": now_ms(),
+                },
+            )
         task = self._flush_tasks.get(session_id)
         if task and not task.done():
             task.cancel()

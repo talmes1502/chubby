@@ -55,6 +55,7 @@ from chubby.proto.schema import (
     ReleaseSessionParams,
     ReleaseSessionResult,
     RenameSessionParams,
+    ResizePtyParams,
     ScanCandidatesParams,
     ScanCandidatesResult,
     SearchTranscriptsParams,
@@ -187,6 +188,25 @@ def _build_registry(
         # injected (they raise above), so this branch only fires for
         # WRAPPED/SPAWNED/TMUX_ATTACHED.
         await reg.update_status(p.session_id, SessionStatus.THINKING)
+        return {}
+
+    async def resize_pty(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        """Forward a TUI's view-frame resize back to the wrapper's PTY,
+        so claude redraws to fit chubby's conversation pane."""
+        p = ResizePtyParams.model_validate(params)
+        s = await reg.get(p.session_id)
+        if s.kind is SessionKind.READONLY:
+            # Read-only sessions live outside chubby's wrapper; their
+            # PTY size is owned by whatever terminal claude was
+            # launched in. Silently no-op rather than erroring — the
+            # TUI's resize fan-out shouldn't fail just because one of
+            # its sessions is observed-only.
+            return {}
+        if s.status is SessionStatus.DEAD:
+            return {}
+        await reg.resize(p.session_id, rows=p.rows, cols=p.cols)
         return {}
 
     async def session_ended(
@@ -715,6 +735,7 @@ def _build_registry(
     h.register("recolor_session", recolor_session)
     h.register("push_output", push_output)
     h.register("inject", inject)
+    h.register("resize_pty", resize_pty)
     h.register("session_ended", session_ended)
     h.register("spawn_session", spawn_session)
     h.register("search_transcripts", search_transcripts)
