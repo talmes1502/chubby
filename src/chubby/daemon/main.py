@@ -744,12 +744,14 @@ def _build_registry(
 # stays THINKING forever — the rail spinner spins endlessly and the
 # banner shows "Thinking… (Xm Ys)" until manually cleared.
 #
-# 10 minutes covers genuine extended-thinking and long tool chains while
-# still catching crashed/orphaned generations within a useful window.
-# Override via CHUBBY_THINKING_SWEEP_S (sweep cadence) and
-# CHUBBY_THINKING_MAX_S (revert threshold).
-_SWEEP_INTERVAL_DEFAULT_S = 60.0
-_SWEEP_MAX_AGE_DEFAULT_S = 600.0
+# 3 minutes is generous for genuine extended-thinking (opus-4.7 rarely
+# stays in extended-thinking longer than ~90s, and tool chains hit the
+# JSONL tailer between calls which resets last_activity_at) while
+# catching crashed/orphaned generations quickly enough that the rail
+# spinner doesn't spin for hours after a crash. Override via
+# CHUBBY_THINKING_SWEEP_S / CHUBBY_THINKING_MAX_S.
+_SWEEP_INTERVAL_DEFAULT_S = 30.0
+_SWEEP_MAX_AGE_DEFAULT_S = 180.0
 
 
 async def _sweep_stuck_thinking(
