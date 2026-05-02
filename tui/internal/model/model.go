@@ -1539,6 +1539,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			color:     "10",
 			expiresAt: time.Now().Add(5 * time.Second),
 		})
+		// Reload folders — autoSpawnDefault may have assigned the new
+		// session to the user's only existing folder. Without this
+		// reload the rail would briefly show it under "unfiled" until
+		// the next manual refresh.
+		m.folders = LoadFolders()
 		return m, m.refreshSessions()
 	case autoSpawnFallbackMsg:
 		// Auto-spawn couldn't proceed — punt to the modal so the user
@@ -2298,6 +2303,18 @@ func (m Model) autoSpawnDefault() tea.Cmd {
 		// Can't auto-default — punt to the modal so the user can decide.
 		return func() tea.Msg { return autoSpawnFallbackMsg{} }
 	}
+	// If the user already has exactly one user folder, file the
+	// auto-spawned session into it — opening chubby with an
+	// existing folder structure should land you inside that
+	// structure, not in unfiled. With 0 folders we stay unfiled
+	// (no guess to make); with 2+ we also stay unfiled (any pick
+	// would surprise half the users). The folder string is
+	// passed through to spawn_session via the same path
+	// /movetofolder uses; doSpawn handles the disk write.
+	folder := ""
+	if names := m.folders.AllFolderNames(); len(names) == 1 {
+		folder = names[0]
+	}
 	c := m.client
 	return func() tea.Msg {
 		// Try names temp, temp-2, temp-3, ... up to a reasonable cap.
@@ -2306,7 +2323,7 @@ func (m Model) autoSpawnDefault() tea.Cmd {
 			if n > 1 {
 				name = fmt.Sprintf("temp-%d", n)
 			}
-			_, err := c.Call(context.Background(), "spawn_session",
+			raw, err := c.Call(context.Background(), "spawn_session",
 				map[string]any{"name": name, "cwd": home, "tags": []string{}})
 			if err != nil {
 				// ChubError with NAME_TAKEN? Try the next variant.
@@ -2316,6 +2333,21 @@ func (m Model) autoSpawnDefault() tea.Cmd {
 				}
 				// Other error — fall back to the modal.
 				return autoSpawnFallbackMsg{err: err}
+			}
+			if folder != "" {
+				// Best-effort folder assign — same shape as doSpawn's
+				// post-success branch. Failure is non-fatal: the
+				// session is alive, it just landed in unfiled.
+				var r struct {
+					Session struct {
+						ID string `json:"id"`
+					} `json:"session"`
+				}
+				if err := json.Unmarshal(raw, &r); err == nil && r.Session.ID != "" {
+					st := LoadFolders()
+					st.Assign(folder, r.Session.ID)
+					_ = SaveFolders(st)
+				}
 			}
 			return autoSpawnedMsg{name: name, cwd: home}
 		}
