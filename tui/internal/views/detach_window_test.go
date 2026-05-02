@@ -50,6 +50,37 @@ func TestOpenMacosTerminalCmd_BuildsOsascriptCommand(t *testing.T) {
 	}
 }
 
+// TestOpenMacosTerminalCmd_InheritsCurrentProfile asserts the macOS
+// AppleScript copies the active tab's profile onto the new tab.
+// Without this, Terminal.app would use the user's "Default" profile
+// (Preferences → Startup), flipping a dark-themed chubby pane into a
+// light-themed detached window.
+func TestOpenMacosTerminalCmd_InheritsCurrentProfile(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skipf("skipping macos-only test on %s", runtime.GOOS)
+	}
+	var capturedArgs []string
+	prev := execCommand
+	t.Cleanup(func() { execCommand = prev })
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		capturedArgs = args
+		return exec.Command("/usr/bin/true")
+	}
+	if err := openMacosTerminalCmd(`claude --resume "x"`); err != nil {
+		t.Fatalf("openMacosTerminalCmd: %v", err)
+	}
+	script := capturedArgs[1]
+	for _, needle := range []string{
+		"current settings of selected tab of front window",
+		"set current settings of newTab",
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("script missing %q (profile inheritance broken):\n%s",
+				needle, script)
+		}
+	}
+}
+
 // TestOpenLinuxTerminalCmd_PicksFirstAvailable verifies the Linux
 // branch honours the priority list: when execLookPath claims
 // gnome-terminal is on $PATH, that's the binary we exec — even if

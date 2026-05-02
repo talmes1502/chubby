@@ -52,11 +52,27 @@ func OpenExternalClaude(claudeSessionID, cwd string) error {
 // window running cmdLine. We use `do script` (which spawns a new
 // window by default) and then `activate` so the window comes to the
 // front. .Start (not .Run) so we don't block.
+//
+// Terminal.app's `do script` defaults to the user's Default profile
+// (Preferences → General → "On startup, open: New window with profile")
+// — NOT the profile of the currently-active tab. That can flip a
+// dark-theme chubby pane into a light-theme detached window, which
+// reads as a regression. Inherit the chubby tab's settings so the
+// detached claude opens in the same theme.
 func openMacosTerminalCmd(cmdLine string) error {
 	script := fmt.Sprintf(`
 tell application "Terminal"
-    do script %q
     activate
+    set chubbySettings to missing value
+    try
+        set chubbySettings to current settings of selected tab of front window
+    end try
+    set newTab to do script %q
+    if chubbySettings is not missing value then
+        try
+            set current settings of newTab to chubbySettings
+        end try
+    end if
 end tell
 `, cmdLine)
 	cmd := execCommand("osascript", "-e", script)
