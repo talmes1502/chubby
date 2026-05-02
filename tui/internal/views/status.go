@@ -31,9 +31,10 @@ const (
 	StatusModeEditor
 )
 
-// dimStyle is the shared dim foreground used for both the status bar
-// and the placeholder run-id slot in the top header.
-var dimStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+// dimStyle is an alias for the package-shared Dim style — kept as a
+// local var because the rest of this file already references it by
+// that name. New callers should use Dim directly.
+var dimStyle = Dim
 
 // StatusBarText returns the keybinding hint string appropriate for the
 // current mode, with extra context (compose-empty, broadcast field,

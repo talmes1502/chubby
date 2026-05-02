@@ -87,3 +87,38 @@ type Session struct {
 	Cwd    string        `json:"cwd"`
 	Tags   []string      `json:"tags"`
 }
+
+// EventMethod identifies the daemon-side broadcast events the TUI
+// subscribes to. These match chubbyd's broadcast() topic strings —
+// kept in sync by convention because both encode against JSON. Pulled
+// out as named constants so the giant Update() switch can lean on
+// `case EventTranscriptMessage:` instead of bare string literals
+// (which silently miss on typo).
+type EventMethod string
+
+const (
+	// EventTranscriptMessage carries one user/assistant turn from the
+	// JSONL tailer. Params: session_id, role, text, tool_calls, ts.
+	EventTranscriptMessage EventMethod = "transcript_message"
+	// EventToolResult splices a tool_result preview onto a previously-
+	// broadcast tool_call. Params: session_id, tool_use_id, preview,
+	// is_error, ts.
+	EventToolResult EventMethod = "tool_result"
+	// EventSessionUsageChanged updates token totals for the banner.
+	// Params: session_id, input_tokens, output_tokens,
+	// cache_read_input_tokens, ts.
+	EventSessionUsageChanged EventMethod = "session_usage_changed"
+	// EventSessionStatusChanged fires on every status flip. Params:
+	// session_id (or `id`), status.
+	EventSessionStatusChanged EventMethod = "session_status_changed"
+	// EventSessionAdded / Renamed / Recolored / Tagged trigger a list
+	// refresh — the rail is rebuilt from scratch from the new snapshot.
+	EventSessionAdded    EventMethod = "session_added"
+	EventSessionRenamed  EventMethod = "session_renamed"
+	EventSessionRecolored EventMethod = "session_recolored"
+	EventSessionTagged   EventMethod = "session_tagged"
+	// EventSessionIDResolved fires when the daemon binds a JSONL
+	// transcript to a previously-unbound session — TUI should re-fetch
+	// history because earlier loadHistory returned empty.
+	EventSessionIDResolved EventMethod = "session_id_resolved"
+)

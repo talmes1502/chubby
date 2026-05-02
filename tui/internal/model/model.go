@@ -774,8 +774,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if ev.Method == "event" {
 			subM, _ := ev.Params["event_method"].(string)
 			subP, _ := ev.Params["event_params"].(map[string]any)
-			switch subM {
-			case "transcript_message":
+			switch EventMethod(subM) {
+			case EventTranscriptMessage:
 				sid, _ := subP["session_id"].(string)
 				role, _ := subP["role"].(string)
 				text, _ := subP["text"].(string)
@@ -850,13 +850,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Auto-detect file paths in the new turn so Ctrl+] can
 				// open the most-recent mention without re-rendering.
 				m.harvestPathsFromText(text)
-			case "tool_result":
+			case EventToolResult:
 				sid, _ := subP["session_id"].(string)
 				tuid, _ := subP["tool_use_id"].(string)
 				preview, _ := subP["preview"].(string)
 				isErr, _ := subP["is_error"].(bool)
 				m.applyToolResult(sid, tuid, preview, isErr)
-			case "session_usage_changed":
+			case EventSessionUsageChanged:
 				sid, _ := subP["session_id"].(string)
 				inF, _ := subP["input_tokens"].(float64)
 				outF, _ := subP["output_tokens"].(float64)
@@ -876,7 +876,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.lastUsage[sid] = cur
 				}
-			case "session_status_changed":
+			case EventSessionStatusChanged:
 				sid, _ := subP["session_id"].(string)
 				newStatus, _ := subP["status"].(string)
 				// Track when a session enters thinking so the banner
@@ -915,10 +915,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				return m, tea.Batch(m.refreshSessions(), m.listenEvents())
-			case "session_added", "session_renamed",
-				"session_recolored", "session_tagged":
+			case EventSessionAdded, EventSessionRenamed,
+				EventSessionRecolored, EventSessionTagged:
 				return m, tea.Batch(m.refreshSessions(), m.listenEvents())
-			case "session_id_resolved":
+			case EventSessionIDResolved:
 				// The daemon just bound a JSONL to this session — the
 				// FIRST listMsg arrived before any JSONL existed, so the
 				// initial loadHistory returned empty. Re-fetch now.
@@ -2142,7 +2142,7 @@ func (m Model) viewNewFolder() string {
 	if cw < 30 {
 		cw = 30
 	}
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	dim := views.Dim
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Render("New folder") + "\n\n")
 	b.WriteString("  name: " + m.newFolder.input.View() + "\n\n")
@@ -3489,7 +3489,7 @@ func (m Model) searchHeaderText() string {
 // textinput (when inPathPrompt) or the highlighted file body.
 func (m Model) renderEditorPane(w, h int) string {
 	if m.editor.inPathPrompt {
-		dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+		dim := views.Dim
 		title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).
 			Render("Open file")
 		body := title + "\n\n" + m.editor.pathInput.View() + "\n\n"
@@ -3598,7 +3598,7 @@ func (m Model) viewBroadcast() string {
 	body := m.bcast.text + "_"
 	if g := slashGhost(m.bcast.text); g != "" {
 		body = m.bcast.text +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(g) +
+			views.Dim.Render(g) +
 			"_"
 	}
 	b.WriteString(textStyle.Render(body) + "\n")
@@ -3606,7 +3606,7 @@ func (m Model) viewBroadcast() string {
 	// slash-completion match. Mirrors the compose-bar ghost so users
 	// know Tab is wired here too.
 	if hint := slashGhost(m.bcast.text); hint != "" {
-		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
+		b.WriteString(views.Dim.
 			Render("  Tab → "+m.bcast.text+hint) + "\n")
 	}
 
@@ -3784,8 +3784,8 @@ func (m Model) viewSpawn() string {
 	if cw < 30 {
 		cw = 30
 	}
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	highlight := lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
+	dim := views.Dim
+	highlight := views.AccentBold
 	label := func(text string, active bool) string {
 		if active {
 			return highlight.Render("▸ " + text)
@@ -3829,7 +3829,7 @@ func (m Model) viewRename() string {
 	if cw < 30 {
 		cw = 30
 	}
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	dim := views.Dim
 	title := "Rename session"
 	switch m.rename.target {
 	case RenameGroup:
@@ -3873,7 +3873,7 @@ func (m Model) viewAttach() string {
 	}
 	var b strings.Builder
 	bold := lipgloss.NewStyle().Bold(true)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	dim := views.Dim
 	red := lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	green := lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	yellow := lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
@@ -3941,7 +3941,7 @@ func (m Model) viewAttach() string {
 		if m.attach.confirmDetachN != 1 {
 			noun = "sessions"
 		}
-		warn := lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
+		warn := views.Warn
 		b.WriteString("\n" + warn.Render(fmt.Sprintf(
 			"Detach %d %s? (y/n)", m.attach.confirmDetachN, noun)))
 	}
@@ -4489,7 +4489,7 @@ const spinnerFrames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 var spinnerRunes = []rune(spinnerFrames)
 
-var spinnerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
+var spinnerStyle = views.Warn
 
 // statusGlyph returns the rail/banner glyph for a session's status.
 // For "thinking", frame indexes into the spinner cycle so successive
@@ -4533,10 +4533,10 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Render(" Sessions") + "\n")
 	if searchHeader != "" {
-		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("12")).
+		b.WriteString(views.Accent.
 			Render(" "+searchHeader) + "\n")
 	}
-	folderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
+	folderStyle := views.AccentBold
 	separatorStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("240")).Italic(true)
 	// Cursor indicator is a leading 1-cell color stripe in the leftmost
@@ -4629,7 +4629,7 @@ func renderSessionBanner(
 ) string {
 	col := lipgloss.Color(s.Color)
 	colorStyle := lipgloss.NewStyle().Foreground(col).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	dim := views.Dim
 	bar := colorStyle.Render("┃")
 	name := colorStyle.Render(s.Name)
 	swatch := lipgloss.NewStyle().Foreground(col).Render("●")
@@ -4644,7 +4644,7 @@ func renderSessionBanner(
 		line1 += dim.Render(" · " + string(s.Status))
 	}
 	if scrolledUp {
-		hint := lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true).
+		hint := views.Warn.
 			Render(" · scrolled up · End to jump down")
 		line1 += hint
 	}
@@ -4682,7 +4682,7 @@ func buildBannerActivityLine(
 	isThinking bool,
 ) string {
 	_ = spinnerFrame // glyph is now static (✢) — keep the param for callers
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	dim := views.Dim
 	hasUsage := usage.InputTokens > 0 || usage.OutputTokens > 0 ||
 		usage.CacheReadInputTokens > 0
 	if !isThinking && !hasUsage {
@@ -4783,7 +4783,7 @@ func renderViewportFull(
 		borderColor = activePaneBorderColor
 	}
 	if s == nil {
-		dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+		dim := views.Dim
 		bold := lipgloss.NewStyle().Bold(true)
 		body := bold.Render("no sessions yet") + "\n\n" +
 			dim.Render("press") + " " +
@@ -4825,7 +4825,7 @@ func renderViewportFull(
 	turns := conversation[s.ID]
 	if len(turns) == 0 {
 		body := header + "\n\n" +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("240")).
+			views.Dim.
 				Render("(no messages yet — type below to send)")
 		return viewportRender{view: frame.Render(body)}
 	}

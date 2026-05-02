@@ -78,8 +78,8 @@ func RenderEditor(es EditorPaneState, w, h int) string {
 	if es.Truncated {
 		title += " (truncated)"
 	}
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	titleStyle := AccentBold
+	dim := Dim
 
 	// Body area: subtract 2 for the rounded border, 2 for the title row
 	// + blank separator.
