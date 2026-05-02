@@ -738,6 +738,77 @@ def _build_registry(
     return h
 
 
+# Stuck-thinking sweep parameters. A session normally exits THINKING via
+# the JSONL tailer's transcript_message → update_status(IDLE) path. If
+# Claude crashes mid-generation, the JSONL stays silent and the session
+# stays THINKING forever — the rail spinner spins endlessly and the
+# banner shows "Thinking… (Xm Ys)" until manually cleared.
+#
+# 10 minutes covers genuine extended-thinking and long tool chains while
+# still catching crashed/orphaned generations within a useful window.
+# Override via CHUBBY_THINKING_SWEEP_S (sweep cadence) and
+# CHUBBY_THINKING_MAX_S (revert threshold).
+_SWEEP_INTERVAL_DEFAULT_S = 60.0
+_SWEEP_MAX_AGE_DEFAULT_S = 600.0
+
+
+async def _sweep_stuck_thinking(
+    reg: Registry,
+    *,
+    interval_s: float | None = None,
+    max_age_s: float | None = None,
+) -> None:
+    """Periodically revert sessions stuck in THINKING for too long.
+
+    Iterates the registry every ``interval_s`` seconds; any session in
+    THINKING whose last_activity_at is older than ``max_age_s`` is
+    flipped to IDLE (and broadcast as session_status_changed so the TUI
+    sees the rail spinner stop).
+    """
+    interval = interval_s if interval_s is not None else float(
+        paths.chubby_env("THINKING_SWEEP_S") or _SWEEP_INTERVAL_DEFAULT_S
+    )
+    max_age = max_age_s if max_age_s is not None else float(
+        paths.chubby_env("THINKING_MAX_S") or _SWEEP_MAX_AGE_DEFAULT_S
+    )
+    while True:
+        try:
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
+        try:
+            await _sweep_once(reg, max_age)
+        except Exception as e:  # pragma: no cover — defensive
+            log.warning("stuck-thinking sweep failed: %s", e)
+
+
+async def _sweep_once(reg: Registry, max_age_s: float) -> int:
+    """Revert any session stuck in THINKING longer than ``max_age_s``.
+
+    Returns the number of sessions reverted (used by tests). Separate
+    from the loop so tests can drive a single iteration deterministically
+    without monkeypatching asyncio.sleep.
+    """
+    cutoff = now_ms() - int(max_age_s * 1000)
+    reverted = 0
+    for s in await reg.list_all():
+        if s.status is not SessionStatus.THINKING:
+            continue
+        if s.last_activity_at >= cutoff:
+            continue
+        try:
+            await reg.update_status(s.id, SessionStatus.IDLE)
+            reverted += 1
+            log.warning(
+                "auto-reverted stuck THINKING session %r (no activity for %ds)",
+                s.name,
+                int((now_ms() - s.last_activity_at) / 1000),
+            )
+        except Exception as e:  # pragma: no cover — defensive
+            log.warning("failed to revert stuck session %r: %s", s.name, e)
+    return reverted
+
+
 async def serve(*, stop_event: asyncio.Event | None = None) -> None:
     paths.hub_home().mkdir(parents=True, exist_ok=True)
     pid_path = paths.pid_path()
@@ -779,6 +850,7 @@ async def serve(*, stop_event: asyncio.Event | None = None) -> None:
             handlers = _build_registry(registry, run, db, subs)
             server = Server(sock_path=sock_path, registry=handlers)
             await server.start()
+            sweep_task = asyncio.create_task(_sweep_stuck_thinking(registry))
             try:
                 server_closed_task = asyncio.create_task(server.wait_closed())
                 stop_task = asyncio.create_task(stop_event.wait())
@@ -793,6 +865,11 @@ async def serve(*, stop_event: asyncio.Event | None = None) -> None:
                         "chubbyd: server closed unexpectedly; shutting down"
                     )
             finally:
+                sweep_task.cancel()
+                try:
+                    await sweep_task
+                except (asyncio.CancelledError, Exception):
+                    pass
                 await server.stop()
         finally:
             await end_run(db, run.id)
