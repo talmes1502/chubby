@@ -832,6 +832,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// current screen instead of an empty box.
 				cmds = append(cmds, m.loadPtyBuffer(s.ID))
 			}
+			// Pre-create the pane the moment we see a session, even
+			// before any chunks arrive — that keeps the conversation
+			// pane on the PTY render path (pane != nil) instead of
+			// briefly falling through to the legacy parsed-Turn
+			// renderer during the window between listMsg and the
+			// first chunk.
+			if m.pty[s.ID] == nil {
+				w, h := m.lastViewportInnerW, m.lastViewportInnerH
+				if w < 10 {
+					w = 80
+				}
+				if h < 5 {
+					h = 24
+				}
+				if m.pty == nil {
+					m.pty = map[string]*ptypane.Pane{}
+				}
+				m.pty[s.ID] = ptypane.New(w, h)
+			}
 		}
 		// First listMsg + no sessions: auto-spawn a "temp" session at
 		// $HOME so the user has something to chat with immediately. The
