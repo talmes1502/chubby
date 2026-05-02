@@ -99,10 +99,12 @@ func TestArrowsInRailWalkRailCursor(t *testing.T) {
 	}
 }
 
-// TestArrowsInConversationScroll: with PaneConversation active and
-// compose empty, Up/Down dispatch into the per-session scroll helpers
-// rather than walking the rail.
+// TestArrowsInConversationScroll: pre-pivot, Up/Down in PaneConversation
+// dispatched into m.scrollOffset (parsed-Turn scroll). After the
+// embedded-PTY pivot, scrollback belongs to vt.Emulator and Phase 5
+// rewires Up/Down to vt.Scrollback.Scroll(). Skipped until then.
 func TestArrowsInConversationScroll(t *testing.T) {
+	t.Skip("scroll moved to vt.Emulator; Phase 5 rewires PgUp/PgDn handlers.")
 	turns := make([]Turn, 50)
 	for i := range turns {
 		turns[i] = Turn{Role: "user", Text: "msg", Ts: int64(i)}

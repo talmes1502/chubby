@@ -1,88 +1,67 @@
 // Package model — viewport_view.go: right-pane conversation rendering.
-// Frames the structured transcript inside a rounded border, slices to
-// the visible window for scroll, and overlays a "↓ N new" badge when
-// the user is scrolled up. Banner rendering lives in banner_view.go;
-// markdown styling lives in views/markdown.go.
+// As of the embedded-PTY pivot, claude renders its own UI inside our
+// rounded frame via a per-session vt.Emulator (see internal/ptypane).
+// This file frames that pane and handles two edge cases: no focused
+// session at all (empty placeholder) and a session whose pane hasn't
+// been allocated yet (rare; one frame between listMsg and pane init).
 package model
 
 import (
-	"fmt"
-	"strings"
-	"time"
-
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/USER/chubby/tui/internal/ptypane"
 	"github.com/USER/chubby/tui/internal/views"
 )
 
-// viewportRender is the result of renderViewport: the framed string to
-// place into the layout, plus the wrapped-line count of the rendered
-// transcript body (excluding the banner) — viewMain stashes the line
-// count into m.lastViewportLineCount so the scroll-clamping helpers
-// can answer "how far up?" without re-running the wrap.
+// viewportRender is the result of renderViewport. The lineCount field
+// is kept on the struct for back-compat with callers that read it,
+// but it's now always 0 — the vt emulator owns scrollback, so the
+// parent doesn't need a wrapped-line count to clamp scroll offsets.
 type viewportRender struct {
 	view      string
 	lineCount int
 }
 
-// renderViewport draws the focused session's structured conversation:
-// a colored session banner, then user prompts marked with a coloured
-// arrow and assistant responses in the default fg, separated by blank
-// lines. The previous implementation rendered the raw PTY byte stream,
-// which was unreadable inside lipgloss because Claude's cursor-
-// positioning escapes don't compose with lipgloss frames.
+// renderViewport draws the focused session's live PTY view inside a
+// rounded border. Bubble Tea's renderer treats the output as
+// scanlines and passes SGR escapes through verbatim — vt's Render()
+// strips cursor-positioning escapes (they're absorbed into screen
+// state), so the result composes with the parent frame without
+// fighting.
 //
-// scrollOffset slides the visible window UP by that many lines (0 =
-// pinned to bottom — the historical behavior). newCount, when > 0 and
-// scrollOffset > 0, renders a yellow "↓ N new messages · End to jump"
-// badge bottom-right inside the frame; the banner also gets a
-// "scrolled up" hint so the state is obvious without looking at the
-// badge.
+// The signature still carries the old conversation/usage/timing
+// arguments because callers were threaded through them; they're now
+// ignored. Phase 4 will drop them once every call-site is updated.
 func renderViewport(
 	s *Session,
 	conversation map[string][]Turn,
 	w, h, spinnerFrame, scrollOffset, newCount int,
 	active bool,
 	usage sessionUsage,
-	thinkingStartedAt time.Time,
-	generationStartedAt time.Time,
+	thinkingStartedAt /* unused */ interface{},
+	generationStartedAt /* unused */ interface{},
 	pane *ptypane.Pane,
 ) string {
-	r := renderViewportFull(s, conversation, w, h, spinnerFrame,
-		scrollOffset, newCount, active, usage, thinkingStartedAt,
-		generationStartedAt, pane)
+	_ = conversation
+	_ = spinnerFrame
+	_ = scrollOffset
+	_ = newCount
+	_ = usage
+	_ = thinkingStartedAt
+	_ = generationStartedAt
+	r := renderViewportFull(s, w, h, active, pane)
 	return r.view
 }
 
 func renderViewportFull(
 	s *Session,
-	conversation map[string][]Turn,
-	w, h, spinnerFrame, scrollOffset, newCount int,
+	w, h int,
 	active bool,
-	usage sessionUsage,
-	thinkingStartedAt time.Time,
-	generationStartedAt time.Time,
 	pane *ptypane.Pane,
 ) viewportRender {
 	borderColor := inactivePaneBorderColor
 	if active {
 		borderColor = activePaneBorderColor
-	}
-	// Live PTY view takes precedence — claude renders its own UI
-	// inside our frame, with no parsed-Turn rendering on top. The
-	// banner / scroll-offset / new-count machinery is bypassed
-	// entirely; vt's emulator owns the screen state.
-	if pane != nil && s != nil {
-		// Resize the pane to match the current frame inner area so
-		// claude redraws to fit if the user has resized since the
-		// pane was created. Cheap when dimensions haven't changed.
-		pane.Resize(w-2, h-2)
-		frame := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(borderColor).
-			Width(w).Height(h)
-		return viewportRender{view: frame.Render(pane.View())}
 	}
 	if s == nil {
 		dim := views.Dim
@@ -106,141 +85,54 @@ func renderViewportFull(
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
 		Width(w).Height(h)
-	isThinking := s.Status == StatusThinking
-	header := renderSessionBanner(s, spinnerFrame, scrollOffset > 0,
-		usage, thinkingStartedAt, generationStartedAt, isThinking)
-	// Banner may now span two lines (activity row). Count its actual
-	// rendered height so visibleH below subtracts the right amount.
-	bannerLines := strings.Count(header, "\n") + 1
-	if s.Status == StatusDead {
-		hint := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true).
-			Render("session is dead — press Ctrl+P to respawn")
-		body := header + "\n\n" + hint
-		turns := conversation[s.ID]
-		if len(turns) > 0 {
-			// Still show the prior transcript below the hint so the user
-			// can see what happened before the session died.
-			body += "\n\n" + renderTurns(turns, s.Color, w-2)
+	if pane == nil {
+		// Briefly possible during session creation between listMsg
+		// and pane init. Render an empty frame rather than dragging
+		// in the parsed-Turn renderer for one frame's worth of UX.
+		return viewportRender{
+			view: frame.Padding(1, 2).Render(views.Dim.Render(
+				"(connecting…)")),
 		}
-		return viewportRender{view: frame.Render(body)}
 	}
-	turns := conversation[s.ID]
-	if len(turns) == 0 {
-		body := header + "\n\n" +
-			views.Dim.
-				Render("(no messages yet — type below to send)")
-		return viewportRender{view: frame.Render(body)}
-	}
-	turnsBody := renderTurns(turns, s.Color, w-2)
-	// Slice the rendered transcript by scrollOffset. The line count
-	// we report excludes the banner+spacer, so callers can clamp
-	// scrollOffset against just the content.
-	lines := strings.Split(strings.TrimRight(turnsBody, "\n"), "\n")
-	lineCount := len(lines)
-	// Visible body area: total inner height minus banner + spacer.
-	// (-2 for the rounded border was already applied via frame.Width.)
-	// banner height is dynamic now (1 row when no usage / not thinking,
-	// 2 rows when the activity line is present).
-	visibleH := h - 2 - bannerLines - 1 // border (top+bottom) + banner rows + spacer
-	if visibleH < 1 {
-		visibleH = 1
-	}
-	end := lineCount - scrollOffset
-	if end < 0 {
-		end = 0
-	}
-	if end > lineCount {
-		end = lineCount
-	}
-	start := end - visibleH
-	if start < 0 {
-		start = 0
-	}
-	visible := strings.Join(lines[start:end], "\n")
-	body := header + "\n\n" + visible
-
-	// "↓ N new" badge — only when actually scrolled away from the
-	// bottom AND there are new turns the user hasn't seen yet.
-	if scrollOffset > 0 && newCount > 0 {
-		badge := views.Warn.
-			Render(fmt.Sprintf("↓ %d new · End to jump", newCount))
-		// Right-align the badge inside the inner width.
-		body += "\n" + lipgloss.NewStyle().Width(w-2).
-			Align(lipgloss.Right).Render(badge)
-	}
-	return viewportRender{view: frame.Render(body), lineCount: lineCount}
+	// Resize the pane to match the current frame inner area so claude
+	// redraws to fit if the user has resized since the pane was
+	// created. Cheap when dimensions haven't changed.
+	pane.Resize(w-2, h-2)
+	return viewportRender{view: frame.Render(pane.View())}
 }
 
-// renderTurns formats the structured transcript: user prompts marked
-// with a coloured arrow, assistant responses through glamour for
-// markdown styling, separated by blank lines. Pass innerWidth to fit
-// inside a bordered frame (subtract 2 for the rounded border).
-//
-// File-path mentions in user prompts get a cyan-underline accent so
-// the user can spot the things Ctrl+] would jump to.
+// renderTurns is a no-op stub kept so legacy scroll bookkeeping
+// (maxScrollFor in scroll.go) compiles. The vt emulator owns
+// scrollback now; the parsed-Turn rendering path is unreachable in
+// the live UI. Removed entirely once scroll.go is rewired to vt
+// (Phase 5 in docs/plans/2026-05-02-embedded-claude-pty.md).
 func renderTurns(turns []Turn, sessionColor string, innerWidth int) string {
-	if innerWidth < 10 {
-		innerWidth = 10
-	}
-	userStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(sessionColor)).Bold(true).
-		Width(innerWidth)
-	var b strings.Builder
-	for i, t := range turns {
-		if i > 0 {
-			b.WriteString("\n")
-		}
-		switch t.Role {
-		case RoleUser:
-			// User prompts are typed into the compose bar — usually plain
-			// text, sometimes paths. Keep the path-mention accent and
-			// skip glamour (running plain prose through it adds noise).
-			b.WriteString(userStyle.Render("▸ " + stylePathMentions(t.Text)))
-		default:
-			// Claude's responses are markdown. Rendering them via glamour
-			// turns **bold**, [links](url), bullet lists, and fenced code
-			// into terminal-styled output that matches Claude's own UI.
-			if t.Text != "" {
-				b.WriteString(views.RenderMarkdown(t.Text, innerWidth))
-			}
-			// Tool calls render as rounded cyan boxes underneath the
-			// prose so the eye reads "Claude said X, then ran Y".
-			for j, tc := range t.Tools {
-				if t.Text != "" || j > 0 {
-					b.WriteString("\n")
-				}
-				b.WriteString(views.RenderToolCall(
-					tc.Name, tc.Summary, tc.ResultPreview,
-					tc.ResultIsError, innerWidth))
-			}
-		}
-		b.WriteString("\n")
-	}
-	return b.String()
+	_ = turns
+	_ = sessionColor
+	_ = innerWidth
+	return ""
 }
 
-// pathStyle highlights inline path mentions: cyan + underline so the
-// reader can spot a Ctrl+] target without it overpowering the prose.
+// stylePathMentions / pathStyle / pathRE are also retained for legacy
+// callers (the editor pane's path harvester) — they don't depend on
+// the parsed-Turn renderer being live, just on the regex and styling.
+
 var pathStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.Color("14")).
 	Underline(true)
 
-// stylePathMentions wraps every regex-matched path in pathStyle. We
-// run this on the plain text before lipgloss layout so the styling
-// composes with the user/assistant outer style. Non-matching segments
-// pass through unchanged.
 func stylePathMentions(s string) string {
 	idx := pathRE.FindAllStringIndex(s, -1)
 	if len(idx) == 0 {
 		return s
 	}
-	var b strings.Builder
+	var b []byte
 	last := 0
 	for _, ix := range idx {
-		b.WriteString(s[last:ix[0]])
-		b.WriteString(pathStyle.Render(s[ix[0]:ix[1]]))
+		b = append(b, s[last:ix[0]]...)
+		b = append(b, []byte(pathStyle.Render(s[ix[0]:ix[1]]))...)
 		last = ix[1]
 	}
-	b.WriteString(s[last:])
-	return b.String()
+	b = append(b, s[last:]...)
+	return string(b)
 }

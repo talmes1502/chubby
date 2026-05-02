@@ -1,9 +1,7 @@
 package model
 
 import (
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/USER/chubby/tui/internal/rpc"
 )
@@ -29,12 +27,14 @@ func scrollTestModel() Model {
 }
 
 // TestScrollUp_IncrementsOffset — basic up-scroll moves the offset.
+//
+// Skipped after the embedded-PTY pivot: the parsed-Turn scroll
+// helpers operate on a wrapped-line count from renderTurns(), which
+// is now stubbed to "" because vt.Emulator owns scrollback. Phase 5
+// of docs/plans/2026-05-02-embedded-claude-pty.md rewires PgUp/PgDn
+// to vt.Scrollback.Scroll(); these tests get rewritten then.
 func TestScrollUp_IncrementsOffset(t *testing.T) {
-	m := scrollTestModel()
-	m.scrollUp(3)
-	if m.scrollOffset["s1"] != 3 {
-		t.Fatalf("expected offset=3, got %d", m.scrollOffset["s1"])
-	}
+	t.Skip("scrollUp now no-ops; vt.Emulator owns scrollback. Phase 5 rewires.")
 }
 
 // TestScrollDown_DecrementsOffset — down-scroll reduces offset.
@@ -62,20 +62,10 @@ func TestScrollDown_ClampsAtZero(t *testing.T) {
 	}
 }
 
-// TestScrollUp_ClampsAtMaxScroll — scrolling past max stops at max.
-// max is computed from line count - visibleH; we don't pin an exact
-// number (lipgloss wrapping is hard to predict line-for-line) but we
-// verify scroll didn't blow past whatever maxScrollFor reports.
+// TestScrollUp_ClampsAtMaxScroll — same Phase 5 deferral as
+// TestScrollUp_IncrementsOffset.
 func TestScrollUp_ClampsAtMaxScroll(t *testing.T) {
-	m := scrollTestModel()
-	want := m.maxScrollFor("s1")
-	if want <= 0 {
-		t.Fatalf("test setup: expected non-zero max, got %d (maybe geom is wrong)", want)
-	}
-	m.scrollUp(99999)
-	if got := m.scrollOffset["s1"]; got != want {
-		t.Fatalf("expected offset clamped to maxScrollFor=%d, got %d", want, got)
-	}
+	t.Skip("scrollUp now no-ops; vt.Emulator owns scrollback. Phase 5 rewires.")
 }
 
 // TestEnd_ResetsToZeroAndClearsUnread — scrollToBottom both pins to
@@ -227,54 +217,13 @@ func TestEnd_ClearsUnread(t *testing.T) {
 }
 
 // TestRenderViewport_ScrolledUp_ShowsBadge — when scrollOffset > 0
-// AND newCount > 0, the rendered output should contain the "↓ N new"
-// badge text. We don't check exact placement (lipgloss wrapping is
-// painful in tests) but the substring must be present.
-func TestRenderViewport_ScrolledUp_ShowsBadge(t *testing.T) {
-	s := &Session{ID: "s1", Name: "alpha", Color: "12"}
-	turns := make([]Turn, 30)
-	for i := range turns {
-		turns[i] = Turn{Role: "assistant", Text: "line" + string(rune('a'+i%26)), Ts: int64(i)}
-	}
-	conv := map[string][]Turn{"s1": turns}
-	out := renderViewport(s, conv, 60, 10, 0, 5, 3, true,
-		sessionUsage{}, time.Time{}, time.Time{}, nil)
-	if !strings.Contains(out, "3 new") {
-		t.Fatalf("expected badge with new count in output, got: %q", out)
-	}
-}
-
-// TestRenderViewport_AtBottom_NoBadge — at the bottom (offset==0)
-// the badge must NOT render even if newCount > 0 (defensive: if the
-// reducer has a bug and leaves a stale newSinceScroll, the user
-// shouldn't see a confusing "↓ N new" while looking at the latest).
-func TestRenderViewport_AtBottom_NoBadge(t *testing.T) {
-	s := &Session{ID: "s1", Name: "alpha", Color: "12"}
-	turns := []Turn{{Role: "user", Text: "hi", Ts: 1}}
-	conv := map[string][]Turn{"s1": turns}
-	out := renderViewport(s, conv, 60, 10, 0, 0, 5, true,
-		sessionUsage{}, time.Time{}, time.Time{}, nil)
-	if strings.Contains(out, "new · End to jump") {
-		t.Fatalf("did not expect badge when offset=0, got: %q", out)
-	}
-}
-
-// TestRenderViewport_ScrolledUp_BannerHint — the banner gains a
-// "scrolled up" hint when offset > 0, regardless of newCount, so the
-// state is obvious even when no new messages have arrived yet.
-func TestRenderViewport_ScrolledUp_BannerHint(t *testing.T) {
-	s := &Session{ID: "s1", Name: "alpha", Color: "12"}
-	turns := make([]Turn, 30)
-	for i := range turns {
-		turns[i] = Turn{Role: "assistant", Text: "line", Ts: int64(i)}
-	}
-	conv := map[string][]Turn{"s1": turns}
-	out := renderViewport(s, conv, 60, 10, 0, 3, 0, true,
-		sessionUsage{}, time.Time{}, time.Time{}, nil)
-	if !strings.Contains(out, "scrolled up") {
-		t.Fatalf("expected 'scrolled up' banner hint, got: %q", out)
-	}
-}
+// (TestRenderViewport_ScrolledUp_ShowsBadge,
+// TestRenderViewport_AtBottom_NoBadge,
+// TestRenderViewport_ScrolledUp_BannerHint were removed when the
+// conversation pane pivoted to embed claude's live PTY view —
+// vt.Emulator owns scrollback and renders its own scroll affordances,
+// so the chubby-side "↓ N new" badge and "scrolled up" banner hint
+// are no longer emitted.)
 
 // TestClampAllScrollOffsets_OnResize — a resize that shrinks the
 // conversation to fit on screen (max=0) should clamp all

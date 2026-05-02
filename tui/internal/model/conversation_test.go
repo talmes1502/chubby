@@ -68,38 +68,19 @@ func TestEvMsg_TranscriptMessage_CapsAtTurnsCap(t *testing.T) {
 	}
 }
 
-// TestRenderViewport_NoTurns_ShowsPlaceholder verifies the empty-state
-// placeholder copy renders for a session with no transcript yet.
-func TestRenderViewport_NoTurns_ShowsPlaceholder(t *testing.T) {
+// TestRenderViewport_RendersConnectingPlaceholder verifies the
+// "(connecting…)" copy appears when a session is focused but no PTY
+// pane has been allocated yet (one frame between listMsg and pane
+// init). After the embedded-PTY pivot the parsed-Turn render path
+// is gone — claude renders its own UI inside the frame via the
+// per-session vt emulator. The "no messages yet" / "▸ user / pong
+// assistant" assertions used to live here; they're moved to a Phase
+// 5 follow-up that exercises pane.View() output.
+func TestRenderViewport_RendersConnectingPlaceholder(t *testing.T) {
 	s := &Session{ID: "s1", Name: "alpha", Color: "#abcdef"}
 	out := renderViewport(s, map[string][]Turn{}, 60, 10, 0, 0, 0, true,
 		sessionUsage{}, time.Time{}, time.Time{}, nil)
-	if !strings.Contains(out, "no messages yet") {
-		t.Fatalf("expected placeholder copy in output, got: %q", out)
-	}
-	if !strings.Contains(out, "alpha") {
-		t.Fatalf("expected session header in output, got: %q", out)
-	}
-}
-
-func TestRenderViewport_RendersTurns(t *testing.T) {
-	s := &Session{ID: "s1", Name: "alpha", Color: "#abcdef"}
-	conv := map[string][]Turn{
-		"s1": {
-			{Role: "user", Text: "ping", Ts: 1},
-			{Role: "assistant", Text: "pong", Ts: 2},
-		},
-	}
-	out := renderViewport(s, conv, 60, 20, 0, 0, 0, true,
-		sessionUsage{}, time.Time{}, time.Time{}, nil)
-	if !strings.Contains(out, "ping") {
-		t.Fatalf("expected user text, got: %q", out)
-	}
-	if !strings.Contains(out, "pong") {
-		t.Fatalf("expected assistant text, got: %q", out)
-	}
-	// User turns get the ▸ marker.
-	if !strings.Contains(out, "▸") {
-		t.Fatalf("expected user-turn arrow marker, got: %q", out)
+	if !strings.Contains(out, "connecting") {
+		t.Fatalf("expected '(connecting…)' placeholder, got: %q", out)
 	}
 }
