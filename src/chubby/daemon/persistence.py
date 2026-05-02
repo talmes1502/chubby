@@ -74,6 +74,21 @@ class Database:
         await self.conn.close()
 
     async def upsert_session(self, s: Session) -> None:
+        # The schema has both PRIMARY KEY(id) AND UNIQUE(hub_run_id,
+        # name). SQLite only allows ONE ON CONFLICT clause per UPSERT,
+        # so the INSERT below targets `id` — the most common case
+        # (re-saving an existing session). The (hub_run_id, name)
+        # conflict fires when the in-memory session has a new id but
+        # the DB still has a stale row with the same name under the
+        # same run — typical when a wrapper re-registers (new in-mem
+        # id) while a previous row from an earlier wrapper instance
+        # is still on disk. Pre-delete that orphan so the INSERT
+        # succeeds. Bug surfaced when /color failed with
+        # "UNIQUE constraint failed: sessions.hub_run_id, sessions.name".
+        await self.conn.execute(
+            "DELETE FROM sessions WHERE hub_run_id=? AND name=? AND id != ?",
+            (s.hub_run_id, s.name, s.id),
+        )
         await self.conn.execute(
             """INSERT INTO sessions
                  (id, hub_run_id, name, color, kind, cwd, claude_session_id, pid,
