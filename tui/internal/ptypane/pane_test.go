@@ -8,7 +8,7 @@ import (
 )
 
 func TestPane_WriteAndRenderPlainText(t *testing.T) {
-	p := New(40, 5)
+	p := New(40, 5, nil)
 	p.Write([]byte("hello world"))
 	out := p.View()
 	if !strings.Contains(out, "hello world") {
@@ -20,7 +20,7 @@ func TestPane_SGREscapesSurviveView(t *testing.T) {
 	// CSI 31m = red, CSI 1m = bold, CSI 0m = reset. The vt emulator
 	// should absorb these into cell attributes and re-emit them in
 	// View()'s SGR-attributed output.
-	p := New(40, 5)
+	p := New(40, 5, nil)
 	p.Write([]byte("\x1b[31;1mfocus\x1b[0m rest"))
 	out := p.View()
 	if !strings.Contains(out, "focus") || !strings.Contains(out, "rest") {
@@ -35,7 +35,7 @@ func TestPane_CursorMovesAreAbsorbed(t *testing.T) {
 	// CSI cursor-positioning sequences (CUP) must be absorbed into
 	// the emulator's screen state, NOT leak into View() output —
 	// they would fight Bubble Tea's parent renderer if they did.
-	p := New(40, 5)
+	p := New(40, 5, nil)
 	p.Write([]byte("first line\r\n"))
 	p.Write([]byte("\x1b[1;1H")) // CUP back to (1,1)
 	p.Write([]byte("OVERWRITE"))
@@ -51,7 +51,7 @@ func TestPane_CursorMovesAreAbsorbed(t *testing.T) {
 }
 
 func TestPane_ResizeUpdatesDimensions(t *testing.T) {
-	p := New(40, 5)
+	p := New(40, 5, nil)
 	p.Resize(80, 24)
 	w, h := p.Size()
 	if w != 80 || h != 24 {
@@ -62,7 +62,7 @@ func TestPane_ResizeUpdatesDimensions(t *testing.T) {
 func TestPane_ResizeBelowMinimumIsClamped(t *testing.T) {
 	// Tiny dimensions cause the emulator to misbehave — we clamp
 	// silently so no caller has to defensively check.
-	p := New(40, 5)
+	p := New(40, 5, nil)
 	p.Resize(2, 1)
 	w, h := p.Size()
 	if w < 10 || h < 5 {
@@ -71,7 +71,7 @@ func TestPane_ResizeBelowMinimumIsClamped(t *testing.T) {
 }
 
 func TestPane_AltScreenDetected(t *testing.T) {
-	p := New(40, 5)
+	p := New(40, 5, nil)
 	if p.IsAltScreen() {
 		t.Fatalf("fresh pane should not be in alt-screen")
 	}

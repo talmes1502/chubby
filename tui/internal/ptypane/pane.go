@@ -30,19 +30,34 @@ import (
 	"github.com/charmbracelet/x/vt"
 )
 
-// Pane wraps one session's vt emulator. Construct with New(w, h).
+// Responder is the callback the Pane invokes when the underlying vt
+// emulator emits bytes that should be sent BACK to the wrapped child
+// (claude). claude sometimes asks the terminal for information —
+// Device-Attributes (DA1), cursor-position-report (DSR), Decimal-mode
+// queries — and waits for a response. The caller (Model) wires this
+// to inject_raw so claude's PTY receives the response and unblocks.
+//
+// Without a Responder, vt.Emulator.Write deadlocks: vt buffers the
+// response in an internal pipe, the pipe fills up, the next Write
+// blocks waiting for a reader.
+type Responder func(bs []byte)
+
+// Pane wraps one session's vt emulator. Construct with New(w, h, responder).
 type Pane struct {
-	mu sync.Mutex
-	em *vt.Emulator
-	w  int
-	h  int
+	mu   sync.Mutex
+	em   *vt.Emulator
+	w    int
+	h    int
+	resp Responder
+	done chan struct{}
 }
 
 // New creates a pane sized to (w, h). Min 10x5 — below that the
 // emulator behaves erratically and there's nothing useful to render
-// anyway. The caller is expected to Resize once it knows the actual
-// conversation-pane dimensions.
-func New(w, h int) *Pane {
+// anyway. responder may be nil for tests that don't exercise the
+// response path; production callers must pass one or risk a deadlock
+// the moment claude sends a query (DA1 / cursor-position / etc.).
+func New(w, h int, responder Responder) *Pane {
 	if w < 10 {
 		w = 10
 	}
@@ -51,7 +66,53 @@ func New(w, h int) *Pane {
 	}
 	em := vt.NewEmulator(w, h)
 	em.Focus()
-	return &Pane{em: em, w: w, h: h}
+	p := &Pane{
+		em:   em,
+		w:    w,
+		h:    h,
+		resp: responder,
+		done: make(chan struct{}),
+	}
+	go p.drainResponses()
+	return p
+}
+
+// drainResponses pulls bytes the emulator wants to send back to its
+// child (DA1 replies, cursor-position reports, etc.) and forwards
+// them via the responder callback. Without this, vt.Emulator.Write
+// deadlocks waiting for the response pipe to be read.
+func (p *Pane) drainResponses() {
+	buf := make([]byte, 4096)
+	for {
+		select {
+		case <-p.done:
+			return
+		default:
+		}
+		n, err := p.em.Read(buf)
+		if n > 0 && p.resp != nil {
+			out := make([]byte, n)
+			copy(out, buf[:n])
+			p.resp(out)
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// Close shuts down the response-drain goroutine. Idempotent. Tests
+// should defer Close so they don't leak goroutines.
+func (p *Pane) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	select {
+	case <-p.done:
+		return nil
+	default:
+		close(p.done)
+		return p.em.Close()
+	}
 }
 
 // Write feeds a PTY chunk into the emulator. Safe to call from any

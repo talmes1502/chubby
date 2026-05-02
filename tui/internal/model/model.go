@@ -672,6 +672,24 @@ func (m Model) routeKeyToPty(msg tea.KeyMsg) tea.Cmd {
 	}
 }
 
+// ptyResponderFor returns a Responder that forwards vt-emitted
+// response bytes (DA1 replies, cursor-position reports, etc.) to
+// the wrapped claude's PTY via inject_raw. The Pane invokes this
+// asynchronously from its drain goroutine; we fire-and-forget the
+// RPC so we don't block the drain loop on slow daemon round-trips.
+func (m Model) ptyResponderFor(sid string) ptypane.Responder {
+	c := m.client
+	return func(bs []byte) {
+		go func() {
+			_, _ = c.Call(context.Background(), "inject_raw",
+				map[string]any{
+					"session_id":  sid,
+					"payload_b64": base64.StdEncoding.EncodeToString(bs),
+				})
+		}()
+	}
+}
+
 // loadPtyBuffer fetches the daemon's per-session PTY replay ring so
 // the TUI can prime the vt emulator with claude's current screen
 // state. Without this, a TUI that attaches mid-session sees an empty
@@ -881,7 +899,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.pty == nil {
 					m.pty = map[string]*ptypane.Pane{}
 				}
-				m.pty[s.ID] = ptypane.New(w, h)
+				m.pty[s.ID] = ptypane.New(w, h, m.ptyResponderFor(s.ID))
 			}
 		}
 		// First listMsg + no sessions: auto-spawn a "temp" session at
@@ -1003,7 +1021,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							if h < 5 {
 								h = 24
 							}
-							pane = ptypane.New(w, h)
+							pane = ptypane.New(w, h, m.ptyResponderFor(sid))
 							if m.pty == nil {
 								m.pty = map[string]*ptypane.Pane{}
 							}
@@ -1245,7 +1263,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if h < 5 {
 				h = 24
 			}
-			pane = ptypane.New(w, h)
+			pane = ptypane.New(w, h, m.ptyResponderFor(msg.sid))
 			if m.pty == nil {
 				m.pty = map[string]*ptypane.Pane{}
 			}
