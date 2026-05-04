@@ -1,4 +1,6 @@
-"""Shared fixtures: tempdir CHUBBY_HOME, fakeclaude on PATH."""
+"""Shared fixtures: tempdir CHUBBY_HOME, fakeclaude on PATH, suppressed
+desktop notifications.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +12,30 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _suppress_desktop_notifications(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub out chubby.daemon.notify.notify for every test so nothing
+    fires a real macOS / notify-send notification mid-suite. Without
+    this, any test that flips a session to AWAITING_USER pops a
+    desktop banner with the test session's name (e.g.
+    ``chubby: test_register_readonly_then_inject``). Tests that
+    specifically want to assert on notify behavior re-stub it
+    locally; the autouse default is "no-op"."""
+
+    async def _noop(title: str, body: str) -> None:
+        return None
+
+    # Patch the module attribute. Registry's import is lazy
+    # (``from chubby.daemon.notify import notify`` inside the method),
+    # so the patched attribute wins. Tests that import ``notify``
+    # directly at module top (like ``test_notify.py``) hold a local
+    # binding that bypasses this patch — they're testing the real
+    # function and are responsible for stubbing subprocess themselves.
+    from chubby.daemon import notify as notify_mod
+
+    monkeypatch.setattr(notify_mod, "notify", _noop)
 
 
 @pytest.fixture

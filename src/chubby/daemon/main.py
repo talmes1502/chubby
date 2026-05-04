@@ -46,6 +46,11 @@ from chubby.proto.schema import (
     PromoteSessionParams,
     PurgeParams,
     PushOutputParams,
+    ClaudeJsonlEntry,
+    ListAllClaudeJsonlsParams,
+    ListAllClaudeJsonlsResult,
+    ListRunCommandsParams,
+    ListRunCommandsResult,
     RecentCwdsParams,
     RecentCwdsResult,
     RecolorSessionParams,
@@ -58,6 +63,7 @@ from chubby.proto.schema import (
     ReleaseSessionResult,
     RenameSessionParams,
     ResizePtyParams,
+    RunCommandInfo,
     ScanCandidatesParams,
     ScanCandidatesResult,
     SearchTranscriptsParams,
@@ -65,6 +71,10 @@ from chubby.proto.schema import (
     SetHubRunNoteParams,
     SetSessionTagsParams,
     SpawnSessionParams,
+    StartRunCommandParams,
+    StartRunCommandResult,
+    StopRunCommandParams,
+    StopRunCommandResult,
     UpdateClaudePidParams,
 )
 from chubby.proto.rpc import Event, encode_message
@@ -91,6 +101,12 @@ def _build_registry(
 ) -> HandlerRegistry:
     h = HandlerRegistry()
     background_tasks: set[asyncio.Task[None]] = set()
+    # Long-running ``run`` commands are kept here for the daemon's lifetime.
+    # release/detach calls stop_all_for_session before teardown so dev
+    # servers come down with the session.
+    from chubby.daemon.run_processes import RunProcessRegistry
+
+    run_processes = RunProcessRegistry()
 
     async def ping(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         return {"echo": params.get("message"), "server_time_ms": now_ms()}
@@ -288,6 +304,89 @@ def _build_registry(
                 ErrorCode.INVALID_PAYLOAD,
                 "cwd is required (try '--cwd ~' for $HOME)",
             )
+        # Belt-and-braces: expand ~ on the daemon side too. The CLI
+        # already calls os.path.expanduser, but a config file (preset,
+        # automation) or an MCP client might pass a literal ``~/...``
+        # through unfiltered. Path("~/foo") doesn't expand on its own;
+        # we have to call expanduser explicitly.
+        cwd = os.path.expanduser(cwd)
+        # Branch / PR mode → resolve a chubby-managed git worktree
+        # and override cwd with that path. The wrapper is unchanged
+        # — it just sees a different cwd, which is exactly what we
+        # want (claude renders inside the worktree, edits stay
+        # isolated). Best-effort: any error falls back to a clear
+        # INVALID_PAYLOAD instead of silently spawning into the
+        # original cwd, since "I asked for a branch and got the
+        # wrong tree" would corrupt the user's mental model.
+        worktree_path: str | None = None
+        repo_root_for_config: str | None = None
+        if p.branch is not None or p.pr is not None:
+            from chubby.daemon import worktree as _wt
+
+            root = await _wt.repo_root(cwd)
+            if root is None:
+                raise ChubError(
+                    ErrorCode.INVALID_PAYLOAD,
+                    f"--branch/--pr requires a git repo; cwd={cwd!r} isn't one",
+                )
+            repo_root_for_config = str(root)
+            branch_name = p.branch
+            if p.pr is not None:
+                resolved = await _wt.resolve_pr_branch(root, p.pr)
+                if resolved is None:
+                    raise ChubError(
+                        ErrorCode.INVALID_PAYLOAD,
+                        f"could not resolve PR #{p.pr} via gh — is gh "
+                        f"installed and authed? (try `gh auth status`)",
+                    )
+                branch_name = resolved
+            assert branch_name is not None
+            try:
+                wt_path = await _wt.add_worktree(root, branch_name)
+            except _wt.WorktreeError as e:
+                raise ChubError(ErrorCode.INVALID_PAYLOAD, str(e)) from None
+            worktree_path = str(wt_path)
+            cwd = worktree_path
+        # Resolve project lifecycle config (Phase 2). For non-worktree
+        # spawns, we still try to detect a git root above the cwd so
+        # ``.chubby/config.json`` works even without ``--branch``. For
+        # cwds outside any repo, repo_root falls back to the cwd
+        # itself (load_config tolerates a missing file gracefully).
+        if repo_root_for_config is None:
+            from chubby.daemon import worktree as _wt
+            r = await _wt.repo_root(cwd)
+            repo_root_for_config = str(r) if r is not None else cwd
+        from chubby.daemon import lifecycle_scripts as _lifecycle
+        from chubby.daemon import project_config as _pc
+        project_cfg = _pc.load_config(
+            Path(cwd), Path(repo_root_for_config),
+        )
+        if project_cfg.setup:
+            setup_env = {
+                "CHUBBY_NAME": p.name,
+                "CHUBBY_HOME": str(paths.hub_home()),
+                "CHUBBY_ROOT_PATH": repo_root_for_config,
+                "CHUBBY_WORKSPACE_NAME": p.name,
+                "CHUBBY_WORKSPACE_PATH": cwd,
+            }
+            res = await _lifecycle.run_lifecycle(
+                project_cfg.setup, cwd=Path(cwd), env=setup_env,
+            )
+            if res.status == "failed":
+                # Roll back the worktree so a half-setup repo doesn't
+                # leak — the user can fix their setup.sh and respawn
+                # cleanly.
+                if worktree_path is not None:
+                    from chubby.daemon import worktree as _wt
+                    try:
+                        await _wt.remove_worktree(Path(worktree_path))
+                    except Exception:  # pragma: no cover — defensive
+                        pass
+                raise ChubError(
+                    ErrorCode.INVALID_PAYLOAD,
+                    f"setup failed at {res.failed_command!r}: "
+                    f"{res.output_tail.strip() or 'no output'}",
+                )
         proc_env = {
             **os.environ,
             "CHUBBY_NAME": p.name,
@@ -306,10 +405,21 @@ def _build_registry(
         # so we can close our handle as soon as the spawn returns and the
         # child still has its end. Append-mode so respawn doesn't truncate.
         stderr_fp = open(stderr_path, "ab")
+        wrapper_argv = [
+            sys.executable, "-m", "chubby.wrapper.main",
+            "--name", p.name, "--cwd", cwd, "--tags", ",".join(p.tags),
+        ]
+        # Phase 8d: when resuming a historical claude session, seed
+        # the wrapper's ``resume`` variable on iteration 1 so the
+        # subsequent auto-respawn loop's --resume flag uses the
+        # same id rather than fighting it. Dedicated flag (not
+        # passthrough) avoids the "two --resume flags after the
+        # first iteration" double-flag problem.
+        if p.resume_claude_session_id:
+            wrapper_argv += ["--initial-resume", p.resume_claude_session_id]
         try:
             await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "chubby.wrapper.main",
-                "--name", p.name, "--cwd", cwd, "--tags", ",".join(p.tags),
+                *wrapper_argv,
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=stderr_fp,
                 stderr=stderr_fp,
@@ -321,6 +431,11 @@ def _build_registry(
         for _ in range(50):
             try:
                 s = await reg.get_by_name(p.name)
+                # If we resolved a worktree for this spawn, remember
+                # it on the session so release/detach can clean up.
+                if worktree_path is not None and s.worktree_path != worktree_path:
+                    await reg.set_worktree_path(s.id, worktree_path)
+                    s = await reg.get(s.id)
                 return {"session": SessionDict(**s.to_dict()).model_dump()}
             except ChubError:
                 await asyncio.sleep(0.1)
@@ -552,16 +667,192 @@ def _build_registry(
             session=SessionDict(**s.to_dict())
         ).model_dump()
 
+    async def _run_teardown_if_configured(session_id: str) -> None:
+        """Run any project ``teardown`` scripts before we tear down
+        the session. Failure is non-blocking (logged + best-effort
+        — Superset's "force-delete to skip" pattern). Runs even for
+        non-worktree sessions, since teardown is "stop the dev
+        server" not "clean the worktree"."""
+        try:
+            s = await reg.get(session_id)
+        except ChubError:
+            return
+        if not s.cwd:
+            return
+        from chubby.daemon import lifecycle_scripts as _lifecycle
+        from chubby.daemon import project_config as _pc
+        from chubby.daemon import worktree as _wt
+        r = await _wt.repo_root(s.cwd)
+        repo_root_path = str(r) if r is not None else s.cwd
+        cfg = _pc.load_config(Path(s.cwd), Path(repo_root_path))
+        if not cfg.teardown:
+            return
+        env = {
+            "CHUBBY_NAME": s.name,
+            "CHUBBY_HOME": str(paths.hub_home()),
+            "CHUBBY_ROOT_PATH": repo_root_path,
+            "CHUBBY_WORKSPACE_NAME": s.name,
+            "CHUBBY_WORKSPACE_PATH": s.cwd,
+        }
+        res = await _lifecycle.run_lifecycle(
+            cfg.teardown, cwd=Path(s.cwd), env=env,
+        )
+        if res.status == "failed":
+            log.warning(
+                "teardown for session %r failed at %r: %s",
+                s.name, res.failed_command, res.output_tail.strip(),
+            )
+
+    async def _cleanup_worktree_if_owned(session_id: str) -> None:
+        """If a session was spawned with ``--branch``/``--pr``, remove
+        its chubby-managed git worktree. Wrapper disconnects (crash/
+        SIGKILL) deliberately do NOT call this — the user might
+        respawn the same name and we'd nuke their uncommitted work.
+        Only an explicit release/detach triggers cleanup."""
+        try:
+            s = await reg.get(session_id)
+        except ChubError:
+            return
+        if not s.worktree_path:
+            return
+        from pathlib import Path as _Path
+        from chubby.daemon import worktree as _wt
+        try:
+            await _wt.remove_worktree(_Path(s.worktree_path))
+        except Exception as e:  # pragma: no cover — defensive
+            log.warning(
+                "worktree cleanup failed for %s at %s: %s",
+                s.name, s.worktree_path, e,
+            )
+
+    async def _load_project_config_for_session(
+        session_id: str,
+    ) -> tuple[Path, "object"] | None:
+        """Resolve the project config for ``session_id``. Returns
+        ``(workspace_path, ProjectConfig)`` or ``None`` if the session
+        has no cwd (already torn down)."""
+        try:
+            s = await reg.get(session_id)
+        except ChubError:
+            return None
+        if not s.cwd:
+            return None
+        from chubby.daemon import project_config as _pc
+        from chubby.daemon import worktree as _wt
+        r = await _wt.repo_root(s.cwd)
+        repo_root_path = str(r) if r is not None else s.cwd
+        cfg = _pc.load_config(Path(s.cwd), Path(repo_root_path))
+        return Path(s.cwd), cfg
+
+    async def list_run_commands(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        p = ListRunCommandsParams.model_validate(params)
+        loaded = await _load_project_config_for_session(p.session_id)
+        if loaded is None:
+            return ListRunCommandsResult(commands=[]).model_dump()
+        _, cfg = loaded
+        running = {
+            rp.index: rp for rp in run_processes.list_for_session(p.session_id)
+        }
+        out = []
+        for i, cmd in enumerate(cfg.run):
+            rp = running.get(i)
+            out.append(
+                RunCommandInfo(
+                    index=i,
+                    cmd=cmd,
+                    running=rp is not None,
+                    pid=rp.pid if rp else None,
+                    log_path=str(rp.log_path) if rp else None,
+                )
+            )
+        return ListRunCommandsResult(commands=out).model_dump()
+
+    async def start_run_command(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        p = StartRunCommandParams.model_validate(params)
+        loaded = await _load_project_config_for_session(p.session_id)
+        if loaded is None:
+            raise ChubError(
+                ErrorCode.SESSION_NOT_FOUND,
+                f"session {p.session_id!r} has no cwd",
+            )
+        cwd, cfg = loaded
+        if not cfg.run:
+            raise ChubError(
+                ErrorCode.INVALID_PAYLOAD,
+                "no `run` array configured in .chubby/config.json",
+            )
+        if p.index < 0 or p.index >= len(cfg.run):
+            raise ChubError(
+                ErrorCode.INVALID_PAYLOAD,
+                f"run index {p.index} out of range "
+                f"(0..{len(cfg.run) - 1})",
+            )
+        cmd = cfg.run[p.index]
+        s = await reg.get(p.session_id)
+        # Logs go alongside the wrapper's stderr file under the hub-run
+        # dir so chubby diag can find them with the same conventions.
+        log_dir = run.dir / "logs"
+        log_path = log_dir / f"{s.name}-run-{p.index}.log"
+        env = {
+            "CHUBBY_NAME": s.name,
+            "CHUBBY_HOME": str(paths.hub_home()),
+            "CHUBBY_WORKSPACE_NAME": s.name,
+            "CHUBBY_WORKSPACE_PATH": s.cwd,
+        }
+        try:
+            meta = await run_processes.start(
+                session_id=p.session_id,
+                index=p.index,
+                cmd=cmd,
+                cwd=cwd,
+                env=env,
+                log_path=log_path,
+                clock_ms=now_ms(),
+            )
+        except RuntimeError as e:
+            raise ChubError(ErrorCode.INVALID_PAYLOAD, str(e))
+        return StartRunCommandResult(
+            pid=meta.pid, log_path=str(meta.log_path), cmd=meta.cmd
+        ).model_dump()
+
+    async def stop_run_command(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        p = StopRunCommandParams.model_validate(params)
+        stopped = await run_processes.stop(p.session_id, p.index)
+        return StopRunCommandResult(stopped=stopped).model_dump()
+
     async def detach_session(
         params: dict[str, Any], ctx: CallContext
     ) -> dict[str, Any]:
         p = DetachSessionParams.model_validate(params)
         # Resolve session (raises SESSION_NOT_FOUND if missing).
         await reg.get(p.id)
+
+        # Past validation every step is best-effort — same rationale
+        # as release_session: never let a flaky cleanup step block the
+        # session being marked DEAD or stop a follow-up call from
+        # finishing the chain.
+        async def _safe(label: str, coro: Any) -> None:
+            try:
+                await coro
+            except Exception as e:  # pragma: no cover — defensive
+                log.warning(
+                    "detach_session %s: %s step failed: %s",
+                    p.id, label, e,
+                )
+
+        await _safe("stop_run", run_processes.stop_all_for_session(p.id))
+        await _safe("teardown", _run_teardown_if_configured(p.id))
         stop = reg._tmux_stops.get(p.id)
         if stop is not None:
             stop.set()
-        await reg.update_status(p.id, SessionStatus.DEAD)
+        await _safe("update_status", reg.update_status(p.id, SessionStatus.DEAD))
+        await _safe("cleanup_worktree", _cleanup_worktree_if_owned(p.id))
         return {}
 
     async def release_session(
@@ -611,12 +902,35 @@ def _build_registry(
             stop = reg._tmux_stops.get(s.id)
             if stop is not None:
                 stop.set()
-        # Mark dead immediately + drop from in-memory registry. The
-        # SQLite row stays so hub-run history still shows this session
-        # ran; it just won't appear in list_sessions / the TUI rail.
-        await reg.update_status(s.id, SessionStatus.DEAD)
-        await reg.detach_wrapper(s.id)
-        await reg.remove_session(s.id)
+        # Past this point the user has committed to releasing — every
+        # remaining step is best-effort cleanup. If ANY of them raises
+        # (e.g. ``subs.broadcast`` to a flaky subscriber, a teardown
+        # script that errors), we MUST still remove the session from
+        # the registry. Otherwise the rail keeps showing a dead row
+        # the user can't get rid of without restarting the daemon.
+        async def _safe(label: str, coro: Any) -> None:
+            try:
+                await coro
+            except Exception as e:  # pragma: no cover — defensive
+                log.warning(
+                    "release_session %s: %s step failed: %s",
+                    s.id, label, e,
+                )
+
+        # Stop any long-running ``run`` commands first so dev servers
+        # come down with the session.
+        await _safe("stop_run", run_processes.stop_all_for_session(s.id))
+        # Teardown first while the worktree's still on disk and the
+        # wrapper's still up — gives setup-mirroring scripts a chance
+        # to stop dev servers etc.
+        await _safe("teardown", _run_teardown_if_configured(s.id))
+        # Mark dead + drop from in-memory registry. The SQLite row
+        # stays so hub-run history still shows this session ran; it
+        # just won't appear in list_sessions / the TUI rail.
+        await _safe("update_status", reg.update_status(s.id, SessionStatus.DEAD))
+        await _safe("detach_wrapper", reg.detach_wrapper(s.id))
+        await _safe("cleanup_worktree", _cleanup_worktree_if_owned(s.id))
+        await _safe("remove_session", reg.remove_session(s.id))
         return result.model_dump()
 
     async def promote_session(
@@ -760,6 +1074,24 @@ def _build_registry(
         cwds = await db.recent_cwds(p.limit)
         return RecentCwdsResult(cwds=cwds).model_dump()
 
+    async def list_all_claude_jsonls(
+        params: dict[str, Any], ctx: CallContext
+    ) -> dict[str, Any]:
+        """Phase 8d: scan ~/.claude/projects for every claude session
+        on disk (chubby-tracked or not) and return one record per
+        session sorted by recency. The TUI's cross-project history
+        browser uses this to surface "every conversation I've ever
+        had" so users can resume any of them via ``claude --resume``.
+        """
+        p = ListAllClaudeJsonlsParams.model_validate(params)
+        # Pure stat + read; no daemon state involved. Run in a thread
+        # so a slow disk doesn't block the event loop.
+        entries_raw = await asyncio.to_thread(
+            hooks_mod.list_all_claude_jsonls, limit=p.limit,
+        )
+        entries = [ClaudeJsonlEntry(**e) for e in entries_raw]
+        return ListAllClaudeJsonlsResult(entries=entries).model_dump()
+
     async def subscribe_events(
         params: dict[str, Any], ctx: CallContext
     ) -> dict[str, Any]:
@@ -806,6 +1138,10 @@ def _build_registry(
     h.register("update_claude_pid", update_claude_pid)
     h.register("refresh_claude_session", refresh_claude_session)
     h.register("recent_cwds", recent_cwds)
+    h.register("list_all_claude_jsonls", list_all_claude_jsonls)
+    h.register("list_run_commands", list_run_commands)
+    h.register("start_run_command", start_run_command)
+    h.register("stop_run_command", stop_run_command)
     return h
 
 
@@ -853,6 +1189,105 @@ async def _sweep_stuck_thinking(
             await _sweep_once(reg, max_age)
         except Exception as e:  # pragma: no cover — defensive
             log.warning("stuck-thinking sweep failed: %s", e)
+
+
+# Git-status sweep — polls each non-DEAD session's cwd for ahead/
+# behind commit counts and emits session_git_status_changed when the
+# values change. Runs less aggressively than the thinking sweep
+# because git rev-list against a remote-less branch is fast but not
+# free, and the rail glyph is informational rather than load-bearing.
+_GIT_STATUS_SWEEP_DEFAULT_S = 10.0
+
+
+async def _sweep_git_status(
+    reg: Registry, *, interval_s: float | None = None
+) -> None:
+    """Periodically refresh ``Session.git_ahead`` / ``git_behind`` for
+    every non-DEAD session by shelling out to ``git rev-list``."""
+    interval = interval_s if interval_s is not None else float(
+        paths.chubby_env("GIT_STATUS_SWEEP_S") or _GIT_STATUS_SWEEP_DEFAULT_S
+    )
+    while True:
+        try:
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
+        try:
+            await _sweep_git_status_once(reg)
+        except Exception as e:  # pragma: no cover — defensive
+            log.warning("git-status sweep failed: %s", e)
+
+
+async def _sweep_git_status_once(reg: Registry) -> int:
+    """One pass over the registry. Returns the number of sessions
+    whose cached counts changed (used by tests)."""
+    from chubby.daemon import git_status as _git_status
+
+    changed = 0
+    for s in await reg.list_all():
+        if s.status is SessionStatus.DEAD:
+            continue
+        if not s.cwd:
+            continue
+        result = await _git_status.ahead_behind(s.cwd)
+        if result is None:
+            ahead, behind = None, None
+        else:
+            ahead, behind = result
+        if await reg.set_git_status(s.id, ahead, behind):
+            changed += 1
+    return changed
+
+
+# Port-scan sweep — walks each non-DEAD session's process tree and
+# emits session_ports_changed when listening-port set changes. 2.5 s
+# matches Superset's port-manager cadence; cheap on macOS (one lsof
+# per session ≈ 5–10 ms) and on Linux (one ss invocation total).
+_PORT_SWEEP_DEFAULT_S = 2.5
+
+
+async def _sweep_ports(reg: Registry, *, interval_s: float | None = None) -> None:
+    """Periodically refresh ``Session.ports`` for every non-DEAD
+    session that has a ``claude_pid`` recorded."""
+    interval = interval_s if interval_s is not None else float(
+        paths.chubby_env("PORT_SWEEP_S") or _PORT_SWEEP_DEFAULT_S
+    )
+    while True:
+        try:
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
+        try:
+            await _sweep_ports_once(reg)
+        except Exception as e:  # pragma: no cover — defensive
+            log.warning("port sweep failed: %s", e)
+
+
+async def _sweep_ports_once(reg: Registry) -> int:
+    """One pass over the registry. Returns the number of sessions
+    whose port set changed (used by tests)."""
+    from chubby.daemon import ports as _ports
+
+    changed = 0
+    for s in await reg.list_all():
+        if s.status is SessionStatus.DEAD:
+            continue
+        # Walk the wrapper's process tree (the wrapper is parent of
+        # claude, claude is parent of the dev-server). We use the
+        # wrapper pid (``s.pid``) rather than claude_pid so a dev
+        # server spawned outside claude (e.g. from a setup script)
+        # is also covered.
+        if s.pid is None:
+            continue
+        pids = await _ports.process_tree(int(s.pid))
+        infos = await _ports.listening_ports(pids)
+        port_dicts = [
+            {"port": i.port, "pid": i.pid, "address": i.address}
+            for i in infos
+        ]
+        if await reg.set_ports(s.id, port_dicts):
+            changed += 1
+    return changed
 
 
 async def _sweep_once(reg: Registry, max_age_s: float) -> int:
@@ -924,6 +1359,8 @@ async def serve(*, stop_event: asyncio.Event | None = None) -> None:
             server = Server(sock_path=sock_path, registry=handlers)
             await server.start()
             sweep_task = asyncio.create_task(_sweep_stuck_thinking(registry))
+            git_sweep_task = asyncio.create_task(_sweep_git_status(registry))
+            port_sweep_task = asyncio.create_task(_sweep_ports(registry))
             try:
                 server_closed_task = asyncio.create_task(server.wait_closed())
                 stop_task = asyncio.create_task(stop_event.wait())
@@ -939,10 +1376,13 @@ async def serve(*, stop_event: asyncio.Event | None = None) -> None:
                     )
             finally:
                 sweep_task.cancel()
-                try:
-                    await sweep_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                git_sweep_task.cancel()
+                port_sweep_task.cancel()
+                for t in (sweep_task, git_sweep_task, port_sweep_task):
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):
+                        pass
                 await server.stop()
         finally:
             await end_run(db, run.id)

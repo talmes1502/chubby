@@ -39,6 +39,27 @@ const (
 	ChubCmdMoveToFolder     ChubCommand = "movetofolder"
 	ChubCmdRemoveFromFolder ChubCommand = "removefromfolder"
 	ChubCmdDetach           ChubCommand = "detach"
+	// ChubCmdRestart is a friendlier alias for refresh-claude. Same
+	// underlying RPC; users discover it via "?" or palette autocomplete
+	// without having to remember the longer hyphenated form.
+	ChubCmdRestart ChubCommand = "restart"
+	// ChubCmdClone duplicates the focused session (Phase 8a) — same
+	// cwd / branch / tags / folder, name auto-suffixed with -2/-3/...
+	// to avoid the daemon's UNIQUE constraint.
+	ChubCmdClone ChubCommand = "clone"
+	// ChubCmdReleaseAll runs full teardown (release_session) on every
+	// non-dead, non-readonly session. Requires the literal arg
+	// ``confirm`` so a stray ``:release-all`` doesn't wipe the rail.
+	ChubCmdReleaseAll ChubCommand = "release-all"
+	// ChubCmdRun starts a long-running ``run`` command from the
+	// project's .chubby/config.json (e.g. ``bun dev``). The arg is
+	// the index into the ``run`` array (0-based). The process lives
+	// for the session's lifetime and is killed automatically on
+	// release/detach.
+	ChubCmdRun ChubCommand = "run"
+	// ChubCmdStopRun stops a running ``run`` command for the focused
+	// session. Arg is the index.
+	ChubCmdStopRun ChubCommand = "stop-run"
 )
 
 // chubCommandHeads is the dispatch table for splitChubCommand:
@@ -48,9 +69,14 @@ var chubCommandHeads = []ChubCommand{
 	ChubCmdRemoveFromFolder,
 	ChubCmdMoveToFolder,
 	ChubCmdRefreshClaude,
+	ChubCmdReleaseAll,
+	ChubCmdStopRun,
+	ChubCmdRestart,
 	ChubCmdDetach,
 	ChubCmdColor,
+	ChubCmdClone,
 	ChubCmdRename,
+	ChubCmdRun,
 	ChubCmdTag,
 }
 
@@ -208,8 +234,19 @@ func (m Model) dispatchChubCommand(cmd ChubCommand, arg string) tea.Cmd {
 		return m.doChubRename(arg)
 	case ChubCmdTag:
 		return m.doChubTag(arg)
-	case ChubCmdRefreshClaude:
+	case ChubCmdRefreshClaude, ChubCmdRestart:
+		// :restart is a friendlier alias for /refresh-claude. Same
+		// underlying RPC; chosen as a discoverable verb in the
+		// rail palette so users can guess it without reading help.
 		return m.doChubRefreshClaude()
+	case ChubCmdClone:
+		return m.doChubClone()
+	case ChubCmdReleaseAll:
+		return m.doChubReleaseAll(arg)
+	case ChubCmdRun:
+		return m.doChubRun(arg)
+	case ChubCmdStopRun:
+		return m.doChubStopRun(arg)
 	case ChubCmdMoveToFolder:
 		return m.doChubMoveToFolder(arg)
 	case ChubCmdRemoveFromFolder:
@@ -400,6 +437,61 @@ func (m Model) doChubRefreshClaude() tea.Cmd {
 	}
 }
 
+// nextCloneName picks the first free "<base>-N" name where N is 2,
+// 3, 4, ... ensuring the new clone doesn't collide with the focused
+// session itself or any other live session in the rail. ``base`` is
+// the focused session's name with any existing ``-N`` suffix
+// stripped, so cloning ``web-2`` produces ``web-3`` rather than
+// ``web-2-2``.
+func (m Model) nextCloneName(base string) string {
+	// Trim a trailing "-N" so successive clones produce -2, -3, ...
+	// rather than -2, -2-2, -2-2-2.
+	root := base
+	if i := strings.LastIndex(base, "-"); i > 0 {
+		if n, err := strconv.Atoi(base[i+1:]); err == nil && n > 0 {
+			root = base[:i]
+		}
+	}
+	taken := make(map[string]bool, len(m.sessions))
+	for _, s := range m.sessions {
+		taken[s.Name] = true
+	}
+	for n := 2; n < 1000; n++ {
+		candidate := fmt.Sprintf("%s-%d", root, n)
+		if !taken[candidate] {
+			return candidate
+		}
+	}
+	// Fallback (a thousand clones with the same base — practically
+	// impossible). Just append a high-N anyway.
+	return fmt.Sprintf("%s-1000", root)
+}
+
+// doChubClone duplicates the focused session: same cwd, branch,
+// tags, and folder. The new session's name is auto-suffixed
+// (``-2``/``-3``/...) to avoid colliding with the original or any
+// other live session — the daemon's UNIQUE constraint would
+// otherwise reject the spawn. Folder assignment piggybacks on the
+// existing doSpawn folder helper.
+func (m Model) doChubClone() tea.Cmd {
+	s := m.focusedSession()
+	if s == nil {
+		return nil
+	}
+	newName := m.nextCloneName(s.Name)
+	folder := m.folders.FolderForSession(s.ID)
+	cwd := s.Cwd
+	tags := append([]string(nil), s.Tags...)
+	branch := ""
+	// If the original was a worktree-backed session, derive a fresh
+	// branch from the original's worktree path's terminal segment —
+	// but cloning shouldn't reuse the same branch (that'd conflict
+	// with the existing worktree). Default to NO branch on clone:
+	// users can always /clone then /refresh on a branch. Keeping
+	// the simple-version semantics from Phase 1.
+	return m.doSpawn(newName, cwd, tags, folder, branch)
+}
+
 // doChubMoveToFolder assigns the focused session to a folder. The
 // folder is created implicitly if it doesn't exist yet — matches the
 // "any non-empty arg works" UX of the other chub-side slash commands.
@@ -446,6 +538,160 @@ func (m Model) doChubRemoveFromFolder() tea.Cmd {
 		}
 		return chubCommandDoneMsg{}
 	}
+}
+
+// doChubReleaseAll is the rail-palette equivalent of
+// ``chubby release --all --yes``. Bare ``:release-all`` previews the
+// count and refuses to fire; ``:release-all confirm`` runs full
+// teardown on every non-dead, non-readonly session. Falls back to
+// detach_session for sessions whose claude id hasn't bound yet
+// (release_session refuses those because its result tuple needs
+// the id).
+func (m Model) doChubReleaseAll(arg string) tea.Cmd {
+	type tgt struct{ id, name string }
+	var targets []tgt
+	for _, s := range m.sessions {
+		if s.Status == StatusDead || s.Kind == KindReadonly {
+			continue
+		}
+		targets = append(targets, tgt{id: s.ID, name: s.Name})
+	}
+	if strings.TrimSpace(arg) != "confirm" {
+		n := len(targets)
+		return func() tea.Msg {
+			if n == 0 {
+				return composeFailedMsg{fmt.Errorf("no live sessions to release")}
+			}
+			return composeFailedMsg{fmt.Errorf(
+				"this will release %d session(s) — type ':release-all confirm' to proceed",
+				n,
+			)}
+		}
+	}
+	if len(targets) == 0 {
+		return func() tea.Msg {
+			return composeFailedMsg{fmt.Errorf("no live sessions to release")}
+		}
+	}
+	c := m.client
+	return func() tea.Msg {
+		ok, fail := 0, 0
+		for _, t := range targets {
+			if _, err := c.Call(context.Background(), "release_session",
+				map[string]any{"id": t.id}); err != nil {
+				// release_session refuses sessions without a bound
+				// claude id; fall through to detach_session which
+				// runs teardown + marks DEAD without needing the id.
+				if _, err2 := c.Call(context.Background(), "detach_session",
+					map[string]any{"id": t.id}); err2 != nil {
+					fail++
+					continue
+				}
+			}
+			ok++
+		}
+		toast := fmt.Sprintf("released %d session(s)", ok)
+		if fail > 0 {
+			toast += fmt.Sprintf(", %d failed", fail)
+		}
+		return chubCommandDoneMsg{toast: toast}
+	}
+}
+
+// doChubRun fires start_run_command for the focused session at the
+// given run-array index. Long-running command (e.g. ``bun dev``)
+// detaches from the daemon's process group and dies automatically
+// when the session is released. Surfaces a toast with pid + log
+// path so the user can ``tail -f`` it from another terminal.
+//
+// Index-only for v1: tab-completion of run-command names by content
+// would require eagerly fetching list_run_commands per focused
+// session, which is more plumbing than the feature warrants.
+func (m Model) doChubRun(arg string) tea.Cmd {
+	s := m.focusedSession()
+	if s == nil {
+		return func() tea.Msg {
+			return composeFailedMsg{fmt.Errorf("no session focused")}
+		}
+	}
+	sid := s.ID
+	c := m.client
+	return func() tea.Msg {
+		idx, err := parseRunIndex(arg)
+		if err != nil {
+			return composeFailedMsg{err}
+		}
+		raw, err := c.Call(context.Background(), "start_run_command",
+			map[string]any{"session_id": sid, "index": idx})
+		if err != nil {
+			return composeFailedMsg{err}
+		}
+		var r struct {
+			Pid     int    `json:"pid"`
+			LogPath string `json:"log_path"`
+			Cmd     string `json:"cmd"`
+		}
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return composeFailedMsg{err}
+		}
+		return chubCommandDoneMsg{toast: fmt.Sprintf(
+			"run %d started: %s (pid %d, log %s)",
+			idx, r.Cmd, r.Pid, r.LogPath,
+		)}
+	}
+}
+
+// doChubStopRun stops a running ``run`` command for the focused
+// session. No-op (chubCommandDoneMsg with an explanatory toast)
+// when nothing's running at that index.
+func (m Model) doChubStopRun(arg string) tea.Cmd {
+	s := m.focusedSession()
+	if s == nil {
+		return func() tea.Msg {
+			return composeFailedMsg{fmt.Errorf("no session focused")}
+		}
+	}
+	sid := s.ID
+	c := m.client
+	return func() tea.Msg {
+		idx, err := parseRunIndex(arg)
+		if err != nil {
+			return composeFailedMsg{err}
+		}
+		raw, err := c.Call(context.Background(), "stop_run_command",
+			map[string]any{"session_id": sid, "index": idx})
+		if err != nil {
+			return composeFailedMsg{err}
+		}
+		var r struct {
+			Stopped bool `json:"stopped"`
+		}
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return composeFailedMsg{err}
+		}
+		if !r.Stopped {
+			return chubCommandDoneMsg{toast: fmt.Sprintf(
+				"run %d wasn't running", idx,
+			)}
+		}
+		return chubCommandDoneMsg{toast: fmt.Sprintf(
+			"run %d stopped", idx,
+		)}
+	}
+}
+
+// parseRunIndex turns the ``:run`` argument into a non-negative int.
+// Empty string is rejected with a usage error.
+func parseRunIndex(arg string) (int, error) {
+	s := strings.TrimSpace(arg)
+	if s == "" {
+		return 0, fmt.Errorf("usage: :run <index>  (0-based — see .chubby/config.json `run` array)")
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("run index must be a non-negative integer; got %q", arg)
+	}
+	return n, nil
 }
 
 // openExternalClaudeFn is the package-level indirection for the

@@ -59,6 +59,26 @@ class SessionDict(_Strict):
     tmux_target: str | None = None
     tags: list[str] = []
     ended_at: int | None = None
+    # Transient git state populated by the daemon's git-status sweep;
+    # not persisted to the SQLite store. ``None`` means "no upstream
+    # configured / not a git repo / not yet polled" — TUI hides the
+    # glyph in that case.
+    git_ahead: int | None = None
+    git_behind: int | None = None
+    # Set when the session was spawned with ``--branch``/``--pr`` and
+    # the daemon owns a chubby-managed git worktree at this path.
+    # Used so cleanup can find the worktree on release/detach. Also
+    # surfaces to the TUI for "branch X" labels in the rail.
+    worktree_path: str | None = None
+    # Transient list of detected listening ports under this session's
+    # process tree, populated by the daemon's periodic port sweep.
+    # Each entry: {port: int, pid: int, address: str}. Surfaces to
+    # the rail as "🌐 :3000".
+    ports: list[dict[str, Any]] = []
+    # Cached first user-turn from the JSONL transcript (Phase 8c).
+    # Populated once by the watch_for_transcript hook; surfaces in the
+    # quick-switcher rows + rail tooltip. ``None`` = not yet bound.
+    first_user_message: str | None = None
 
 
 class RegisterWrappedResult(_Strict):
@@ -123,6 +143,22 @@ class SpawnSessionParams(_Strict):
     # rather than silently defaulting.
     cwd: str
     tags: list[str] = []
+    # Optional branch/PR mode — when set, spawn_session resolves a git
+    # worktree at ``~/.claude/chubby/worktrees/<repo-hash>/<branch>``
+    # and overrides ``cwd`` with that path. Three modes by argument
+    # shape:
+    #   - ``branch`` only, branch doesn't exist → create new from HEAD.
+    #   - ``branch`` only, branch exists → check out into a fresh
+    #     worktree (no -b flag).
+    #   - ``pr`` set → resolve PR head ref via ``gh pr view`` and use
+    #     that branch (best-effort; falls back to existing-branch mode
+    #     when ``gh`` isn't authenticated).
+    branch: str | None = None
+    pr: int | None = None
+    # Phase 8d cross-project history browser: when set, the wrapper
+    # adds ``--resume <id>`` to claude's argv on the first iteration
+    # so the new session re-opens an existing JSONL transcript.
+    resume_claude_session_id: str | None = None
 
 
 # --- transcript search (Phase 7) ----------------------------------------------
@@ -305,3 +341,70 @@ class RecentCwdsParams(_Strict):
 
 class RecentCwdsResult(_Strict):
     cwds: list[str]
+
+
+class ListAllClaudeJsonlsParams(_Strict):
+    """Phase 8d cross-project history browser: scan
+    ``~/.claude/projects/*/*.jsonl`` and return per-session metadata
+    sorted by recency. ``limit`` bounds the result so users with
+    thousands of historical sessions still get a snappy list."""
+
+    limit: int = 200
+
+
+class ClaudeJsonlEntry(_Strict):
+    claude_session_id: str
+    cwd: str
+    first_user_message: str | None = None
+    mtime_ms: int
+    size: int
+
+
+class ListAllClaudeJsonlsResult(_Strict):
+    entries: list[ClaudeJsonlEntry]
+
+
+# --- run commands (.chubby/config.json `run` array) --------------------------
+
+
+class RunCommandInfo(_Strict):
+    """One entry from the project's ``run`` array, with whether it's
+    currently running for this session. ``pid`` and ``log_path`` are
+    populated only when ``running`` is true."""
+
+    index: int
+    cmd: str
+    running: bool = False
+    pid: int | None = None
+    log_path: str | None = None
+
+
+class ListRunCommandsParams(_Strict):
+    session_id: str
+
+
+class ListRunCommandsResult(_Strict):
+    commands: list[RunCommandInfo]
+
+
+class StartRunCommandParams(_Strict):
+    """``:run <index>`` from the rail palette. Index refers to the
+    position in the project's ``run`` array."""
+
+    session_id: str
+    index: int
+
+
+class StartRunCommandResult(_Strict):
+    pid: int
+    log_path: str
+    cmd: str
+
+
+class StopRunCommandParams(_Strict):
+    session_id: str
+    index: int
+
+
+class StopRunCommandResult(_Strict):
+    stopped: bool

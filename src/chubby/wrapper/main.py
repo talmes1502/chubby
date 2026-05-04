@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import base64
 import collections
+import json
 import os
 import re
 import shutil
@@ -62,6 +63,94 @@ _NEW_CLAUDE_SID_POLL_S = 0.1
 # restart. Claude shuts down promptly; if this expires we proceed anyway
 # (the next iteration will see closed.is_set() too).
 _RESTART_DRAIN_S = 5.0
+
+# Auto-respawn guard. When claude exits (Ctrl+C×2, /exit), the wrapper
+# relaunches with --resume so the session feels persistent. A broken
+# claude binary would otherwise spin forever, so the guard counts
+# *consecutive* fast exits within a window and gives up after the
+# threshold. A run lasting longer than the reset window clears the
+# counter; a user-initiated /refresh-claude also resets, since the
+# restart breaks the "consecutive crash" chain.
+_RESPAWN_RESET_WINDOW_S = 30.0
+_RESPAWN_MAX_FAST_EXITS = 5
+_RESPAWN_BACKOFF_S = 0.3
+_ENV_NO_AUTO_RESPAWN = "CHUBBY_NO_AUTO_RESPAWN"
+
+
+class RespawnGuard:
+    """Tracks consecutive fast claude exits to stop a crash loop.
+
+    A "fast" exit is one whose run lasted ``_RESPAWN_RESET_WINDOW_S`` or
+    less. After ``_RESPAWN_MAX_FAST_EXITS`` fast exits in a row,
+    ``is_crash_looping()`` returns True and the wrapper bails out
+    rather than respawning forever.
+    """
+
+    def __init__(self) -> None:
+        self._fast_exits = 0
+
+    def record_exit(self, run_duration_s: float) -> None:
+        """Record an exit. A long-enough run resets the counter; a
+        short run increments it."""
+        if run_duration_s > _RESPAWN_RESET_WINDOW_S:
+            self._fast_exits = 0
+        self._fast_exits += 1
+
+    def reset(self) -> None:
+        """Clear the counter. Used when a user-initiated restart
+        breaks the consecutive-crash chain."""
+        self._fast_exits = 0
+
+    @property
+    def fast_exit_count(self) -> int:
+        return self._fast_exits
+
+    def is_crash_looping(self) -> bool:
+        return self._fast_exits >= _RESPAWN_MAX_FAST_EXITS
+
+
+# Where claude writes its per-session transcript JSONLs. Mirrors
+# chubby.daemon.hooks.claude_projects_root() — duplicated here to keep
+# the wrapper free of a daemon import for what is fundamentally a fact
+# about claude's filesystem layout, not about the daemon.
+def _claude_projects_root() -> Path:
+    return Path.home() / ".claude" / "projects"
+
+
+def _resume_is_safe(claude_session_id: str | None) -> bool:
+    """True iff ``claude --resume <id>`` is expected to succeed.
+
+    Claude refuses to resume a session whose JSONL doesn't exist or
+    contains no user turns ("No conversation found with session ID:
+    <id>"). The auto-respawn loop calls this before passing
+    ``--resume`` so that a Ctrl+C'd-empty session relaunches as a
+    fresh claude under the same chubby session, instead of crash-
+    looping on a phantom resume id.
+
+    Returns False if the id is None, the projects root is missing,
+    no JSONL matches, or no record in the JSONL is a user turn.
+    """
+    if not claude_session_id:
+        return False
+    root = _claude_projects_root()
+    if not root.is_dir():
+        return False
+    for jsonl in root.glob(f"*/{claude_session_id}.jsonl"):
+        try:
+            with jsonl.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(rec, dict) and rec.get("type") == "user":
+                        return True
+        except OSError:
+            continue
+    return False
 
 # Strip the most common visual ANSI escape sequences before substring
 # matching: CSI ``...`` letter (covers SGR colors, cursor moves like
@@ -107,6 +196,12 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     # is rarely what the user means.)
     p.add_argument("--cwd", default="")
     p.add_argument("--tags", default="")
+    # Phase 8d: when chubby spawns a wrapper to resume a historical
+    # claude session, the daemon seeds this so iteration 1 launches
+    # ``claude --resume <id>``. Subsequent auto-respawn iterations
+    # use the wrapper's normal ``resume`` tracking (the resumed
+    # session id), so we never end up with two --resume flags.
+    p.add_argument("--initial-resume", default=None, dest="initial_resume")
     return p.parse_known_args(argv[1:])
 
 
@@ -215,6 +310,22 @@ async def _run_one_claude(
     )
 
     seq = 0
+    # Push a synthetic erase-display sequence to chubby's vt before the
+    # new claude renders. The TUI's per-session vt grid is *reused*
+    # across wrapper-internal claude restarts (the auto-respawn loop in
+    # _run keeps the same wrapper, same daemon session id, same pty_chunk
+    # broadcast subscriber → same vt grid). Claude's resume render only
+    # does partial clears (line-erase [2K + cursor moves) and skips cells
+    # that were filled by the prior claude — those stale cells leak
+    # through as ghost text in the input box ("why is my last prompt /
+    # the banner showing in the input?"). \x1b[2J erases all visible
+    # cells; \x1b[3J also flushes scrollback; \x1b[H homes the cursor.
+    # Harmless on the first iteration (fresh grid).
+    try:
+        seq += 1
+        await client.push_chunk(seq=seq, data=b"\x1b[2J\x1b[3J\x1b[H")
+    except ChubError:
+        pass
     recent_output: collections.deque[bytes] = collections.deque(maxlen=64)
     _resize_tasks: set[asyncio.Task[None]] = set()
 
@@ -355,6 +466,29 @@ async def _run_one_claude(
                 _diag("shutdown event received — SIGTERMing claude (no restart)")
                 result.shutdown_requested = True
                 pty.signal_child(signal.SIGTERM)
+            elif msg.method == "redraw_claude":
+                # Daemon pushes this on every status flip to
+                # AWAITING_USER. Claude's per-turn render uses
+                # cursor-forward to skip cells it thinks already match
+                # — fine in a real terminal (old content scrolls into
+                # scrollback) but visible as ghost text in chubby's
+                # bounded vt grid. A bare SIGWINCH isn't enough
+                # because claude only re-lays-out on actual size
+                # change. We toggle the size by ±1 col so claude
+                # treats it as a real resize → recomputes layout from
+                # scratch → rewrites every cell. The daemon already
+                # pushed a synthetic erase-display chunk before this
+                # event so claude's redraw lands on a clean canvas.
+                _diag("redraw_claude received — toggling PTY size")
+                try:
+                    rows, cols = await pty.get_size()
+                    await pty.resize(rows, max(cols + 1, 1))
+                    # Tiny delay so claude observes both sizes as
+                    # distinct events rather than coalescing them.
+                    await asyncio.sleep(0.02)
+                    await pty.resize(rows, cols)
+                except Exception as e:
+                    _diag(f"redraw_claude resize-toggle failed: {e!r}")
 
     def on_winch(*_args: Any) -> None:
         try:
@@ -438,160 +572,6 @@ async def _run_one_claude(
     return result
 
 
-def _shell_path() -> str:
-    """Pick the user's interactive shell for the post-claude phase.
-
-    $SHELL wins if set (per POSIX); otherwise pick a platform default
-    (zsh on macOS, bash on Linux, /bin/sh as a last resort). Pure
-    function so the test suite can pin exact behavior without
-    monkey-patching os.environ in every case.
-    """
-    if v := os.environ.get("SHELL"):
-        return v
-    if sys.platform == "darwin":
-        return "/bin/zsh"
-    if os.path.exists("/bin/bash"):
-        return "/bin/bash"
-    return "/bin/sh"
-
-
-def _post_claude_hint(session_id: str | None) -> bytes:
-    """Format the inline "claude exited" banner shown in the chubby
-    pane (and on the wrapper's own stdout) right before the shell
-    prompt comes up. Dim style + bracket markers so it reads as
-    chubby chrome, not a claude message."""
-    if session_id:
-        msg = f"─── claude exited · resume with: claude --resume {session_id} ───"
-    else:
-        msg = "─── claude exited ───"
-    return f"\r\n\x1b[2m{msg}\x1b[0m\r\n\r\n".encode()
-
-
-async def _run_shell(
-    *,
-    client: WrapperClient,
-    cwd: str,
-) -> _RunOneResult:
-    """Drop into the user's $SHELL on the same chubby-managed PTY
-    after claude exits. Reuses PtySession + the same client.push_chunk
-    / inject_to_pty pumps as _run_one_claude — no trust-prompt
-    detection, no session-id capture, no register: this is just the
-    underlying shell, not another claude. Returns when the shell
-    exits (user types `exit` or Ctrl+D); if /detach fired during
-    the shell phase, shutdown_requested is set so the caller can
-    distinguish.
-    """
-    result = _RunOneResult()
-    shell = _shell_path()
-    _diag(f"about to spawn shell argv={[shell, '-i']}")
-    pty = PtySession([shell, "-i"], cwd=cwd)
-    await pty.start()
-    _diag(f"shell pid={pty.pid} ({shell})")
-
-    seq = 0
-    _resize_tasks: set[asyncio.Task[None]] = set()
-
-    async def pump_pty_to_daemon_and_term() -> None:
-        nonlocal seq
-        async for chunk in pty.iter_output():
-            try:
-                os.write(sys.stdout.fileno(), chunk)
-            except OSError:
-                pass
-            seq += 1
-            try:
-                await client.push_chunk(seq=seq, data=chunk)
-            except ChubError:
-                pass
-
-    async def pump_term_to_pty() -> None:
-        loop = asyncio.get_running_loop()
-
-        def _read_stdin() -> bytes:
-            buf = sys.stdin.buffer
-            read1 = getattr(buf, "read1", None)
-            if read1 is not None:
-                return bytes(read1(4096))
-            return bytes(buf.read(4096))
-
-        while not pty.closed.is_set():
-            chunk = await loop.run_in_executor(None, _read_stdin)
-            if not chunk:
-                return
-            await pty.write_user(chunk)
-
-    async def listen_for_inject() -> None:
-        events = await client.events()
-        while True:
-            try:
-                msg = await events.get()
-            except asyncio.CancelledError:
-                raise
-            if not isinstance(msg, Event):
-                continue
-            if msg.method == "inject_to_pty":
-                payload = base64.b64decode(msg.params["payload_b64"])
-                auto_newline = msg.params.get("auto_newline", True)
-                if auto_newline and not payload.endswith(b"\n") and not payload.endswith(b"\r"):
-                    payload += b"\r"
-                await pty.write_user(payload)
-            elif msg.method == "resize_pty":
-                try:
-                    rows = int(msg.params.get("rows", 0))
-                    cols = int(msg.params.get("cols", 0))
-                except (TypeError, ValueError):
-                    continue
-                if rows > 0 and cols > 0:
-                    try:
-                        await pty.resize(rows, cols)
-                    except Exception:
-                        pass
-            elif msg.method == "shutdown":
-                _diag("shutdown event during shell — SIGTERMing")
-                result.shutdown_requested = True
-                pty.signal_child(signal.SIGTERM)
-            # Note: we intentionally don't handle restart_claude here.
-            # Reviving claude inside the shell phase is a feature we
-            # can layer on later by SIGTERMing the shell and bouncing
-            # back into the claude loop.
-
-    def on_winch(*_args: Any) -> None:
-        try:
-            import fcntl
-            import termios
-
-            buf = fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, b"\x00" * 8)
-            rows, cols = struct.unpack("HHHH", buf)[:2]
-            t = asyncio.create_task(pty.resize(rows, cols))
-            _resize_tasks.add(t)
-            t.add_done_callback(_resize_tasks.discard)
-        except Exception:
-            pass
-
-    try:
-        signal.signal(signal.SIGWINCH, on_winch)
-    except (AttributeError, ValueError):
-        pass
-    on_winch()
-
-    pump_task = asyncio.create_task(pump_pty_to_daemon_and_term())
-    stdin_task = asyncio.create_task(pump_term_to_pty())
-    inject_task = asyncio.create_task(listen_for_inject())
-
-    try:
-        await pump_task
-    finally:
-        for t in (stdin_task, inject_task):
-            if not t.done():
-                t.cancel()
-        for t in (stdin_task, inject_task):
-            try:
-                await t
-            except (asyncio.CancelledError, Exception):
-                pass
-        await pty.terminate()
-    return result
-
 
 async def _run() -> int:
     args, passthrough = parse_args(sys.argv)
@@ -626,10 +606,16 @@ async def _run() -> int:
         return 0
 
     tags = [t for t in args.tags.split(",") if t]
-    resume: str | None = None
+    # Phase 8d: ``--initial-resume <id>`` seeds the resume tracker so
+    # the very first claude launch inside this wrapper is
+    # ``claude --resume <id>``. Subsequent auto-respawn iterations
+    # use the resumed session id naturally — no double-flag fight.
+    resume: str | None = args.initial_resume or None
     is_first = True
+    guard = RespawnGuard()
     try:
         while True:
+            run_started = time.monotonic()
             res = await _run_one_claude(
                 client=client,
                 cwd=cwd,
@@ -646,43 +632,44 @@ async def _run() -> int:
                 # fresh ``claude --resume`` outside our management.
                 _diag("wrapper exiting: shutdown requested by daemon")
                 return 0
-            if not res.restart_requested:
-                # Claude exited (Ctrl+C×2, /exit, etc.). Drop into
-                # the user's $SHELL on the same PTY so the chubby
-                # session keeps living — same mental model as a
-                # terminal tab where you ran `claude` and now it
-                # exited; you're back at a shell prompt. To
-                # actually terminate the chubby session: type
-                # `exit` (or Ctrl+D) in the shell, /detach from
-                # chubby, or kill the wrapper PID.
-                #
-                # Push a one-line "claude exited · resume with …"
-                # banner before the shell starts so the resume
-                # command is visible to the user and surfaces in
-                # the chubby pane via the daemon broadcast path.
-                hint = _post_claude_hint(res.session_id)
-                try:
-                    os.write(sys.stdout.fileno(), hint)
-                except OSError:
-                    pass
-                try:
-                    seq_hint = int(time.time() * 1000)
-                    await client.push_chunk(seq=seq_hint, data=hint)
-                except ChubError:
-                    pass
-                shell_res = await _run_shell(client=client, cwd=cwd)
-                if shell_res.shutdown_requested:
-                    _diag("wrapper exiting: shutdown during shell")
-                else:
-                    _diag("wrapper exiting: shell exited")
-                return 0
-            # Prefer the freshly-captured sessionId; fall back to the
-            # previous one if capture failed (network blip, claude bailed
-            # before writing the per-pid file). Either way we re-enter
-            # with --resume so the JSONL continues.
             if res.session_id is not None:
                 resume = res.session_id
-            _diag(f"restarting claude with --resume {resume!r}")
+            if res.restart_requested:
+                # /refresh-claude path: user-initiated relaunch breaks
+                # the consecutive-crash chain — clear the guard so a
+                # later sequence of crashes is judged on its own.
+                guard.reset()
+                _diag(f"restarting claude with --resume {resume!r}")
+                continue
+            # Claude exited on its own (Ctrl+C×2, /exit, crash). Auto-
+            # respawn so the wrapper survives. Two separate concerns:
+            #   1. Keep the wrapper alive (so the chubby session entity
+            #      doesn't disappear from the rail).
+            #   2. Restore the conversation if possible — pass --resume
+            #      only when claude can actually resume it. An empty
+            #      JSONL would otherwise spin "No conversation found"
+            #      until the crash-loop guard tripped.
+            guard.record_exit(time.monotonic() - run_started)
+            if guard.is_crash_looping():
+                _diag(
+                    f"auto-respawn: {_RESPAWN_MAX_FAST_EXITS}+ fast exits "
+                    f"in {_RESPAWN_RESET_WINDOW_S:.0f}s, giving up"
+                )
+                return 0
+            if os.environ.get(_ENV_NO_AUTO_RESPAWN):
+                _diag(f"auto-respawn disabled via {_ENV_NO_AUTO_RESPAWN}")
+                return 0
+            if resume is not None and not _resume_is_safe(resume):
+                _diag(
+                    f"dropping --resume {resume!r}: JSONL has no user "
+                    "turns; relaunching fresh"
+                )
+                resume = None
+            _diag(
+                f"auto-respawning claude with --resume {resume!r} "
+                f"(attempt #{guard.fast_exit_count})"
+            )
+            await asyncio.sleep(_RESPAWN_BACKOFF_S)
     finally:
         await client.session_ended()
         await client.close()

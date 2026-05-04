@@ -7,7 +7,8 @@ import (
 
 // TestChubCommandComplete_HeadFromEmpty — Tab on empty input cycles
 // through every command head. We assert the first match alphabetically
-// is returned at idx=0 (sort.Strings on the heads).
+// is returned at idx=0 (sort.Strings on the heads). After Phase 8
+// added :clone, that's the new alphabetical first.
 func TestChubCommandComplete_HeadFromEmpty(t *testing.T) {
 	m := Model{}
 	out, ok, total := m.chubCommandComplete("", 0)
@@ -17,9 +18,8 @@ func TestChubCommandComplete_HeadFromEmpty(t *testing.T) {
 	if total < 5 {
 		t.Fatalf("expected ≥5 candidates (whole catalog), got %d", total)
 	}
-	// First alphabetical command is "color".
-	if out != "color" {
-		t.Fatalf("expected first match=%q, got %q", "color", out)
+	if out != "clone" {
+		t.Fatalf("expected first alphabetical match=%q, got %q", "clone", out)
 	}
 }
 

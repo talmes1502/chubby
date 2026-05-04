@@ -77,7 +77,28 @@ const (
 	// /movetofolder / /color / /tag / /detach / /rename /
 	// /refresh-claude commands the old compose bar handled.
 	ModeRailCommand
+	// ModeQuickSwitcher: a Cmd-P-style modal that fuzzy-filters
+	// across session names + cwds and focuses the chosen session
+	// on Enter. Activated by Ctrl+P when there's no dead session
+	// focused (Ctrl+P stays as the dead-respawn shortcut for the
+	// dead-focused case to preserve the existing muscle memory).
+	ModeQuickSwitcher
+	// ModeClaudeHistory: cross-project history browser (Phase 8d).
+	// Lists every claude session on disk under
+	// ~/.claude/projects/*/*.jsonl with a first-prompt preview;
+	// Enter resumes the chosen session via claude --resume <id> in
+	// a fresh chubby wrapper.
+	ModeClaudeHistory
+	// ModePaneSearch: in-pane scrollback search. Modal over the
+	// focused session's PTY scrollback + visible screen. Type to
+	// filter, ↑↓ to walk matches, Enter copies the line, Esc
+	// cancels. Skipped (no-op) when the focused pane is in
+	// alt-screen mode — there's no scrollback to search.
+	ModePaneSearch
 )
+
+// (claudeHistoryState, ClaudeHistoryEntry → claude_history.go)
+// (quickSwitcherState → quick_switcher.go)
 
 // renameTarget says whether ModeRename is editing a session name or a
 // group label (the first tag across a set of sessions).
@@ -147,18 +168,21 @@ type searchState struct {
 	query textinput.Model
 }
 
-// spawnState backs ModeSpawn: a small modal with three textinputs
-// (name + cwd + folder). Tab cycles between the fields. cwd defaults
-// to the focused session's cwd or $HOME and supports ~ expansion at
-// submit. folder is optional; when non-empty, the spawn handler
-// assigns the freshly-created session into that TUI-side folder
-// (creating it if it doesn't exist) — the daemon's spawn_session RPC
-// is invoked with empty tags regardless. Folders are TUI-local state.
+// spawnState backs ModeSpawn: a small modal with four textinputs
+// (name + cwd + branch + folder). Tab cycles between the fields. cwd
+// defaults to the focused session's cwd or $HOME and supports ~
+// expansion at submit. branch is optional; non-empty triggers the
+// daemon's worktree creation flow. folder is optional; when non-
+// empty, the spawn handler assigns the freshly-created session into
+// that TUI-side folder (creating it if it doesn't exist) — the
+// daemon's spawn_session RPC is invoked with empty tags regardless.
+// Folders are TUI-local state.
 type spawnState struct {
 	name   textinput.Model
 	cwd    textinput.Model
+	branch textinput.Model
 	folder textinput.Model
-	field  int // 0=name, 1=cwd, 2=folder
+	field  int // 0=name, 1=cwd, 2=branch, 3=folder
 	err    error
 
 	// Tab path completion in the cwd field (Phase B).
@@ -314,10 +338,17 @@ type Model struct {
 	history   historyState
 	spawn     spawnState
 	search    searchState
-	rename    renameState
-	attach    attachState
-	newFolder newFolderState
-	editor    editorState
+	rename     renameState
+	attach     attachState
+	newFolder  newFolderState
+	editor     editorState
+	quickSwitch quickSwitcherState
+	claudeHist  claudeHistoryState
+	paneSearch  paneSearchState
+	// helpScroll is the line offset for the ModeHelp overlay so the
+	// help text can grow past the terminal height without losing
+	// information. Reset to 0 every time the overlay opens.
+	helpScroll int
 
 	toasts []toast
 
@@ -1350,8 +1381,77 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, tea.Batch(m.refreshSessions(), m.listenEvents())
 			case EventSessionAdded, EventSessionRenamed,
-				EventSessionRecolored, EventSessionTagged:
+				EventSessionRecolored, EventSessionTagged,
+				EventSessionRemoved:
 				return m, tea.Batch(m.refreshSessions(), m.listenEvents())
+			case EventSessionGitStatusChanged:
+				// Patch the matching session's GitAhead/GitBehind
+				// pointers in-place. Both ahead and behind may be
+				// JSON null when the branch has no upstream or the
+				// cwd isn't a git repo — we mirror that by setting
+				// the pointers to nil so rail_view hides the glyph.
+				// No refresh round-trip needed.
+				sid, _ := subP["id"].(string)
+				if sid != "" {
+					aheadPtr := intFromAny(subP["ahead"])
+					behindPtr := intFromAny(subP["behind"])
+					for i := range m.sessions {
+						if m.sessions[i].ID == sid {
+							m.sessions[i].GitAhead = aheadPtr
+							m.sessions[i].GitBehind = behindPtr
+							break
+						}
+					}
+				}
+				return m, m.listenEvents()
+			case EventSessionFirstPreviewResolved:
+				// Patch the session's FirstUserMessage in place. Once
+				// set, the value is stable for the session's lifetime
+				// (the cached first user-turn doesn't change).
+				sid, _ := subP["id"].(string)
+				preview, _ := subP["first_user_message"].(string)
+				if sid != "" {
+					for i := range m.sessions {
+						if m.sessions[i].ID == sid {
+							m.sessions[i].FirstUserMessage = preview
+							break
+						}
+					}
+				}
+				return m, m.listenEvents()
+			case EventSessionPortsChanged:
+				// Patch the session's Ports slice. JSON arrives as
+				// []any of map[string]any; coerce each entry into a
+				// SessionPort struct, dropping malformed rows. We
+				// avoid the obvious ``m, ok :=`` Type-assertion
+				// inside the loop because it'd shadow the outer
+				// Model and lead to confusing diffs later.
+				sid, _ := subP["id"].(string)
+				if sid != "" {
+					raw, _ := subP["ports"].([]any)
+					ports := make([]SessionPort, 0, len(raw))
+					for _, item := range raw {
+						pmap, ok := item.(map[string]any)
+						if !ok {
+							continue
+						}
+						p, _ := pmap["port"].(float64)
+						pid, _ := pmap["pid"].(float64)
+						addr, _ := pmap["address"].(string)
+						ports = append(ports, SessionPort{
+							Port:    int(p),
+							Pid:     int(pid),
+							Address: addr,
+						})
+					}
+					for i := range m.sessions {
+						if m.sessions[i].ID == sid {
+							m.sessions[i].Ports = ports
+							break
+						}
+					}
+				}
+				return m, m.listenEvents()
 			case EventSessionIDResolved:
 				// The daemon just bound a JSONL to this session — the
 				// FIRST listMsg arrived before any JSONL existed, so the
@@ -1396,6 +1496,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.refreshSessions(), tickEvery())
 	case errMsg:
 		m.err = msg.err
+		return m, nil
+	case claudeHistoryLoadedMsg:
+		// Cross-project history scan returned. Populate or surface
+		// the error inline; either way the modal stays open.
+		m.claudeHist.entries = msg.entries
+		m.claudeHist.err = msg.err
+		m.claudeHist.loaded = true
 		return m, nil
 	case composeSentMsg:
 		m.compose.SetValue("")
@@ -1679,10 +1786,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleKeyEditor(msg)
 	case ModeRailCommand:
 		return m.handleKeyRailCommand(msg)
+	case ModeQuickSwitcher:
+		return m.handleKeyQuickSwitcher(msg)
+	case ModeClaudeHistory:
+		return m.handleKeyClaudeHistory(msg)
+	case ModePaneSearch:
+		return m.handleKeyPaneSearch(msg)
 	case ModeHelp:
-		// Any key dismisses the overlay.
-		m.mode = ModeMain
-		return m, nil
+		return m.handleKeyHelp(msg)
 	case ModeReconnecting:
 		// Swallow keys while we're reconnecting; user can still ctrl+c
 		// because that's handled before the dispatch.
@@ -1725,6 +1836,16 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	switch msg.String() {
+	case "ctrl+c":
+		// Pane-aware Ctrl+C: in the conversation pane it's claude's
+		// interrupt key (forwarded to the PTY), but in the rail pane
+		// it's the standard "quit the program" gesture every other
+		// TUI implements. Without this branch, rail-Ctrl+C falls
+		// through to the no-op default — visibly broken UX.
+		if m.activePane == PaneRail {
+			return m, tea.Quit
+		}
+		return m, m.routeKeyToPty(msg)
 	case "tab":
 		// /command autocompletion takes precedence over @name — once the
 		// user has typed a leading "/", they're committed to a slash
@@ -1788,7 +1909,10 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-	case "pgup", "ctrl+u":
+	case "pgup":
+		// Ctrl+U intentionally NOT bound here: claude/readline use it
+		// for "kill line" and the user expects it to reach the PTY.
+		// PgUp alone is sufficient for rail half-page nav.
 		if m.compose.Value() == "" {
 			if m.activePane == PaneRail {
 				m.moveRailCursor(-5)
@@ -1797,7 +1921,10 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-	case "pgdown", "ctrl+d":
+	case "pgdown":
+		// Ctrl+D intentionally NOT bound here: claude/shells use it
+		// for EOF/exit and the user expects it to reach the PTY.
+		// PgDn alone is sufficient for rail half-page nav.
 		if m.compose.Value() == "" {
 			if m.activePane == PaneRail {
 				m.moveRailCursor(+5)
@@ -1911,12 +2038,29 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// resolves both to "enter"), so we use Ctrl+F instead — same
 		// "f" mnemonic as "folder" and free in our keymap.
 		return m.openNewFolderModal()
+	case "ctrl+_":
+		// "Find in pane" — Ctrl+/ on most terminals. Modal over the
+		// focused session's PTY scrollback + visible screen. No-op
+		// when no session is focused or the focused pane has no
+		// scrollback yet.
+		return m, m.openPaneSearchModal()
 	case "ctrl+p":
+		// Smart overload (moltty-inspired):
+		//   - focused session is DEAD → respawn it (preserves the
+		//     existing dead-respawn muscle memory).
+		//   - otherwise → open the quick-switcher modal so users
+		//     can fuzzy-find among many sessions without scanning
+		//     the rail. The same key for "operate on the focused
+		//     session" — DEAD sessions are operated on by reviving,
+		//     live ones by switching focus to a different session.
 		s := m.focusedSession()
-		if s == nil || s.Status != StatusDead {
-			return m, nil
+		if s != nil && s.Status == StatusDead {
+			folder := m.folders.FolderForSession(s.ID)
+			return m, m.doRespawn(s.Name, s.Cwd, s.Tags, folder)
 		}
-		return m, m.doRespawn(s.Name, s.Cwd, s.Tags)
+		m.quickSwitch = quickSwitcherState{}
+		m.mode = ModeQuickSwitcher
+		return m, nil
 	case "?":
 		// '?' opens the help overlay only when the rail is active —
 		// otherwise the user can't type a literal '?' into claude's
@@ -1924,6 +2068,7 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// see help.
 		if m.activePane == PaneRail && !m.railCollapsed {
 			m.mode = ModeHelp
+			m.helpScroll = 0
 			return m, nil
 		}
 	case ":":
@@ -1941,6 +2086,13 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeHistory
 		m.history = historyState{}
 		return m, m.loadHubRuns()
+	case "H":
+		// Phase 8d: cross-project history browser. Distinct chord
+		// from Ctrl+H (hub-run history): Shift+H from the rail
+		// opens the broader "every claude session ever" view.
+		if m.activePane == PaneRail && !m.railCollapsed && m.compose.Value() == "" {
+			return m, m.openClaudeHistoryModal()
+		}
 	case "ctrl+j":
 		m.railCollapsed = !m.railCollapsed
 		_ = SaveTUIState(TUIState{
@@ -1971,9 +2123,13 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// path.
 		return m.openEditorPathPrompt()
 	case "ctrl+]":
-		// Open the most-recent path detected in the conversation. If
-		// there's nothing yet, fall back to the path prompt so the user
-		// understands why nothing happened.
+		// Open the most-recent path detected in the conversation.
+		// First refresh recentPaths from the focused pane's live
+		// PTY scrollback so paths the agent just printed (faster
+		// than the JSONL tailer can keep up) are immediately
+		// openable. Falls back to the path prompt when nothing
+		// matchable is on screen.
+		m.harvestPathsFromFocusedPane()
 		if len(m.editor.recentPaths) == 0 {
 			return m.openEditorPathPrompt()
 		}
@@ -1988,8 +2144,13 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.editor.visible = !m.editor.visible
 		return m, nil
 	case "enter":
-		// Rail-pane Enter (with empty compose) focuses the cursored
-		// session OR toggles a folder header's collapse.
+		// Rail-pane Enter (with empty compose):
+		//   - Folder header → toggle collapse
+		//   - Unfocused session row → focus it
+		//   - Already-focused session row → forward Enter to claude
+		//     so the user can submit prompts without an extra Tab
+		//     into PaneConversation. Consuming Enter on the focused
+		//     row caused "I typed but Enter does nothing" reports.
 		if m.compose.Value() == "" && m.activePane == PaneRail {
 			rows := m.railRows()
 			if m.railCursor >= 0 && m.railCursor < len(rows) {
@@ -2003,8 +2164,11 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					})
 					return m, nil
 				case RailRowSession:
-					m.focused = r.SessionIdx
-					return m, nil
+					if m.focused != r.SessionIdx {
+						m.focused = r.SessionIdx
+						return m, nil
+					}
+					return m, m.routeKeyToPty(msg)
 				}
 			}
 			return m, nil
@@ -2019,22 +2183,27 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.routeKeyToPty(msg)
 		}
 		return m, m.sendComposed()
-	case "shift+enter":
-		cur := m.compose.Value()
-		m.compose.SetValue(cur + "\n")
-		return m, nil
-	}
-	// Default: forward the keystroke straight to claude's PTY. As of
-	// the embedded-PTY pivot the chubby compose bar is gone — claude
-	// has its own prompt rendering inside the pane and that's where
-	// typing should land. routeKeyToPty handles printables, Enter,
-	// Backspace, arrows, etc. via inject_raw (which doesn't flip
-	// status to THINKING — only the legacy compose-Enter prompt
-	// submission via plain inject does that).
-	if m.activePane == PaneConversation || m.railCollapsed {
+	case "shift+enter", "alt+enter":
+		// Forward ESC+CR to claude's PTY so claude inserts a newline
+		// in its OWN input (multiline prompt). Most terminals emit
+		// ESC+\r for Option/Alt+Enter (bubbletea sees this as
+		// "alt+enter"); some emit it for Shift+Enter when the
+		// modifyOtherKeys protocol is on. Both routes here. Pre-pivot
+		// this used to mutate the chubby-side compose bar; that
+		// compose isn't rendered anymore, so the right move is to let
+		// KeyToBytes encode it as 0x1b 0x0d and inject_raw deliver it.
 		return m, m.routeKeyToPty(msg)
 	}
-	return m, nil
+	// Default: forward the keystroke straight to claude's PTY,
+	// regardless of which pane is "active". The active-pane
+	// distinction matters for arrows / j / k / pgup / pgdown / etc.
+	// (rail-nav vs. PTY-forward), and those keys have explicit cases
+	// above. For everything else — printable letters, Ctrl chords
+	// claude wants, function keys — claude is always the recipient.
+	// Dropping keys when the rail happens to be active is what
+	// caused users to stare at a focused live session and get no
+	// response when they typed.
+	return m, m.routeKeyToPty(msg)
 }
 
 func (m Model) handleKeyBroadcast(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -2237,11 +2406,11 @@ func (m Model) handleKeySpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		m.spawn.field = (m.spawn.field + 1) % 3
+		m.spawn.field = (m.spawn.field + 1) % 4
 		m.refocusSpawn()
 		return m, nil
 	case "shift+tab":
-		m.spawn.field = (m.spawn.field + 2) % 3
+		m.spawn.field = (m.spawn.field + 3) % 4
 		m.refocusSpawn()
 		return m, nil
 	case "ctrl+p":
@@ -2256,7 +2425,7 @@ func (m Model) handleKeySpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// submits. Non-empty name + cwd are the minimum to spawn —
 		// snapping back to an empty earlier field is friendlier than
 		// rejecting the submit silently.
-		if m.spawn.field < 2 {
+		if m.spawn.field < 3 {
 			m.spawn.field++
 			m.spawn.pathCompletionLast = ""
 			m.spawn.pathCompletionIndex = 0
@@ -2270,11 +2439,12 @@ func (m Model) handleKeySpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		cwd := views.ExpandHome(strings.TrimSpace(m.spawn.cwd.Value()))
+		branch := strings.TrimSpace(m.spawn.branch.Value())
 		folder := strings.TrimSpace(m.spawn.folder.Value())
 		// As of D10b the folder field is purely TUI-side: tags is empty,
 		// and the spawn handler assigns into the folder via folders.json
 		// after the daemon confirms the new session.
-		return m, m.doSpawn(name, cwd, nil, folder)
+		return m, m.doSpawn(name, cwd, nil, folder, branch)
 	}
 	var cmd tea.Cmd
 	switch m.spawn.field {
@@ -2283,6 +2453,8 @@ func (m Model) handleKeySpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case 1:
 		m.spawn.cwd, cmd = m.spawn.cwd.Update(msg)
 	case 2:
+		m.spawn.branch, cmd = m.spawn.branch.Update(msg)
+	case 3:
 		m.spawn.folder, cmd = m.spawn.folder.Update(msg)
 	}
 	return m, cmd
@@ -2317,6 +2489,7 @@ func (m *Model) openSpawnModal() {
 	m.spawn = spawnState{
 		name:   views.NewSpawnNameInput(),
 		cwd:    views.NewSpawnCwdInput(cwd),
+		branch: views.NewSpawnBranchInput(""),
 		folder: views.NewSpawnFolderInput(folder),
 		field:  0,
 	}
@@ -2328,6 +2501,7 @@ func (m *Model) openSpawnModal() {
 func (m *Model) refocusSpawn() {
 	m.spawn.name.Blur()
 	m.spawn.cwd.Blur()
+	m.spawn.branch.Blur()
 	m.spawn.folder.Blur()
 	switch m.spawn.field {
 	case 0:
@@ -2335,6 +2509,8 @@ func (m *Model) refocusSpawn() {
 	case 1:
 		m.spawn.cwd.Focus()
 	case 2:
+		m.spawn.branch.Focus()
+	case 3:
 		m.spawn.folder.Focus()
 	}
 }
@@ -2462,7 +2638,7 @@ func (m Model) spawnCwdRecentNext() tea.Cmd {
 // see the new session id, which only the spawn RPC's reply carries —
 // piping it back through a bare spawnDoneMsg would force every caller
 // to know about folders.
-func (m Model) doSpawn(name, cwd string, tags []string, folder string) tea.Cmd {
+func (m Model) doSpawn(name, cwd string, tags []string, folder string, branch string) tea.Cmd {
 	c := m.client
 	if tags == nil {
 		tags = []string{}
@@ -2472,6 +2648,13 @@ func (m Model) doSpawn(name, cwd string, tags []string, folder string) tea.Cmd {
 			"name": name,
 			"cwd":  cwd,
 			"tags": tags,
+		}
+		if branch != "" {
+			// Daemon resolves a chubby-managed git worktree on this
+			// branch and overrides the session cwd. Non-empty
+			// branch is the only signal — the daemon decides whether
+			// to create-from-HEAD or check-out-existing.
+			params["branch"] = branch
 		}
 		raw, err := c.Call(context.Background(), "spawn_session", params)
 		if err != nil {
@@ -2503,15 +2686,26 @@ func (m Model) doSpawn(name, cwd string, tags []string, folder string) tea.Cmd {
 // renames the new session back to the original. The dead row stays in
 // the DB but doesn't conflict — the registry's name-uniqueness check
 // excludes DEAD status (see registry.register / registry.rename).
-func (m Model) doRespawn(name, cwd string, tags []string) tea.Cmd {
+// doRespawn relaunches a dead session. The daemon evicts the dead row
+// from its in-memory registry when a new wrapper registers under the
+// same name (see registry.register), so we can call spawn_session
+// directly with the original name — the temp-name-then-rename dance
+// the original implementation used predates that eviction logic and
+// would leave two rows-same-name in the rail.
+//
+// `folder` is the folder the dead session was in (or "" if unfiled).
+// Folders are TUI-side state keyed by session id; the daemon doesn't
+// know about them, so we re-file the new session's id here after
+// spawn_session returns. Without this step the respawn would land in
+// "(unfiled)" while the user's mental model is "respawn in place".
+func (m Model) doRespawn(name, cwd string, tags []string, folder string) tea.Cmd {
 	c := m.client
 	if tags == nil {
 		tags = []string{}
 	}
 	return func() tea.Msg {
-		tempName := name + "-r"
 		out, err := c.Call(context.Background(), "spawn_session", map[string]any{
-			"name": tempName,
+			"name": name,
 			"cwd":  cwd,
 			"tags": tags,
 		})
@@ -2526,11 +2720,12 @@ func (m Model) doRespawn(name, cwd string, tags []string) tea.Cmd {
 		if err := json.Unmarshal(out, &r); err != nil {
 			return errMsg{err}
 		}
-		if _, err := c.Call(context.Background(), "rename_session", map[string]any{
-			"id":   r.Session.ID,
-			"name": name,
-		}); err != nil {
-			return errMsg{err}
+		if folder != "" {
+			st := LoadFolders()
+			st.Assign(folder, r.Session.ID)
+			if err := SaveFolders(st); err != nil {
+				return errMsg{err}
+			}
 		}
 		return respawnDoneMsg{}
 	}
@@ -2617,6 +2812,17 @@ func (m Model) openNewFolderModal() (tea.Model, tea.Cmd) {
 	m.mode = ModeNewFolder
 	return m, nil
 }
+
+// (quickSwitcherMatches, handleKeyQuickSwitcher → quick_switcher.go)
+
+// (claudeHistoryLoadedMsg, openClaudeHistoryModal,
+//  claudeHistoryFiltered, handleKeyClaudeHistory,
+//  _historyDerivedName, viewClaudeHistory, _humanizeMtimeMs
+//  → claude_history.go)
+// LEGACY-MARKER-REMOVE-BELOW-UNTIL-handleKeyNewFolder
+
+
+
 
 // handleKeyNewFolder is the reducer for ModeNewFolder. Enter creates
 // the folder (rejecting duplicates inline via newFolder.err); Esc
@@ -3291,6 +3497,29 @@ func (m *Model) harvestPathsFromText(text string) {
 	}
 }
 
+// harvestPathsFromFocusedPane snapshots the focused session's PTY
+// (scrollback + visible screen) and runs pathRE over every line,
+// folding every match into recentPaths. Called from Ctrl+] so paths
+// the agent rendered to the terminal — but that the JSONL tailer
+// hasn't caught up with yet — become openable immediately.
+//
+// Walks bottom-up so the most-recently-rendered match lands at the
+// head of recentPaths after pushRecentPath's dedupe.
+func (m *Model) harvestPathsFromFocusedPane() {
+	s := m.focusedSession()
+	if s == nil {
+		return
+	}
+	pane := m.pty[s.ID]
+	if pane == nil {
+		return
+	}
+	lines := pane.PlainTextLines()
+	for i := len(lines) - 1; i >= 0; i-- {
+		m.harvestPathsFromText(lines[i])
+	}
+}
+
 // extractPathsFromTurns walks the conversation and returns every
 // absolute path mention, in order of appearance (most-recent turn
 // first because callers want the head to be "most recent"). Strips
@@ -3517,6 +3746,12 @@ func (m Model) View() string {
 		return m.wrapWithChrome(m.viewReconnecting())
 	case ModeAttach:
 		return m.wrapWithChrome(m.viewAttach())
+	case ModeQuickSwitcher:
+		return m.wrapWithChrome(m.viewQuickSwitcher())
+	case ModeClaudeHistory:
+		return m.wrapWithChrome(m.viewClaudeHistory())
+	case ModePaneSearch:
+		return m.wrapWithChrome(m.viewPaneSearch())
 	case ModeSearch:
 		// Falls through to the main layout below; the rail renderer
 		// adds the search bar based on m.mode == ModeSearch.
@@ -3901,64 +4136,238 @@ func (m Model) viewHistory() string {
 	return lipgloss.JoinVertical(lipgloss.Left, header, cols)
 }
 
-func (m Model) viewHelp() string {
-	body := `chubby-tui keys
+// helpBody is the full help text. Kept as a package-level constant
+// (not a function) so the Lines() count is stable for scroll math.
+// Sections use blank-line breaks; the renderer doesn't need to know
+// about them.
+const helpBody = `chubby-tui keys
+       (↑↓ / PgUp PgDn scroll · Esc / q / Enter to close)
 
+NAVIGATION
   Tab                switch active pane (rail / conversation)
   Ctrl+\             cycle focused session forward
   Shift+Tab          cycle focused session (reverse)
-  Up/Down/PgUp/PgDn  scroll active pane
+  Up/Down/PgUp/PgDn  rail: walk cursor · conversation: scroll
   Home/End           jump to top/bottom of active pane
   Space              toggle folder collapse
-  Enter              rail-pane: focus session / toggle folder
-                     conversation-pane: send composed message
+  Enter              rail: focus session / toggle folder · already-
+                     focused row → forward Enter to claude
+
+QUICK SWITCHER
+  Ctrl+P             on a non-DEAD session → fuzzy-find modal
+                     (substring match across name + cwd)
+                     ↑↓ select · Enter focus · Esc cancel
+  Ctrl+P             on a DEAD session → respawn it (preserved)
+
+COMPOSE / SEND
   @name <msg>        one-shot redirect: send to <name>, then snap back
   Tab (in compose)   autocomplete @name or /command
-  /<name>            Claude slash command (Tab completes; e.g. /model sonnet)
-  /color #RRGGBB     (chubby) recolor focused session
-  /rename <name>     (chubby) rename focused session
-  /tag +foo -bar     (chubby) modify tags
-  /refresh-claude    (chubby) restart claude with --resume (picks up settings changes)
+  /<name>            Claude slash command (Tab completes; e.g. /model)
 
-  Ctrl+N             new session in focused cwd
+CHUBBY SLASH-COMMANDS (rail palette via ':')
+  /color #RRGGBB     recolor focused session
+  /rename <name>     rename focused session
+  /tag +foo -bar     modify tags
+  /refresh-claude    restart claude with --resume (picks up settings changes)
+  :restart           alias for /refresh-claude (same effect, friendlier)
+  :clone             duplicate focused session — same cwd / branch / tags;
+                     name auto-suffixed (-2, -3, ...) to avoid collision
+  :release-all       full teardown on every live session — preview shows
+                     the count; ':release-all confirm' actually fires
+  :run <idx>         start a long-running 'run' command from
+                     .chubby/config.json (e.g. 'bun dev' at index 0).
+                     Killed automatically on session release.
+  :stop-run <idx>    stop a running command for the focused session.
+  /movetofolder X    move focused session to folder X (creates if new)
+  /removefromfolder  remove focused session from its folder
+  /detach            release session; opens a new terminal with claude --resume
+
+SESSION LIFECYCLE
+  Ctrl+N             new session — modal has 4 fields:
+                       name · cwd · branch · folder
+                     branch → fresh git worktree on that branch;
+                     creates the branch if missing, checks out if existing
   Ctrl+F             new folder
   Ctrl+A             attach existing claude sessions (multi-select picker;
                      d on selected → detach from chubby with confirm)
-  Ctrl+K             search session list
   Ctrl+R             rename focused session OR folder (rail cursor)
-  Ctrl+P             respawn focused dead session
-  Ctrl+B             broadcast modal
-  Ctrl+G             grep transcripts (current run)
-  Ctrl+H             history panel (past hub-runs)
   Ctrl+J             toggle rail (full-width conversation)
+  Ctrl+B             broadcast modal
+
+GIT / WORKTREES
+  --branch / --pr    on chubby spawn → daemon creates a git worktree at
+                     ~/.claude/chubby/worktrees/<repo-hash>/<branch>;
+                     wrapper spawns claude there; release/detach removes it.
+  ↑N / ↓N rail glyph the daemon polls each session's branch every 10 s
+                     and shows commits ahead-of / behind-upstream as a
+                     dim suffix after the status glyph (↑3 = 3 commits
+                     unpushed; ↑3↓2 = diverged).
+
+LIFECYCLE SCRIPTS — .chubby/config.json
+  Drop this in your repo root:
+    {
+      "setup":    ["./.chubby/setup.sh"],
+      "teardown": ["./.chubby/teardown.sh"],
+      "run":      ["bun dev"]
+    }
+  setup runs in a login shell (zsh -lc) before the wrapper starts;
+  failure aborts spawn + rolls back the worktree. teardown runs on
+  release/detach. Local override: .chubby/config.local.json (gitignored)
+  layered with {"setup":{"before":[...], "after":[...]}}.
+  Env vars exposed to scripts: CHUBBY_ROOT_PATH · CHUBBY_WORKSPACE_NAME ·
+  CHUBBY_WORKSPACE_PATH.
+
+PORT DETECTION
+  🌐 :3000 rail glyph When a process under the focused session opens a
+                     listening TCP port (every 2.5 s), the rail row gets
+                     a "🌐 :3000" badge. Up to 2 ports shown plus +N
+                     overflow. Filters well-known service ports
+                     (22, 80, 443, postgres, mysql, redis, mongo).
+
+PRESETS — saved templates for chubby spawn
+  $ chubby preset create web --cwd ~/repo --branch "wip-{date}"
+  $ chubby preset apply web                       # spawns wip-2026-05-03
+  $ chubby preset apply web --name feature-x      # name override
+  $ chubby preset list                            # see all
+  $ chubby preset delete web
+  Templates: {date} → today YYYY-MM-DD · {name} → preset name.
+
+AGENT-CONTEXT CLI
+  --json / --quiet   global flags for any chubby command
+  Auto-JSON when any of these env vars is set:
+    CLAUDE_CODE · CLAUDECODE · CLAUDE_CODE_ENTRYPOINT ·
+    CODEX_CLI · GEMINI_CLI · CHUBBY_AGENT · CI
+  $ chubby list --quiet | xargs -L1 chubby release    # bulk-delete
+
+EDITOR / EXTERNAL OPEN
+  Ctrl+O             open file viewer (path prompt; ~ expands)
+  Ctrl+]             open most-recent file path — scans both the JSONL
+                     transcript AND the live PTY scrollback so paths the
+                     agent JUST printed open immediately
+  Ctrl+E             toggle editor pane
+  Ctrl+X (in editor) open file in external editor
+                     resolution: $CHUBBY_EDITOR > pycharm > code >
+                     cursor > subl (first found on $PATH)
+
+SEARCH / HISTORY
+  Ctrl+K             search session list
+  Ctrl+G             grep transcripts (current run)
+  Ctrl+/             find in pane — modal over the focused session's
+                     scrollback; ↑↓ navigate matches, Enter copies the
+                     line to the clipboard, Esc cancels
+  Ctrl+H             history panel (past hub-runs in chubby)
+  Shift+H (rail)     cross-project history — every claude session on
+                     disk under ~/.claude/projects; Enter resumes via
+                     claude --resume in a fresh chubby wrapper
   Ctrl+Y             copy focused session's conversation to clipboard
 
-  Ctrl+O             open file viewer (path prompt)
-  Ctrl+]             open most-recent path mentioned in conversation
-  Ctrl+E             toggle editor pane
-  Ctrl+X (in editor) open file in external editor (PyCharm/VSCode/...)
+WRAPPER ENV HARDENING
+  When chubby spawns claude it strips CLAUDE_CODE / CLAUDECODE /
+  CLAUDE_CODE_ENTRYPOINT / CLAUDE_SESSION_ID / CHUBBY_AGENT from the
+  child env (a chubby-inside-chubby would otherwise confuse the
+  inner claude's session-id resolution). Injects TERM_PROGRAM=chubby
+  and FORCE_HYPERLINK=1 so OSC 8 hyperlinks render in the bounded
+  vt grid.
 
-  /movetofolder X    (chubby) move focused session to folder X (creates if new)
-  /removefromfolder  (chubby) remove focused session from its folder
-  /detach            release session from chubby; opens a new terminal with claude --resume
-
+SPAWN MODAL — TAB COMPLETION
   Tab (in cwd)       complete directory path; cycle on repeat
-  Ctrl+P (in cwd)    cycle recent cwds
+  Ctrl+P (in cwd)    cycle recent cwds (per-machine)
 
+GLOBAL
   ?                  this help
-  q / Ctrl+C         quit`
+  q / Ctrl+C         quit (rail-active only; conversation-active
+                     forwards Ctrl+C to the focused claude)`
+
+func (m Model) viewHelp() string {
+	w, h := m.width, m.height
+	if w < 1 {
+		w = 80
+	}
+	if h < 1 {
+		h = 24
+	}
+	// Modal is centered with rounded border + 2-col / 1-row padding.
+	// Its inner height is height minus the chrome (2 border + 2 padding
+	// rows) and we leave a row for the wrapWithChrome status line.
+	innerH := h - 6
+	if innerH < 6 {
+		innerH = 6
+	}
+	innerW := w - 6
+	if innerW < 40 {
+		innerW = 40
+	}
+	lines := strings.Split(helpBody, "\n")
+	maxScroll := len(lines) - innerH
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	scroll := m.helpScroll
+	if scroll > maxScroll {
+		scroll = maxScroll
+	}
+	if scroll < 0 {
+		scroll = 0
+	}
+	end := scroll + innerH
+	if end > len(lines) {
+		end = len(lines)
+	}
+	visible := lines[scroll:end]
+	body := strings.Join(visible, "\n")
+	// Footer hint with scroll position when there's more to see.
+	if maxScroll > 0 {
+		footer := fmt.Sprintf(
+			"  -- line %d/%d (↑↓ PgUp PgDn to scroll · Esc/q/Enter to close)",
+			scroll+1, len(lines),
+		)
+		body += "\n" + views.Dim.Render(footer)
+	}
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		Padding(1, 2).
+		Width(innerW + 4).
 		Render(body)
-	w, h := m.width, m.height
-	if w < 1 {
-		w = 60
-	}
-	if h < 1 {
-		h = 20
-	}
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, box)
+}
+
+// handleKeyHelp drives the ModeHelp overlay's scroll + dismiss. Up/
+// Down move one line; PgUp/PgDn move 10. Esc / q / Enter / "?" close
+// the overlay. Anything else is swallowed (any-key-to-dismiss is too
+// hostile when the help is now scrollable).
+func (m Model) handleKeyHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q", "enter", "?":
+		m.mode = ModeMain
+		m.helpScroll = 0
+		return m, nil
+	case "up", "k":
+		if m.helpScroll > 0 {
+			m.helpScroll--
+		}
+		return m, nil
+	case "down", "j":
+		m.helpScroll++
+		return m, nil
+	case "pgup", "ctrl+u":
+		m.helpScroll -= 10
+		if m.helpScroll < 0 {
+			m.helpScroll = 0
+		}
+		return m, nil
+	case "pgdown", "ctrl+d":
+		m.helpScroll += 10
+		return m, nil
+	case "home", "g":
+		m.helpScroll = 0
+		return m, nil
+	case "end", "G":
+		// Effectively "scroll to bottom" — clamping in viewHelp keeps
+		// us from going past the last line.
+		m.helpScroll = 1 << 20
+		return m, nil
+	}
+	return m, nil
 }
 
 func (m Model) viewSpawn() string {
@@ -3982,7 +4391,8 @@ func (m Model) viewSpawn() string {
 	b.WriteString(lipgloss.NewStyle().Bold(true).Render("New session") + "\n\n")
 	b.WriteString(label("name:   ", m.spawn.field == 0) + m.spawn.name.View() + "\n")
 	b.WriteString(label("cwd:    ", m.spawn.field == 1) + m.spawn.cwd.View() + "\n")
-	b.WriteString(label("folder: ", m.spawn.field == 2) + m.spawn.folder.View() + "\n\n")
+	b.WriteString(label("branch: ", m.spawn.field == 2) + m.spawn.branch.View() + "\n")
+	b.WriteString(label("folder: ", m.spawn.field == 3) + m.spawn.folder.View() + "\n\n")
 	if m.spawn.err != nil {
 		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("9")).
 			Render("error: "+m.spawn.err.Error()) + "\n\n")
@@ -4002,6 +4412,16 @@ func (m Model) viewSpawn() string {
 		hh = 10
 	}
 	return lipgloss.Place(wh, hh, lipgloss.Center, lipgloss.Center, box)
+}
+
+// _abbreviateHome shortens ``/Users/<user>/...`` to ``~/...`` for
+// readable rendering — same idea moltty applies in its sidebar.
+func _abbreviateHome(p string) string {
+	home := os.Getenv("HOME")
+	if home != "" && strings.HasPrefix(p, home) {
+		return "~" + p[len(home):]
+	}
+	return p
 }
 
 // viewRename renders the centered rename modal, used for both the

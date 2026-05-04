@@ -61,6 +61,108 @@ class Registry:
             await self.db.upsert_session(s)
             await self.db.set_preferred_color(s.name, s.color)
 
+    async def set_ports(
+        self, session_id: str, ports: list[dict[str, Any]]
+    ) -> bool:
+        """Update a session's transient listening-ports cache and emit
+        ``session_ports_changed`` if anything changed. Returns True if
+        an event was emitted (used by tests).
+
+        Compares by ``(port, pid)`` tuples ignoring ``address``, since
+        a server flapping between IPv4 and IPv6 listeners shouldn't
+        cause spurious rail updates.
+        """
+        def _key_set(items: list[dict[str, Any]]) -> set[tuple[int, int]]:
+            return {(int(i["port"]), int(i["pid"])) for i in items}
+
+        async with self._lock:
+            s = self._by_id.get(session_id)
+            if s is None:
+                return False
+            if _key_set(s.ports) == _key_set(ports):
+                # No change in the (port, pid) set — skip the event.
+                # (Address may have flipped from 0.0.0.0 → 127.0.0.1
+                # but the user-visible state is the same.)
+                s.ports = list(ports)
+                return False
+            s.ports = list(ports)
+        await self._emit(
+            {
+                "event": "session_ports_changed",
+                "id": session_id,
+                "ports": list(ports),
+            }
+        )
+        return True
+
+    async def set_first_preview(
+        self, session_id: str, text: str
+    ) -> bool:
+        """Cache the first user-turn from a session's transcript on
+        the Session and broadcast ``session_first_preview_resolved``
+        if it changed. Idempotent — calling with the same text is a
+        no-op so the watch_for_transcript loop can re-call without
+        spamming events."""
+        async with self._lock:
+            s = self._by_id.get(session_id)
+            if s is None:
+                return False
+            if s.first_user_message == text:
+                return False
+            s.first_user_message = text
+        await self._persist(s)
+        await self._emit(
+            {
+                "event": "session_first_preview_resolved",
+                "id": session_id,
+                "first_user_message": text,
+            }
+        )
+        return True
+
+    async def set_worktree_path(self, session_id: str, path: str) -> None:
+        """Record the chubby-managed worktree path for a session, so
+        ``release_session`` / ``detach_session`` can clean it up. Called
+        from ``spawn_session`` once the wrapper has registered. The
+        worktree was already created by the time we get here — this
+        only persists the *path* so cleanup survives a daemon
+        restart."""
+        async with self._lock:
+            s = self._by_id.get(session_id)
+            if s is None:
+                return
+            s.worktree_path = path
+        await self._persist(s)
+
+    async def set_git_status(
+        self, session_id: str, ahead: int | None, behind: int | None
+    ) -> bool:
+        """Update a session's transient ahead/behind counts and emit
+        ``session_git_status_changed`` if anything changed. Returns
+        True if an event was emitted (used by tests).
+
+        Counts are not persisted to the DB — they're snapshot-only.
+        Calls with the same values as the cached state are no-ops so
+        the sweep doesn't spam events.
+        """
+        async with self._lock:
+            s = self._by_id.get(session_id)
+            if s is None:
+                return False
+            if s.git_ahead == ahead and s.git_behind == behind:
+                return False
+            s.git_ahead = ahead
+            s.git_behind = behind
+        await self._emit(
+            {
+                "event": "session_git_status_changed",
+                "id": session_id,
+                "ahead": ahead,
+                "behind": behind,
+            }
+        )
+        return True
+
     async def _emit(self, event: dict[str, Any]) -> None:
         if self.event_log is not None:
             await self.event_log.append(event)
@@ -85,6 +187,17 @@ class Registry:
         async with self._lock:
             if any(s.name == name for s in self._by_id.values() if s.status is not SessionStatus.DEAD):
                 raise ChubError(ErrorCode.NAME_TAKEN, f"name `{name}` is already in use", {"name": name})
+            # Evict any dead session with this name. The new live row
+            # takes over the name → keeping the dead row would create
+            # two-rows-same-name in the rail, with the user's mental
+            # model breaking when Ctrl+P "respawns" a dead session.
+            # The dead row's folder assignment is migrated to the new
+            # session id below so the respawn lands in the same folder.
+            evicted_dead_ids: list[str] = []
+            for old in list(self._by_id.values()):
+                if old.name == name and old.status is SessionStatus.DEAD:
+                    del self._by_id[old.id]
+                    evicted_dead_ids.append(old.id)
             in_use = {s.color for s in self._by_id.values() if s.status is not SessionStatus.DEAD}
             preferred = self._preferred_color_for_name.get(name)
             if preferred is None and self.db is not None:
@@ -108,6 +221,12 @@ class Registry:
             self._by_id[s.id] = s
             self._preferred_color_for_name[name] = chosen
         await self._persist(s)
+        # Tell subscribers the dead rows are gone before announcing the
+        # new one; the rail rebuilds from list_sessions on each event,
+        # so order isn't strictly required, but session_removed first
+        # avoids one frame of "two rows, same name".
+        for old_id in evicted_dead_ids:
+            await self._emit({"event": "session_removed", "id": old_id})
         await self._emit({"event": "session_added", **s.to_dict()})
         return s
 
@@ -211,6 +330,45 @@ class Registry:
             )
             self._notify_tasks.add(task)
             task.add_done_callback(self._notify_tasks.discard)
+            # Force a full redraw of claude's screen at every turn-end.
+            # Claude's diff-render skips cells it thinks haven't changed,
+            # which is correct for real terminals (old content scrolls
+            # into scrollback) but leaves ghost text in chubby's bounded
+            # vt grid (the cells the user typed in before submission).
+            # Two-step: clear chubby's vt first (so claude's redraw lands
+            # on a blank grid), then SIGWINCH the wrapped claude to
+            # trigger its standard "resize → redraw from scratch" path.
+            await self._force_claude_redraw(session_id)
+
+    async def _force_claude_redraw(self, session_id: str) -> None:
+        """Push an erase-display chunk to TUI subscribers, then
+        SIGWINCH the wrapped claude so it redraws every cell. Called
+        on each status flip to AWAITING_USER. Best-effort: a missed
+        redraw is cosmetic, not functional."""
+        # Step 1: clear chubby's vt grid via a synthetic pty_chunk.
+        # \x1b[2J erases display, \x1b[3J flushes scrollback,
+        # \x1b[H homes cursor.
+        try:
+            await self.record_chunk(session_id, b"\x1b[2J\x1b[3J\x1b[H", role="raw")
+        except Exception:
+            pass
+        # Step 2: SIGWINCH claude via the wrapper. Same shape as
+        # resize_pty but with no params — the wrapper handles it as
+        # a redraw signal, not a resize.
+        write = self._wrapper_writers.get(session_id)
+        if write is None:
+            return
+        try:
+            await write(
+                encode_message(
+                    Event(
+                        method="redraw_claude",
+                        params={"session_id": session_id},
+                    )
+                )
+            )
+        except Exception:
+            pass
 
     async def remove_session(self, sid: str) -> None:
         """Drop a session from the in-memory registry entirely.

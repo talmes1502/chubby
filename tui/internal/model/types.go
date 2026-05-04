@@ -92,6 +92,35 @@ type Session struct {
 	Cwd             string        `json:"cwd"`
 	Tags            []string      `json:"tags"`
 	ClaudeSessionID string        `json:"claude_session_id"`
+	// Transient git state pushed by the daemon's git-status sweep
+	// via the session_git_status_changed event. Pointers so we can
+	// distinguish "not yet polled / no upstream" (nil) from "in
+	// sync" (non-nil, value 0). nil → no rail glyph; otherwise
+	// rail_view renders ↑N / ↓N / ↑N↓M.
+	GitAhead  *int `json:"git_ahead,omitempty"`
+	GitBehind *int `json:"git_behind,omitempty"`
+	// Listening ports detected under this session's process tree
+	// by the daemon's port-scan sweep. Each entry: {port, pid,
+	// address}. Updated incrementally via session_ports_changed
+	// events; rail_view renders "🌐 :3000" badges for the first
+	// few entries.
+	Ports []SessionPort `json:"ports,omitempty"`
+	// Cached first user-turn from the JSONL transcript (Phase 8c).
+	// Populated once when the daemon binds the JSONL via
+	// session_first_preview_resolved. Surfaces in the quick
+	// switcher rows so users can identify a session by its
+	// opening prompt rather than its (often-default) name.
+	FirstUserMessage string `json:"first_user_message,omitempty"`
+}
+
+// SessionPort mirrors the daemon-side dict shape for
+// session_ports_changed event payloads. Address is informational
+// (e.g., "127.0.0.1" / "0.0.0.0"); the rail only shows the port
+// number to keep the row compact.
+type SessionPort struct {
+	Port    int    `json:"port"`
+	Pid     int    `json:"pid"`
+	Address string `json:"address"`
 }
 
 // EventMethod identifies the daemon-side broadcast events the TUI
@@ -117,12 +146,31 @@ const (
 	// EventSessionStatusChanged fires on every status flip. Params:
 	// session_id (or `id`), status.
 	EventSessionStatusChanged EventMethod = "session_status_changed"
-	// EventSessionAdded / Renamed / Recolored / Tagged trigger a list
-	// refresh — the rail is rebuilt from scratch from the new snapshot.
+	// EventSessionAdded / Renamed / Recolored / Tagged / Removed trigger
+	// a list refresh — the rail is rebuilt from scratch from the new
+	// snapshot. SessionRemoved fires when the daemon evicts a dead row
+	// because a fresh session has reclaimed the name (the Ctrl+P
+	// respawn path); without it the rail would briefly show both the
+	// dead and the live row under the same name.
 	EventSessionAdded    EventMethod = "session_added"
 	EventSessionRenamed  EventMethod = "session_renamed"
 	EventSessionRecolored EventMethod = "session_recolored"
 	EventSessionTagged   EventMethod = "session_tagged"
+	EventSessionRemoved  EventMethod = "session_removed"
+	// EventSessionGitStatusChanged is emitted by the daemon's
+	// periodic git-status sweep when a session's branch ahead/
+	// behind counts change. Params: id, ahead (int|null), behind
+	// (int|null). null means "no upstream / not a repo / not yet
+	// polled" — TUI hides the glyph for those.
+	EventSessionGitStatusChanged EventMethod = "session_git_status_changed"
+	// EventSessionPortsChanged fires when the daemon's port-scan
+	// sweep detects a change in a session's listening-port set.
+	// Params: id, ports (array of {port, pid, address}).
+	EventSessionPortsChanged EventMethod = "session_ports_changed"
+	// EventSessionFirstPreviewResolved fires once when the daemon
+	// caches the first user-turn from a session's JSONL transcript.
+	// Params: id, first_user_message (string).
+	EventSessionFirstPreviewResolved EventMethod = "session_first_preview_resolved"
 	// EventSessionIDResolved fires when the daemon binds a JSONL
 	// transcript to a previously-unbound session — TUI should re-fetch
 	// history because earlier loadHistory returned empty.
@@ -133,3 +181,25 @@ const (
 	// claude's UI live.
 	EventPtyChunk EventMethod = "pty_chunk"
 )
+
+// intFromAny coerces a JSON-decoded value (which arrives as
+// float64 for numbers, nil for null) into a *int for our optional
+// fields like GitAhead/GitBehind. Returns nil when v is nil or
+// can't be cleanly converted, so callers don't have to special-
+// case "field absent" vs "field present and null".
+func intFromAny(v any) *int {
+	if v == nil {
+		return nil
+	}
+	switch x := v.(type) {
+	case float64:
+		i := int(x)
+		return &i
+	case int:
+		return &x
+	case int64:
+		i := int(x)
+		return &i
+	}
+	return nil
+}

@@ -70,6 +70,34 @@ func TestPane_ResizeBelowMinimumIsClamped(t *testing.T) {
 	}
 }
 
+func TestPane_PlainTextLinesIncludesScrollback(t *testing.T) {
+	// Force enough output to push earlier lines into scrollback.
+	p := New(40, 3, nil)
+	for i, line := range []string{"alpha", "bravo", "charlie", "delta"} {
+		_ = i
+		p.Write([]byte(line + "\r\n"))
+	}
+	lines := p.PlainTextLines()
+	joined := strings.Join(lines, "|")
+	for _, want := range []string{"alpha", "bravo", "charlie", "delta"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("PlainTextLines should include scrollback line %q; got %q", want, joined)
+		}
+	}
+}
+
+func TestPane_PlainTextLinesEmptyWhenAltScreen(t *testing.T) {
+	// In alt-screen mode the child has its own UI; scrollback is
+	// suppressed. Search must report no matches there rather than
+	// returning stale main-screen lines.
+	p := New(40, 5, nil)
+	p.Write([]byte("hello\r\n"))
+	p.Write([]byte("\x1b[?1049h"))
+	if got := p.PlainTextLines(); len(got) != 0 {
+		t.Fatalf("PlainTextLines in alt-screen should be empty, got %v", got)
+	}
+}
+
 func TestPane_AltScreenDetected(t *testing.T) {
 	p := New(40, 5, nil)
 	if p.IsAltScreen() {
@@ -99,6 +127,34 @@ func TestKeyToBytes_EnterIsCarriageReturn(t *testing.T) {
 	got := KeyToBytes(tea.KeyMsg{Type: tea.KeyEnter})
 	if string(got) != "\r" {
 		t.Fatalf("Enter encoded as %q, want %q", got, "\r")
+	}
+}
+
+func TestKeyToBytes_AltEnterIsEscCR(t *testing.T) {
+	// Claude Code reads ESC+CR as "newline-in-prompt". Most terminals
+	// emit ESC+\r for Option/Alt+Enter, which bubbletea surfaces as
+	// KeyMsg{Type: KeyEnter, Alt: true}, stringifying to "alt+enter".
+	// Both this and the rare "shift+enter" form must encode the same
+	// way so multiline prompt entry works regardless of which modifier
+	// the user (or their terminal) is configured to send.
+	msg := tea.KeyMsg{Type: tea.KeyEnter, Alt: true}
+	if msg.String() != "alt+enter" {
+		t.Fatalf(
+			"sanity: KeyMsg{Enter, Alt:true}.String() = %q, expected alt+enter",
+			msg.String(),
+		)
+	}
+	got := KeyToBytes(msg)
+	if string(got) != "\x1b\r" {
+		t.Fatalf("alt+enter encoded as %q, want %q", got, "\x1b\r")
+	}
+
+	// Plain Enter must still submit (\r), not insert a newline. A
+	// regression here would mean every prompt the user typed inserted
+	// a newline instead of being sent.
+	plain := KeyToBytes(tea.KeyMsg{Type: tea.KeyEnter})
+	if string(plain) != "\r" {
+		t.Fatalf("plain Enter must encode as \\r, got %q", plain)
 	}
 }
 

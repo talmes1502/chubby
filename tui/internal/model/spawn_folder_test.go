@@ -130,11 +130,14 @@ func TestSpawnWithFolder_AssignsToFolder(t *testing.T) {
 		spawn: spawnState{
 			name:   views.NewSpawnNameInput(),
 			cwd:    views.NewSpawnCwdInput("/tmp"),
+			branch: views.NewSpawnBranchInput(""),
 			folder: views.NewSpawnFolderInput("priority"),
-			// Enter on field 2 submits; earlier fields advance instead
-			// (form-fill convention). Start on the last field so this
-			// test exercises the submit path.
-			field: 2,
+			// Enter on the LAST field (folder = field 3 since the
+			// branch field landed between cwd and folder) submits;
+			// earlier fields advance instead (form-fill convention).
+			// Start on the last field so this test exercises the
+			// submit path directly.
+			field: 3,
 		},
 	}
 	m.spawn.name.SetValue("api")
@@ -213,8 +216,9 @@ func TestSpawnWithEmptyFolder_LeavesUnfiled(t *testing.T) {
 		spawn: spawnState{
 			name:   views.NewSpawnNameInput(),
 			cwd:    views.NewSpawnCwdInput("/tmp"),
+			branch: views.NewSpawnBranchInput(""),
 			folder: views.NewSpawnFolderInput(""),
-			field:  2,
+			field:  3,
 		},
 	}
 	m.spawn.name.SetValue("api")

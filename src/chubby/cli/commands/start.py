@@ -148,7 +148,12 @@ def run(
     if not no_hooks:
         from chubby.cli.commands import install_hooks
 
-        install_hooks.run(dry_run=False)
+        # Pass explicit values for every option — calling a typer-decorated
+        # function directly leaves un-passed kwargs as OptionInfo sentinels,
+        # which are truthy. ``auto_register=True`` re-installs the
+        # SessionStart hook every ``chubby start``, which silently undid
+        # users who explicitly opted out.
+        install_hooks.run(dry_run=False, auto_register=False)
         typer.echo("hooks installed")
 
     if auto_attach:

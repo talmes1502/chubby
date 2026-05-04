@@ -92,7 +92,16 @@ func rawStatusBar(mode StatusMode, composeHasText bool, broadcastField int, atta
 		}
 		return "↑↓ navigate · Space toggle · a all · n none · Enter attach · d detach selected · r rescan · Esc cancel"
 	case StatusModeEditor:
-		return "↑↓ scroll · g top · G bottom · Ctrl+X open externally · Esc close"
+		// Surface which editor Ctrl+X will spawn so users know they're
+		// configured without having to press it and read the error.
+		ext := DetectExternalEditor()
+		extHint := "Ctrl+X open externally"
+		if ext != nil {
+			extHint = "Ctrl+X open in " + ext.Cmd
+		} else {
+			extHint = "Ctrl+X (set $CHUBBY_EDITOR=pycharm to enable)"
+		}
+		return "↑↓ scroll · g top · G bottom · " + extHint + " · Esc close"
 	case StatusModeHelp:
 		return "(any key dismisses)"
 	case StatusModeReconnecting:

@@ -8,17 +8,18 @@ import (
 	"github.com/USER/chubby/tui/internal/views"
 )
 
-// TestSpawn_EnterAdvancesUntilLastField — Enter on the name and cwd
-// fields advances to the next field (form-fill convention); only Enter
-// on the folder field submits. This is the simpler alternative to
-// auto-advance-on-Tab: Tab purely completes paths, Enter does the
-// "I'm done with this field" gesture.
+// TestSpawn_EnterAdvancesUntilLastField — Enter on the first three
+// fields (name/cwd/branch) advances to the next field (form-fill
+// convention); only Enter on the folder field (the last) submits.
+// Tab purely completes paths, Enter does the "I'm done with this
+// field" gesture.
 func TestSpawn_EnterAdvancesUntilLastField(t *testing.T) {
 	m := Model{
 		mode: ModeSpawn,
 		spawn: spawnState{
 			name:   views.NewSpawnNameInput(),
 			cwd:    views.NewSpawnCwdInput(""),
+			branch: views.NewSpawnBranchInput(""),
 			folder: views.NewSpawnFolderInput(""),
 			field:  0,
 		},
@@ -26,46 +27,41 @@ func TestSpawn_EnterAdvancesUntilLastField(t *testing.T) {
 	m.refocusSpawn()
 	enter := tea.KeyMsg{Type: tea.KeyEnter}
 
-	out, _ := m.handleKeySpawn(enter)
-	m = out.(Model)
-	if m.spawn.field != 1 {
-		t.Fatalf("Enter on name should advance to cwd (field=1), got %d",
-			m.spawn.field)
-	}
-	if !m.spawn.cwd.Focused() {
-		t.Fatalf("after advancing, cwd input should be focused")
-	}
-
-	out, _ = m.handleKeySpawn(enter)
-	m = out.(Model)
-	if m.spawn.field != 2 {
-		t.Fatalf("Enter on cwd should advance to folder (field=2), got %d",
-			m.spawn.field)
+	for want := 1; want <= 3; want++ {
+		out, _ := m.handleKeySpawn(enter)
+		m = out.(Model)
+		if m.spawn.field != want {
+			t.Fatalf("Enter on field %d should advance to field %d, got %d",
+				want-1, want, m.spawn.field)
+		}
 	}
 }
 
-// TestSpawn_TabCyclesThreeFields verifies Tab walks 0→1→2→0 and
-// Shift+Tab walks 0→2→1→0 across the spawn modal's three fields, and
-// that only the active field's textinput is focused at each stop.
-func TestSpawn_TabCyclesThreeFields(t *testing.T) {
+// TestSpawn_TabCyclesFourFields verifies Tab walks 0→1→2→3→0 and
+// Shift+Tab walks 0→3→2→1→0 across the spawn modal's four fields,
+// and that only the active field's textinput is focused at each stop.
+func TestSpawn_TabCyclesFourFields(t *testing.T) {
 	m := Model{
 		mode: ModeSpawn,
 		spawn: spawnState{
 			name:   views.NewSpawnNameInput(),
 			cwd:    views.NewSpawnCwdInput(""),
+			branch: views.NewSpawnBranchInput(""),
 			folder: views.NewSpawnFolderInput(""),
 			field:  0,
 		},
 	}
 	// Constructor focuses name; ensure others are blurred up front.
 	m.refocusSpawn()
-	if !m.spawn.name.Focused() || m.spawn.cwd.Focused() || m.spawn.folder.Focused() {
-		t.Fatalf("initial focus mismatch: name=%v cwd=%v group=%v",
-			m.spawn.name.Focused(), m.spawn.cwd.Focused(), m.spawn.folder.Focused())
+	if !m.spawn.name.Focused() || m.spawn.cwd.Focused() ||
+		m.spawn.branch.Focused() || m.spawn.folder.Focused() {
+		t.Fatalf("initial focus mismatch: name=%v cwd=%v branch=%v folder=%v",
+			m.spawn.name.Focused(), m.spawn.cwd.Focused(),
+			m.spawn.branch.Focused(), m.spawn.folder.Focused())
 	}
 
 	tab := tea.KeyMsg{Type: tea.KeyTab}
-	wantFields := []int{1, 2, 0}
+	wantFields := []int{1, 2, 3, 0}
 	for _, want := range wantFields {
 		out, _ := m.handleKeySpawn(tab)
 		m = out.(Model)
@@ -74,9 +70,9 @@ func TestSpawn_TabCyclesThreeFields(t *testing.T) {
 		}
 	}
 
-	// Shift+Tab reverse: 0 → 2 → 1 → 0.
+	// Shift+Tab reverse: 0 → 3 → 2 → 1 → 0.
 	stab := tea.KeyMsg{Type: tea.KeyShiftTab}
-	wantBack := []int{2, 1, 0}
+	wantBack := []int{3, 2, 1, 0}
 	for _, want := range wantBack {
 		out, _ := m.handleKeySpawn(stab)
 		m = out.(Model)
@@ -85,15 +81,14 @@ func TestSpawn_TabCyclesThreeFields(t *testing.T) {
 		}
 	}
 
-	// On field=2 (group), only the group input should be focused.
+	// On field=2 (branch), only the branch input should be focused.
 	m.spawn.field = 2
 	m.refocusSpawn()
-	if !m.spawn.folder.Focused() {
-		t.Fatalf("group should be focused when field=2")
+	if !m.spawn.branch.Focused() {
+		t.Fatalf("branch should be focused when field=2")
 	}
-	if m.spawn.name.Focused() || m.spawn.cwd.Focused() {
-		t.Fatalf("only group should be focused when field=2: name=%v cwd=%v",
-			m.spawn.name.Focused(), m.spawn.cwd.Focused())
+	if m.spawn.name.Focused() || m.spawn.cwd.Focused() || m.spawn.folder.Focused() {
+		t.Fatalf("only branch should be focused when field=2")
 	}
 }
 

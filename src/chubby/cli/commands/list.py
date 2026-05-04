@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-
-import typer
+from typing import Any
 
 from chubby.cli.client import Client
 from chubby.cli.format import prefix
+from chubby.cli.output import OUT
 from chubby.daemon import paths
 
 _STATUS_GLYPH = {
@@ -18,20 +18,18 @@ _STATUS_GLYPH = {
 }
 
 
+def _pretty_session(s: dict[str, Any]) -> str:
+    glyph = _STATUS_GLYPH.get(s["status"], "?")
+    return f"{prefix(s['name'], s['color'])} {glyph} {s['kind']:14s} {s['cwd']}"
+
+
 def run() -> None:
     async def go() -> None:
         c = Client(paths.sock_path())
         try:
             r = await c.call("list_sessions", {})
             sessions = r.get("sessions", [])
-            if not sessions:
-                typer.echo("(no sessions)")
-                return
-            for s in sessions:
-                glyph = _STATUS_GLYPH.get(s["status"], "?")
-                typer.echo(
-                    f"{prefix(s['name'], s['color'])} {glyph} {s['kind']:14s} {s['cwd']}"
-                )
+            OUT.list(sessions, pretty_line=_pretty_session, empty_message="(no sessions)")
         finally:
             await c.close()
 

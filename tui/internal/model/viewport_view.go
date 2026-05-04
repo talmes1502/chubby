@@ -85,6 +85,24 @@ func renderViewportFull(
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
 		Width(w).Height(h)
+	if s.Status == StatusDead {
+		// Dead-session placeholder. Showing the captured-PTY ghost
+		// (the screen claude was on when it died) is hostile UX —
+		// the user wonders why nothing responds. Replace it with an
+		// explicit "this session ended" message that names the
+		// respawn key.
+		dim := views.Dim
+		bold := views.Bold
+		body := bold.Render("session ended") + "\n\n" +
+			dim.Render("press") + " " +
+			bold.Render("Ctrl+P") + " " +
+			dim.Render("to respawn") + " " +
+			bold.Render(s.Name) + "\n" +
+			dim.Render("with the same name and cwd")
+		return viewportRender{
+			view: frame.Padding(1, 2).Render(body),
+		}
+	}
 	if pane == nil {
 		// Briefly possible during session creation between listMsg
 		// and pane init. Render an empty frame rather than dragging

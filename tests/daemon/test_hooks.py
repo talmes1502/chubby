@@ -268,17 +268,113 @@ async def test_tailer_indexes_new_lines_and_broadcasts(tmp_path: Path) -> None:
     assert rows[0]["session_id"] == "s_x"
     assert rows[0]["role"] == "assistant"
 
-    # And both turns broadcast as transcript_message events.
-    assert len(subs.broadcasts) == 2
-    methods = {m for m, _ in subs.broadcasts}
-    assert methods == {"transcript_message"}
-    payloads = [p for _, p in subs.broadcasts]
-    assert payloads[0]["role"] == "user"
-    assert payloads[0]["text"] == "hello"
-    assert payloads[0]["session_id"] == "s_x"
-    assert payloads[1]["role"] == "assistant"
-    assert payloads[1]["text"] == "hi there"
-    assert isinstance(payloads[1]["ts"], int)
+    # The tailer broadcasts both transcript_message events AND status
+    # transitions: user-turn → THINKING (so the rail spinner kicks in
+    # while claude responds), then assistant-turn → IDLE (so it falls
+    # back to the post-response state until Stop fires AWAITING_USER).
+    methods = [m for m, _ in subs.broadcasts]
+    assert methods == [
+        "transcript_message",
+        "session_status_changed",
+        "transcript_message",
+        "session_status_changed",
+    ]
+    transcripts = [p for m, p in subs.broadcasts if m == "transcript_message"]
+    status_events = [p for m, p in subs.broadcasts if m == "session_status_changed"]
+    assert transcripts[0]["role"] == "user"
+    assert transcripts[0]["text"] == "hello"
+    assert transcripts[0]["session_id"] == "s_x"
+    assert transcripts[1]["role"] == "assistant"
+    assert transcripts[1]["text"] == "hi there"
+    assert isinstance(transcripts[1]["ts"], int)
+    assert status_events[0]["status"] == "thinking"
+    assert status_events[1]["status"] == "idle"
+
+
+async def test_tailer_flips_to_thinking_on_user_turn_from_awaiting(
+    tmp_path: Path,
+) -> None:
+    """Regression: post-PTY-pivot, the rail glyph stayed ⚡ (awaiting)
+    while claude was actively responding because inject_raw can't tell
+    a submit keystroke apart from any other byte. The JSONL tailer
+    must pick up the slack — when a new user-role record lands and the
+    session is currently AWAITING_USER (or IDLE), flip THINKING so the
+    rail spinner reflects what claude is doing."""
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text("")
+    db = await Database.open(tmp_path / "s.db")
+    subs = _FakeSubs()
+    reg = Registry(hub_run_id="hr_t", db=db, subs=subs)  # type: ignore[arg-type]
+    s = Session(
+        id="s_x",
+        hub_run_id="hr_t",
+        name="x",
+        color="#abc123",
+        kind=SessionKind.READONLY,
+        cwd=str(tmp_path),
+        created_at=1,
+        last_activity_at=1,
+        status=SessionStatus.AWAITING_USER,
+        claude_session_id="abc",
+    )
+    reg._by_id[s.id] = s
+    transcript.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "message": {"role": "user", "content": "next prompt"},
+            }
+        )
+        + "\n"
+    )
+    await asyncio.wait_for(
+        _tail_jsonl(reg, s.id, transcript, stop_after=1), timeout=3.0
+    )
+    await db.close()
+    cur = await reg.get(s.id)
+    assert cur.status is SessionStatus.THINKING, (
+        f"AWAITING_USER → user-turn should flip THINKING, got {cur.status}"
+    )
+
+
+async def test_tailer_does_not_flip_dead_session_to_thinking(
+    tmp_path: Path,
+) -> None:
+    """A DEAD session that somehow has a JSONL update (resumed
+    externally, etc.) must NOT come back to THINKING. Dead means dead
+    until explicit respawn."""
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text("")
+    db = await Database.open(tmp_path / "s.db")
+    subs = _FakeSubs()
+    reg = Registry(hub_run_id="hr_t", db=db, subs=subs)  # type: ignore[arg-type]
+    s = Session(
+        id="s_dead",
+        hub_run_id="hr_t",
+        name="x",
+        color="#abc123",
+        kind=SessionKind.READONLY,
+        cwd=str(tmp_path),
+        created_at=1,
+        last_activity_at=1,
+        status=SessionStatus.DEAD,
+        claude_session_id="abc",
+    )
+    reg._by_id[s.id] = s
+    transcript.write_text(
+        json.dumps(
+            {"type": "user", "message": {"role": "user", "content": "x"}}
+        )
+        + "\n"
+    )
+    await asyncio.wait_for(
+        _tail_jsonl(reg, s.id, transcript, stop_after=1), timeout=3.0
+    )
+    await db.close()
+    cur = await reg.get(s.id)
+    assert cur.status is SessionStatus.DEAD, (
+        f"DEAD must stay DEAD; got {cur.status}"
+    )
 
 
 async def test_tailer_skips_blank_invalid_and_non_turn_records(tmp_path: Path) -> None:

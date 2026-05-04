@@ -35,9 +35,14 @@ def short_home() -> Iterator[Path]:
 
 
 class _FakeProc:
-    """Stand-in for an ``asyncio.subprocess.Process`` — the daemon only
-    uses the spawn return value to drop the reference, so an inert object
-    is enough."""
+    """Stand-in for an ``asyncio.subprocess.Process`` — the daemon
+    spawns this for both the wrapper subprocess and the git
+    ``repo_root`` probe added by Phase 2 (project_config). For the
+    git probe we return empty stdout so ``repo_root`` correctly
+    falls through to ``None`` (no git repo detected) and the spawn
+    flow uses the cwd as-is. For the wrapper itself the fake is
+    just kept alive long enough for the daemon to drop its
+    reference."""
 
     def __init__(self) -> None:
         self.returncode: int | None = 0
@@ -45,6 +50,9 @@ class _FakeProc:
 
     async def wait(self) -> int:
         return 0
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        return b"", b""
 
 
 async def _rpc(sock_path: Path, method: str, params: dict) -> dict:
@@ -96,6 +104,17 @@ def _cwd_arg_from_call(call_args: tuple[Any, ...]) -> str:
         if a == "--cwd" and i + 1 < len(parts):
             return str(parts[i + 1])
     raise AssertionError(f"--cwd not found in argv: {parts!r}")
+
+
+def _wrapper_call(captured: list[tuple[Any, ...]]) -> tuple[Any, ...]:
+    """Return the captured subprocess invocation for the wrapper.
+    Phase 2 added a ``git rev-parse`` probe before the wrapper spawn,
+    so ``captured[0]`` is no longer guaranteed to be the wrapper —
+    walk the list and pick the call that contains ``--cwd``."""
+    for call in captured:
+        if "--cwd" in call:
+            return call
+    raise AssertionError(f"no wrapper call (with --cwd) in {captured!r}")
 
 
 async def test_spawn_session_empty_cwd_rejected(
@@ -151,7 +170,7 @@ async def test_spawn_session_explicit_cwd_passes_through(
         )
         assert "result" in out or out["error"]["code"] == ErrorCode.INTERNAL.value
         assert captured, "expected create_subprocess_exec to be called"
-        assert _cwd_arg_from_call(captured[0]) == "/var/tmp"
+        assert _cwd_arg_from_call(_wrapper_call(captured)) == "/var/tmp"
     finally:
         stop.set()
         await server_task

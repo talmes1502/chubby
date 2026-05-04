@@ -19,6 +19,11 @@ class SessionStatus(str, Enum):
     THINKING = "thinking"
     AWAITING_USER = "awaiting_user"
     DEAD = "dead"
+    # Project lifecycle setup script failed before the wrapper ever
+    # got to register. The session entry exists so the user can see
+    # the failure (and the captured output tail) in the rail; force-
+    # delete to clear without running teardown.
+    SETUP_FAILED = "setup_failed"
 
 
 @dataclass
@@ -37,6 +42,30 @@ class Session:
     tmux_target: str | None = None
     tags: list[str] = field(default_factory=list)
     ended_at: int | None = None
+    # Transient: populated by the git-status sweep, not persisted to
+    # the DB. ``None`` means "no upstream / not a repo / not yet
+    # polled". Use ``repr=False`` to keep ``__repr__`` quiet.
+    git_ahead: int | None = field(default=None, repr=False)
+    git_behind: int | None = field(default=None, repr=False)
+    # Set when the session was spawned with ``--branch`` (or ``--pr``)
+    # so the daemon owns a chubby-managed git worktree at this path.
+    # Used by release_session/detach_session to ``git worktree remove``
+    # on cleanup. ``None`` means "session uses the user's plain cwd"
+    # (the historical default).
+    worktree_path: str | None = None
+    # Transient list of detected listening ports under this session's
+    # process tree, populated by the periodic port sweep. Each entry:
+    # ``{"port": int, "pid": int, "address": str}``. Not persisted to
+    # the DB — recomputed on every daemon start. ``[]`` means "nothing
+    # listening / not yet polled".
+    ports: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    # Cached first user-turn from the JSONL transcript, populated once
+    # by the watch_for_transcript hook after the JSONL binds. Surfaces
+    # in the TUI quick switcher and rail tooltip so users can identify
+    # a session by its opening prompt rather than its name. ``None``
+    # means "not yet bound / no user turn yet". Persisted via the
+    # additive migration so it survives daemon restarts.
+    first_user_message: str | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -54,4 +83,9 @@ class Session:
             "tmux_target": self.tmux_target,
             "tags": list(self.tags),
             "ended_at": self.ended_at,
+            "git_ahead": self.git_ahead,
+            "git_behind": self.git_behind,
+            "worktree_path": self.worktree_path,
+            "ports": list(self.ports),
+            "first_user_message": self.first_user_message,
         }

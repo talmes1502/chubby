@@ -12,13 +12,13 @@ Modes:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from typing import Any
 
 import typer
 
 from chubby.cli.client import Client
+from chubby.cli.output import OUT, Mode
 from chubby.daemon import paths
 
 
@@ -43,7 +43,34 @@ def run(
             cs: list[dict[str, Any]] = list(scan["candidates"])
             cs = [x for x in cs if not x.get("already_attached")]
             if list_:
-                typer.echo(json.dumps(cs, indent=2))
+                # ``--list`` historically always printed JSON. Preserve
+                # that for backward compat: JSON wins unless the user
+                # opts into the cleaner global ``--quiet`` (one pid
+                # per line) or asks for the new pretty table by setting
+                # neither flag and not being in an agent context. In
+                # practice almost every caller used ``--list`` for
+                # JSON, so the default is JSON in any non-PRETTY mode.
+                def _pretty(x: dict[str, Any]) -> str:
+                    return (
+                        f"pid={x['pid']:>6} cwd={x['cwd']} "
+                        f"class={x['classification']} "
+                        f"tmux={x.get('tmux_target') or '-'}"
+                    )
+
+                if OUT.mode is Mode.QUIET:
+                    for x in cs:
+                        typer.echo(str(x.get("pid")))
+                else:
+                    # PRETTY or JSON: keep prior --list behavior of
+                    # JSON output, with a pretty fallback that's only
+                    # surfaced if someone calls ``--list`` with no
+                    # agent context (rare enough to warrant the new
+                    # readable form).
+                    import json as _json
+                    if OUT.mode is Mode.PRETTY:
+                        OUT.list(cs, pretty_line=_pretty, empty_message="(no candidates)")
+                    else:
+                        typer.echo(_json.dumps(cs, indent=2))
                 return
             if as_readonly:
                 ro_cs = [x for x in cs if x["classification"] == "promote_required"]

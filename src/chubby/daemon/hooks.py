@@ -114,6 +114,151 @@ def session_id_for_pid(pid: int) -> str | None:
     return sid if isinstance(sid, str) else None
 
 
+def peek_first_user_message(jsonl: Path, max_chars: int = 120) -> str | None:
+    """Read ``jsonl`` until the first ``type == "user"`` record, return
+    its message text truncated to ``max_chars``. Returns ``None`` for a
+    missing file, an unreadable one, or one with no user turns yet
+    (just summary / system / tool records).
+
+    Used by ``set_first_preview`` to populate ``Session.first_user_message``
+    once per session — the rail and quick switcher show this as a
+    one-line "what did the user ask first?" hint.
+
+    The text is read raw — no markdown stripping, no whitespace
+    collapsing. Callers that want a single-line render should
+    further trim newlines.
+    """
+    try:
+        with jsonl.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                if rec.get("type") != "user":
+                    continue
+                # Claude's JSONL has the user text under several
+                # historical shapes. Try the common ones in order:
+                #   {"type":"user","message":{"content":"..."}}
+                #   {"type":"user","message":{"content":[{"type":"text","text":"..."}]}}
+                #   {"type":"user","content":"..."}
+                msg = rec.get("message")
+                text: str | None = None
+                if isinstance(msg, dict):
+                    c = msg.get("content")
+                    if isinstance(c, str):
+                        text = c
+                    elif isinstance(c, list):
+                        for block in c:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                t = block.get("text")
+                                if isinstance(t, str):
+                                    text = t
+                                    break
+                if text is None:
+                    direct = rec.get("content")
+                    if isinstance(direct, str):
+                        text = direct
+                if text is None:
+                    continue
+                # Single-line render: collapse newlines + trim.
+                cleaned = " ".join(text.split())
+                if not cleaned:
+                    continue
+                if len(cleaned) > max_chars:
+                    cleaned = cleaned[: max_chars - 1] + "…"
+                return cleaned
+    except OSError:
+        return None
+    return None
+
+
+def list_all_claude_jsonls(
+    *, max_chars_preview: int = 120, limit: int = 200
+) -> list[dict[str, Any]]:
+    """Scan ``~/.claude/projects/*/*.jsonl`` and return one record per
+    session, sorted by mtime DESC. Each record:
+
+        {
+            "claude_session_id": str,  # JSONL filename minus .jsonl
+            "cwd": str,                # from the JSONL's first record
+            "first_user_message": str | None,
+            "mtime_ms": int,
+            "size": int,
+        }
+
+    Used by the cross-project history browser (Phase 8d) to surface
+    *every* claude session — including ones chubby never tracked —
+    so the user can resume any of them.
+
+    Returns at most ``limit`` results to bound the scan cost; users
+    with thousands of historical sessions get the most-recent N. The
+    full glob itself is fast (~10 ms for hundreds of files); the
+    expensive part is reading the first user turn out of each, so we
+    sort by mtime *first* (cheap stat call) and only peek the top N.
+    """
+    root = claude_projects_root()
+    if not root.is_dir():
+        return []
+    candidates: list[tuple[Path, int]] = []
+    for hit in root.glob("*/*.jsonl"):
+        try:
+            st = hit.stat()
+        except OSError:
+            continue
+        candidates.append((hit, int(st.st_mtime * 1000)))
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    out: list[dict[str, Any]] = []
+    for path, mtime_ms in candidates[:limit]:
+        sid = path.stem
+        cwd = _read_jsonl_cwd(path)
+        preview = peek_first_user_message(path, max_chars=max_chars_preview)
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        out.append(
+            {
+                "claude_session_id": sid,
+                "cwd": cwd or "",
+                "first_user_message": preview,
+                "mtime_ms": mtime_ms,
+                "size": size,
+            }
+        )
+    return out
+
+
+def _read_jsonl_cwd(path: Path) -> str | None:
+    """Pull the ``cwd`` field from the JSONL's first ``user`` or
+    ``assistant`` record. Claude records the cwd on every turn; we
+    only need the first to identify the project."""
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                if i > 64:  # bounded — first ~64 records is plenty
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(rec, dict):
+                    cwd = rec.get("cwd")
+                    if isinstance(cwd, str) and cwd:
+                        return cwd
+    except OSError:
+        return None
+    return None
+
+
 def find_jsonl_for_session(claude_session_id: str) -> Path | None:
     """Locate Claude's JSONL transcript for a known session id.
 
@@ -549,6 +694,32 @@ async def _tail_jsonl(
                         "ts": ts,
                     },
                 )
+            if role == "user" and text:
+                # User submitted a new prompt → flip status to
+                # THINKING so the rail spinner reflects what claude is
+                # actually doing.
+                #
+                # Pre-PTY-pivot, this happened in the inject RPC handler
+                # (it knew the prompt was being submitted). Post-pivot
+                # the user types directly into claude's PTY via
+                # inject_raw, which can't tell a submit keystroke apart
+                # from any other byte — so the JSONL is now the only
+                # signal of "a real user turn just landed".
+                #
+                # Guarded so we don't trample DEAD or already-THINKING
+                # state. Tool-result-only user records were already
+                # filtered out above (they carry no text).
+                try:
+                    cur = await registry.get(session_id)
+                    if cur.status in (
+                        SessionStatus.IDLE,
+                        SessionStatus.AWAITING_USER,
+                    ):
+                        await registry.update_status(
+                            session_id, SessionStatus.THINKING
+                        )
+                except ChubError:
+                    pass
             if role == "assistant" and not tool_calls:
                 # Claude finished a turn → flip THINKING back to idle.
                 #
@@ -670,4 +841,16 @@ async def watch_for_transcript(
         session.id,
         claude_session_id,
     )
+    # Phase 8c: cache the first user-turn from this transcript on the
+    # Session so the rail/quick-switcher can show a preview. Done
+    # once here (the JSONL just bound) — the tailer below picks up
+    # subsequent messages but they don't change "the first prompt
+    # ever". Idempotent if the JSONL has no user turns yet (e.g.,
+    # a session resumed before the first prompt was sent).
+    try:
+        preview = peek_first_user_message(found)
+        if preview:
+            await registry.set_first_preview(session.id, preview)
+    except Exception as e:  # pragma: no cover — defensive
+        log.warning("first-preview peek failed for %s: %s", session.id, e)
     await _tail_jsonl(registry, session.id, found)

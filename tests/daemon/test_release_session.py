@@ -166,6 +166,91 @@ async def test_release_with_no_attached_wrapper_still_removes() -> None:
     assert exc.value.code is ErrorCode.SESSION_NOT_FOUND
 
 
+async def test_release_completes_chain_when_a_step_raises(
+    tmp_path: pytest.TempPathFactory,
+) -> None:
+    """Regression: release_session must remove the session from the
+    in-memory registry even if a cleanup step raises mid-chain.
+
+    Real-world failure mode: the session ends up DEAD-but-still-listed
+    because something between ``update_status`` and ``remove_session``
+    raised. The user could see the row stuck in the rail with no way
+    to clear it short of restarting the daemon.
+
+    We monkeypatch ``detach_wrapper`` to raise, then call the actual
+    handler (via _build_registry) and assert the session is gone from
+    list_all anyway.
+    """
+    from pathlib import Path
+    from chubby.daemon.events import EventLog
+    from chubby.daemon.handlers import CallContext
+    from chubby.daemon.main import _build_registry
+    from chubby.daemon.persistence import Database
+    from chubby.daemon.runs import HubRun
+    from chubby.daemon.subscriptions import SubscriptionHub
+
+    db_path = Path(str(tmp_path)) / "s.db"  # type: ignore[arg-type]
+    db = await Database.open(db_path)
+    try:
+        subs = SubscriptionHub()
+        run_dir = db_path.parent / "run"
+        run_dir.mkdir(exist_ok=True)
+        run = HubRun(
+            id="hr_t",
+            started_at=0,
+            dir=run_dir,
+            event_log=EventLog(run_dir / "events.ndjson"),
+        )
+        reg = Registry(hub_run_id=run.id, db=db, subs=subs)
+        s = await reg.register(
+            name="brittle",
+            kind=SessionKind.WRAPPED,
+            cwd=str(run_dir),
+            pid=12345,
+        )
+        await reg.set_claude_session_id(
+            s.id, "33333333-3333-3333-3333-333333333333"
+        )
+
+        # Make detach_wrapper blow up — it sits between update_status
+        # and remove_session in release_session, and is the kind of
+        # thing that could plausibly throw if a writer's transport
+        # closed at exactly the wrong instant.
+        original_detach = reg.detach_wrapper
+
+        async def _exploding_detach(sid: str) -> None:
+            raise RuntimeError("simulated transport hiccup")
+
+        reg.detach_wrapper = _exploding_detach  # type: ignore[method-assign]
+
+        async def _noop_write(_b: bytes) -> None:
+            return None
+
+        ctx = CallContext(
+            connection_id=0, write=_noop_write, on_close=lambda _cb: None
+        )
+
+        handlers = _build_registry(reg, run, db, subs)
+        # The RPC call must not raise — the user committed to release;
+        # cleanup errors are best-effort.
+        result = await handlers.invoke(
+            "release_session", {"id": s.id}, ctx
+        )
+        assert result["claude_session_id"] == "33333333-3333-3333-3333-333333333333"
+
+        # Restore so list_all doesn't accidentally re-trip the patch.
+        reg.detach_wrapper = original_detach  # type: ignore[method-assign]
+
+        # The bug was that the session lingered with status=DEAD; the
+        # fix removes it from the registry.
+        live = await reg.list_all()
+        assert all(x.id != s.id for x in live), (
+            "release_session must remove the session even if a step raised"
+        )
+    finally:
+        await db.close()
+
+
 async def test_remove_session_broadcasts_session_removed() -> None:
     """``Registry.remove_session`` (the helper underneath release)
     must broadcast a ``session_removed`` event so subscribers (the TUI)

@@ -44,6 +44,60 @@ func statusGlyph(status SessionStatus, frame int) string {
 	}
 }
 
+// portsBadge renders a per-session "🌐 :3000,:3001" string for the
+// rail row. Returns "" when no ports are detected. Caps at 2 ports
+// to keep the row width predictable; overflow shows as "+N" so the
+// user knows there are more without flooding the rail.
+func portsBadge(ports []SessionPort) string {
+	if len(ports) == 0 {
+		return ""
+	}
+	const maxShown = 2
+	parts := make([]string, 0, maxShown+1)
+	parts = append(parts, "🌐")
+	shown := 0
+	for _, p := range ports {
+		if shown >= maxShown {
+			break
+		}
+		parts = append(parts, fmt.Sprintf(":%d", p.Port))
+		shown++
+	}
+	if len(ports) > maxShown {
+		parts = append(parts, fmt.Sprintf("+%d", len(ports)-maxShown))
+	}
+	return strings.Join(parts, " ")
+}
+
+// branchGlyph renders the per-session ahead/behind indicator. Returns
+// "" when both pointers are nil (no upstream / not a repo / not yet
+// polled), or when both counts are zero (in sync — no need to clutter
+// the rail). Single-direction divergence shows just one arrow, two-
+// way shows ↑N↓M.
+func branchGlyph(ahead, behind *int) string {
+	if ahead == nil && behind == nil {
+		return ""
+	}
+	a, b := 0, 0
+	if ahead != nil {
+		a = *ahead
+	}
+	if behind != nil {
+		b = *behind
+	}
+	if a == 0 && b == 0 {
+		return ""
+	}
+	switch {
+	case a > 0 && b > 0:
+		return fmt.Sprintf("↑%d↓%d", a, b)
+	case a > 0:
+		return fmt.Sprintf("↑%d", a)
+	default:
+		return fmt.Sprintf("↓%d", b)
+	}
+}
+
 // activePaneBorderColor / inactivePaneBorderColor are the lipgloss
 // color codes used for the focused vs unfocused border of the rail
 // and conversation panes (D8). 12 is the bright-blue accent already
@@ -109,21 +163,30 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 				nameStyle = nameStyle.Bold(true)
 			}
 			glyph := statusGlyph(s.Status, spinnerFrame)
-			b.WriteString(leftCol(i == cursor) + "   " +
-				nameStyle.Render(s.Name) + " " + glyph + "\n")
+			gitGlyph := branchGlyph(s.GitAhead, s.GitBehind)
+			portsGlyph := portsBadge(s.Ports)
+			line := leftCol(i == cursor) + "   " +
+				nameStyle.Render(s.Name) + " " + glyph
+			if gitGlyph != "" {
+				// Dim style so the branch state reads as metadata
+				// rather than competing with the status glyph.
+				line += " " + views.Dim.Render(gitGlyph)
+			}
+			if portsGlyph != "" {
+				line += " " + views.Dim.Render(portsGlyph)
+			}
+			b.WriteString(line + "\n")
 		}
 	}
 	// Bottom-of-rail chubby command palette. cmdView is non-empty
 	// when ModeRailCommand is active (or a stale error is being
 	// shown). Rendered as the last line(s) of the rail body so it
-	// sits flush above the bottom border.
+	// sits flush above the bottom border. When dormant we render
+	// nothing — the bottom status bar already documents `:` as an
+	// entry point, so the always-visible dim hint was just noise.
 	body := b.String()
 	if cmdView != "" {
 		body += "\n" + cmdView
-	} else {
-		// Always show a dim hint when the palette is dormant — the
-		// gesture (':') isn't discoverable otherwise.
-		body += "\n" + views.DimItalic.Render(" :  for chubby command")
 	}
 	borderColor := inactivePaneBorderColor
 	if active {

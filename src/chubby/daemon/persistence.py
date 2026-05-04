@@ -58,6 +58,52 @@ CREATE VIRTUAL TABLE IF NOT EXISTS transcript_fts USING fts5(
 """
 
 
+async def _run_migrations(conn: aiosqlite.Connection) -> None:
+    """Idempotent in-place migrations for additive column changes.
+
+    SQLite's ``CREATE TABLE IF NOT EXISTS`` won't add columns to an
+    existing table, so each migration tries an ``ALTER TABLE ADD
+    COLUMN`` and swallows the "duplicate column" error from already-
+    upgraded databases. Keep migrations additive only — never drop or
+    rename a column, since older daemons may still be running against
+    the same file.
+    """
+    additions: list[tuple[str, str, str]] = [
+        # (table, column_name, type+default suffix). Phase 1 worktree
+        # path is per-session metadata so cleanup survives a daemon
+        # restart.
+        ("sessions", "worktree_path", "TEXT"),
+        # Phase 8c: cached first user-turn for the rail / quick
+        # switcher preview. Persisted so we don't have to re-scan
+        # every JSONL on daemon startup.
+        ("sessions", "first_user_message", "TEXT"),
+    ]
+    for table, col, type_suffix in additions:
+        try:
+            await conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN {col} {type_suffix}"
+            )
+        except Exception as e:  # aiosqlite wraps OperationalError
+            msg = str(e).lower()
+            if "duplicate column" in msg:
+                continue
+            raise
+
+
+def _quote_fts5(q: str) -> str:
+    """Sanitize a user query for FTS5 MATCH.
+
+    FTS5 reserves "/", ":", "(", ")", "*", "-", "+", AND, OR, NOT and a
+    few other tokens. Free-form prose with any of these chars produces
+    a syntax error. We wrap each whitespace-separated token in double-
+    quotes to force literal-phrase matching; embedded " is doubled per
+    FTS5 escape rule. An empty input becomes "" — FTS5 treats that as
+    "no rows", which is the correct answer for a blank query.
+    """
+    parts = [f'"{token.replace(chr(34), chr(34) * 2)}"' for token in q.split()]
+    return " ".join(parts)
+
+
 class Database:
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self.conn = conn
@@ -67,6 +113,7 @@ class Database:
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = await aiosqlite.connect(str(path))
         await conn.executescript(SCHEMA)
+        await _run_migrations(conn)
         await conn.commit()
         return cls(conn)
 
@@ -92,18 +139,21 @@ class Database:
         await self.conn.execute(
             """INSERT INTO sessions
                  (id, hub_run_id, name, color, kind, cwd, claude_session_id, pid,
-                  tmux_target, tags, status, created_at, last_activity_at, ended_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  tmux_target, tags, status, created_at, last_activity_at, ended_at,
+                  worktree_path, first_user_message)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                  name=excluded.name, color=excluded.color, kind=excluded.kind,
                  cwd=excluded.cwd, claude_session_id=excluded.claude_session_id,
                  pid=excluded.pid, tmux_target=excluded.tmux_target, tags=excluded.tags,
                  status=excluded.status, last_activity_at=excluded.last_activity_at,
-                 ended_at=excluded.ended_at""",
+                 ended_at=excluded.ended_at, worktree_path=excluded.worktree_path,
+                 first_user_message=excluded.first_user_message""",
             (
                 s.id, s.hub_run_id, s.name, s.color, s.kind.value, s.cwd,
                 s.claude_session_id, s.pid, s.tmux_target, json.dumps(s.tags),
                 s.status.value, s.created_at, s.last_activity_at, s.ended_at,
+                s.worktree_path, s.first_user_message,
             ),
         )
         await self.conn.commit()
@@ -206,7 +256,16 @@ class Database:
         session_id: str | None = None,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
-        params: list[Any] = [query]
+        # FTS5's MATCH grammar reserves "/", ":", "(", ")", "*", etc.
+        # User queries are free-form prose — sanitize via _quote_fts5
+        # so reserved chars become part of a literal phrase rather
+        # than a syntax error. A blank query is itself an FTS5 syntax
+        # error (the empty string isn't a valid MATCH expression), so
+        # short-circuit to no rows here.
+        match_expr = _quote_fts5(query)
+        if not match_expr:
+            return []
+        params: list[Any] = [match_expr]
         sql = (
             "SELECT session_id, hub_run_id, ts, role, "
             "snippet(transcript_fts, 4, '[', ']', '...', 8) AS snippet "

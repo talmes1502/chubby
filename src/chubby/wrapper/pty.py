@@ -12,6 +12,38 @@ from collections.abc import AsyncIterator
 import ptyprocess
 
 
+# Env vars that signal "we're already inside a Claude Code agent
+# context" — passed through to a child claude they'd confuse the
+# child's session id resolution and hook firing. Strip them before
+# spawning the wrapped process. Same defensive list moltty applies
+# in its main process. ``CLAUDECODE`` is the legacy spelling.
+_AGENT_ENV_VARS_TO_STRIP: tuple[str, ...] = (
+    "CLAUDE_CODE",
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_SESSION_ID",
+    # Same for our own marker — a chubby spawned from inside another
+    # chubby's wrapped claude must look like a fresh terminal so the
+    # inner CLI doesn't auto-flip output to JSON or confuse hooks.
+    "CHUBBY_AGENT",
+)
+
+
+def _build_child_env(extra: dict[str, str] | None) -> dict[str, str]:
+    """Inherit the parent env minus the agent-context markers, then
+    merge any caller overrides. Inject ``TERM_PROGRAM=chubby`` so
+    claude/other tools can detect they're running under chubby, and
+    ``FORCE_HYPERLINK=1`` so OSC 8 hyperlinks render in our bounded
+    vt grid (xterm-style emulators sometimes gate hyperlinks on a
+    terminfo capability we don't fully advertise)."""
+    env = {k: v for k, v in os.environ.items() if k not in _AGENT_ENV_VARS_TO_STRIP}
+    env["TERM_PROGRAM"] = "chubby"
+    env.setdefault("FORCE_HYPERLINK", "1")
+    if extra:
+        env.update(extra)
+    return env
+
+
 class PtySession:
     def __init__(
         self,
@@ -22,7 +54,7 @@ class PtySession:
     ) -> None:
         self.argv = argv
         self.cwd = cwd
-        self.env: dict[str, str] = {**os.environ, **(env or {})}
+        self.env: dict[str, str] = _build_child_env(env)
         self._proc: ptyprocess.PtyProcess | None = None
         self._closed = asyncio.Event()
 
@@ -64,6 +96,15 @@ class PtySession:
     async def resize(self, rows: int, cols: int) -> None:
         assert self._proc is not None
         await asyncio.to_thread(self._proc.setwinsize, rows, cols)
+
+    async def get_size(self) -> tuple[int, int]:
+        """Return the PTY's current (rows, cols). Used by the
+        redraw-claude path to do a transient resize-toggle that
+        forces claude to do a full redraw (claude only re-lays-out
+        on actual size change, not on bare SIGWINCH)."""
+        assert self._proc is not None
+        rows, cols = await asyncio.to_thread(self._proc.getwinsize)
+        return int(rows), int(cols)
 
     async def terminate(self) -> None:
         if self._proc is None:

@@ -113,6 +113,15 @@ func (c *Client) Call(ctx context.Context, method string, params map[string]any)
 		c.mu.Unlock()
 		return nil, ctx.Err()
 	case r := <-ch:
+		// readLoop closes pending channels on transport error
+		// (daemon disconnect, malformed frame). A receive from a
+		// closed channel returns the zero value — nil for *Response —
+		// so unconditionally dereferencing r.Error / r.Result panics
+		// the whole TUI. Translate the close into a real error so
+		// callers can recover (or surface a toast) instead.
+		if r == nil {
+			return nil, fmt.Errorf("daemon disconnected")
+		}
 		if r.Error != nil {
 			return nil, r.Error
 		}

@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/USER/chubby/tui/internal/ptypane"
 	"github.com/USER/chubby/tui/internal/rpc"
 	"github.com/USER/chubby/tui/internal/views"
 )
@@ -245,6 +246,68 @@ func TestCtrlBracket_NoRecent_OpensPrompt(t *testing.T) {
 	if mm.mode != ModeEditor || !mm.editor.inPathPrompt {
 		t.Fatalf("expected path prompt fallback, mode=%v inPrompt=%v",
 			mm.mode, mm.editor.inPathPrompt)
+	}
+}
+
+// TestHarvestPathsFromFocusedPane — paths the agent printed to the
+// PTY (visible/scrollback) but that the JSONL hasn't yet captured
+// must still be openable via Ctrl+]. We write text into a real Pane,
+// call the harvester, and verify the path lands at the head of
+// recentPaths.
+func TestHarvestPathsFromFocusedPane(t *testing.T) {
+	pane := ptypane.New(80, 5, nil)
+	t.Cleanup(func() { pane.Close() })
+	pane.Write([]byte("Modified /tmp/streamed.py:17\r\nDone.\r\n"))
+
+	m := makeMainEditorModel(t, "/tmp")
+	m.pty = map[string]*ptypane.Pane{"s1": pane}
+	m.harvestPathsFromFocusedPane()
+	if len(m.editor.recentPaths) == 0 {
+		t.Fatalf("expected path harvest to populate recentPaths")
+	}
+	if m.editor.recentPaths[0] != "/tmp/streamed.py" {
+		t.Fatalf("expected /tmp/streamed.py at head, got %q",
+			m.editor.recentPaths[0])
+	}
+}
+
+// TestCtrlBracket_HarvestsFromPaneFirst — Ctrl+] should refresh
+// recentPaths from the focused pane BEFORE deciding whether to open
+// or fall back to the prompt. Without the refresh, paths that exist
+// only in the PTY (not yet in the JSONL transcript) would falsely
+// route to the prompt.
+func TestCtrlBracket_HarvestsFromPaneFirst(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "live.py")
+	if err := os.WriteFile(path, []byte("z = 3\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	pane := ptypane.New(120, 5, nil)
+	t.Cleanup(func() { pane.Close() })
+	pane.Write([]byte("touched " + path + "\r\n"))
+
+	m := makeMainEditorModel(t, dir)
+	m.pty = map[string]*ptypane.Pane{"s1": pane}
+	// recentPaths starts empty: this is the regression case where the
+	// transcript hadn't caught up yet.
+
+	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlCloseBracket})
+	mm := out.(Model)
+	if cmd == nil {
+		t.Fatalf("expected loadEditorFile cmd; got nil (would have routed to prompt)")
+	}
+	if len(mm.editor.recentPaths) == 0 || mm.editor.recentPaths[0] != path {
+		t.Fatalf("expected pane-harvested path %q at head, got %v",
+			path, mm.editor.recentPaths)
+	}
+	// And the cmd should fire a load for that path.
+	msg := cmd()
+	loaded, ok := msg.(editorFileLoadedMsg)
+	if !ok {
+		t.Fatalf("expected editorFileLoadedMsg, got %T (%v)", msg, msg)
+	}
+	if loaded.path != path {
+		t.Fatalf("expected load(%q); got load(%q)", path, loaded.path)
 	}
 }
 

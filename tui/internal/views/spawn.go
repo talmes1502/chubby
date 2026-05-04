@@ -31,6 +31,22 @@ func NewSpawnCwdInput(initial string) textinput.Model {
 	return t
 }
 
+// NewSpawnBranchInput returns an unfocused textinput for the optional
+// branch name. When non-empty, the daemon resolves a chubby-managed
+// git worktree at that branch and overrides the session's cwd with
+// the worktree path. Empty value leaves the daemon to spawn into the
+// raw cwd (the historical behavior).
+func NewSpawnBranchInput(initial string) textinput.Model {
+	t := textinput.New()
+	t.Placeholder = "optional — git branch (creates worktree)"
+	t.Prompt = "▸ "
+	t.CharLimit = 0
+	if initial != "" {
+		t.SetValue(initial)
+	}
+	return t
+}
+
 // NewSpawnFolderInput returns an unfocused textinput for the optional
 // folder name. After D10b the trimmed value, when non-empty, is used
 // to assign the new session into a TUI-side folder (folders.json) —

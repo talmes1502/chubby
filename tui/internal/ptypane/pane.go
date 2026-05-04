@@ -24,6 +24,7 @@
 package ptypane
 
 import (
+	"strings"
 	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -164,6 +165,60 @@ func (p *Pane) IsAltScreen() bool {
 	return p.em.IsAltScreen()
 }
 
+// PlainTextLines returns the scrollback + visible screen as plain
+// text, one string per terminal row, oldest first. Trailing whitespace
+// per line is stripped. Powers in-pane search (Ctrl+F): given the
+// returned slice, callers can grep with a substring filter and
+// navigate matches by line index.
+//
+// Returns an empty slice when the emulator is in alt-screen mode (the
+// child has taken over with its own full-screen UI; scrollback is
+// suppressed there per vt's contract).
+func (p *Pane) PlainTextLines() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.em.IsAltScreen() {
+		return nil
+	}
+	out := make([]string, 0, p.em.ScrollbackLen()+p.h)
+	// Scrollback first (oldest-first), then the visible screen.
+	for y := 0; y < p.em.ScrollbackLen(); y++ {
+		out = append(out, plainLineFromCells(func(x int) string {
+			c := p.em.ScrollbackCellAt(x, y)
+			if c == nil {
+				return ""
+			}
+			return c.Content
+		}, p.w))
+	}
+	for y := 0; y < p.h; y++ {
+		out = append(out, plainLineFromCells(func(x int) string {
+			c := p.em.CellAt(x, y)
+			if c == nil {
+				return ""
+			}
+			return c.Content
+		}, p.w))
+	}
+	return out
+}
+
+// plainLineFromCells assembles one row by joining cell contents and
+// trimming trailing whitespace. Cells that report empty content (nil
+// pointer or zero-width filler from a wide grapheme) are skipped so
+// CJK / emoji rows don't gain stray spaces.
+func plainLineFromCells(at func(int) string, w int) string {
+	var b strings.Builder
+	for x := 0; x < w; x++ {
+		s := at(x)
+		if s == "" {
+			continue
+		}
+		b.WriteString(s)
+	}
+	return strings.TrimRight(b.String(), " \t")
+}
+
 // Size returns the cached (w, h) of the pane. Constant between
 // Resize calls.
 func (p *Pane) Size() (w, h int) {
@@ -191,6 +246,18 @@ func (p *Pane) Size() (w, h int) {
 func KeyToBytes(msg tea.KeyMsg) []byte {
 	if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
 		return []byte(string(msg.Runes))
+	}
+	// "Newline-in-prompt" for Claude Code (and most modern REPLs)
+	// is ESC+CR. Terminals emit this byte sequence for either
+	// Shift+Enter or Option/Alt+Enter depending on emulator config;
+	// Bubble Tea v1.x surfaces it as ``alt+enter`` (the common case —
+	// terminals encode any Alt+key as ESC+key) and rarely
+	// ``shift+enter`` (only on terminals with explicit shift-modifier
+	// reporting enabled). Match both string forms so multiline-prompt
+	// works on every reasonable terminal config.
+	switch msg.String() {
+	case "alt+enter", "shift+enter":
+		return []byte{0x1b, '\r'}
 	}
 	switch msg.Type {
 	case tea.KeyEnter:
