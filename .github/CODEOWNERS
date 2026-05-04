@@ -1,0 +1,7 @@
+# Every path in this repo is owned by @talmes1502.
+# Combined with the "Require review from Code Owners" branch protection
+# rule on `main`, this means every PR — including from external forks —
+# needs an approving review from talmes1502 before it can merge.
+# Future collaborators added under Settings → Collaborators can review
+# but cannot satisfy the code-owner check.
+* @talmes1502
