@@ -29,6 +29,7 @@ def _peer_uid(sock: socket.socket) -> int | None:
         pass
     try:
         from socket import getpeereid  # type: ignore[attr-defined]
+
         uid, _ = getpeereid(sock.fileno())
         return int(uid)
     except (ImportError, OSError):
@@ -68,7 +69,9 @@ class Server:
         if self._server is not None:
             await self._server.wait_closed()
 
-    async def _handle_conn(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def _handle_conn(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
         sock: socket.socket = writer.get_extra_info("socket")
         uid = _peer_uid(sock)
         if uid is not None and uid != os.getuid():

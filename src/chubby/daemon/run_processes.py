@@ -51,9 +51,7 @@ class RunProcess:
 
 
 def _login_shell_argv(cmd: str) -> list[str]:
-    shell = os.environ.get("SHELL") or (
-        "/bin/zsh" if sys.platform == "darwin" else "/bin/bash"
-    )
+    shell = os.environ.get("SHELL") or ("/bin/zsh" if sys.platform == "darwin" else "/bin/bash")
     return [shell, "-lc", cmd]
 
 
@@ -90,8 +88,7 @@ class RunProcessRegistry:
             if key in self._procs:
                 existing = self._meta[key]
                 raise RuntimeError(
-                    f"run {index} for session {session_id} is already "
-                    f"running as pid {existing.pid}"
+                    f"run {index} for session {session_id} is already running as pid {existing.pid}"
                 )
             log_path.parent.mkdir(parents=True, exist_ok=True)
             log_fh = log_path.open("ab", buffering=0)
@@ -132,9 +129,7 @@ class RunProcessRegistry:
         watcher.add_done_callback(self._watchers.discard)
         return meta
 
-    async def _watch(
-        self, key: tuple[str, int], proc: asyncio.subprocess.Process
-    ) -> None:
+    async def _watch(self, key: tuple[str, int], proc: asyncio.subprocess.Process) -> None:
         """Await the process and drop the registry entry when it exits.
         Without this, a ``bun dev`` that died on its own would still show
         up in ``list`` and refuse a re-launch."""
@@ -176,9 +171,7 @@ class RunProcessRegistry:
             keys = [k for k in self._procs if k[0] == session_id]
             procs = [self._procs[k] for k in keys]
         # Terminate concurrently — many sessions, many dev servers.
-        await asyncio.gather(
-            *(self._terminate(p) for p in procs), return_exceptions=True
-        )
+        await asyncio.gather(*(self._terminate(p) for p in procs), return_exceptions=True)
         async with self._lock:
             for k in keys:
                 self._procs.pop(k, None)
@@ -197,7 +190,7 @@ class RunProcessRegistry:
         try:
             await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE_S)
             return
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         try:
             proc.kill()
@@ -205,14 +198,12 @@ class RunProcessRegistry:
             return
         try:
             await asyncio.wait_for(proc.wait(), timeout=1.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("run process pid=%s ignored SIGKILL", proc.pid)
 
     def list_for_session(self, session_id: str) -> list[RunProcess]:
         """Snapshot of currently-running entries for one session."""
-        return [
-            v for (sid, _idx), v in self._meta.items() if sid == session_id
-        ]
+        return [v for (sid, _idx), v in self._meta.items() if sid == session_id]
 
     def is_running(self, session_id: str, index: int) -> bool:
         return (session_id, index) in self._procs

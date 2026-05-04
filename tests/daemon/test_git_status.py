@@ -8,7 +8,6 @@ and pushing/pulling to set up the upstream tracking shape that
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 import subprocess
 from pathlib import Path
@@ -157,6 +156,7 @@ async def test_sweep_skips_dead_sessions(tmp_path: Path) -> None:
     reg = Registry(hub_run_id="hr_t", subs=subs)  # type: ignore[arg-type]
     s = await reg.register(name="ws", kind=SessionKind.WRAPPED, cwd=str(work))
     from chubby.daemon.session import SessionStatus
+
     await reg.update_status(s.id, SessionStatus.DEAD)
     subs.broadcasts.clear()
 

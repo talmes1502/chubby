@@ -46,11 +46,7 @@ async def _run_release(reg: Registry, sid: str) -> dict:
         write = reg._wrapper_writers.get(s.id)
         if write is not None:
             try:
-                await write(
-                    encode_message(
-                        Event(method="shutdown", params={"session_id": s.id})
-                    )
-                )
+                await write(encode_message(Event(method="shutdown", params={"session_id": s.id})))
             except Exception:
                 pass
     elif s.kind is SessionKind.TMUX_ATTACHED:
@@ -152,9 +148,7 @@ async def test_release_with_no_attached_wrapper_still_removes() -> None:
         cwd="/tmp/proj",
         pid=77777,
     )
-    await reg.set_claude_session_id(
-        s.id, "22222222-2222-2222-2222-222222222222"
-    )
+    await reg.set_claude_session_id(s.id, "22222222-2222-2222-2222-222222222222")
     # No attach_wrapper — writers map empty for this id.
     assert s.id not in reg._wrapper_writers
 
@@ -182,6 +176,7 @@ async def test_release_completes_chain_when_a_step_raises(
     list_all anyway.
     """
     from pathlib import Path
+
     from chubby.daemon.events import EventLog
     from chubby.daemon.handlers import CallContext
     from chubby.daemon.main import _build_registry
@@ -208,9 +203,7 @@ async def test_release_completes_chain_when_a_step_raises(
             cwd=str(run_dir),
             pid=12345,
         )
-        await reg.set_claude_session_id(
-            s.id, "33333333-3333-3333-3333-333333333333"
-        )
+        await reg.set_claude_session_id(s.id, "33333333-3333-3333-3333-333333333333")
 
         # Make detach_wrapper blow up — it sits between update_status
         # and remove_session in release_session, and is the kind of
@@ -226,16 +219,12 @@ async def test_release_completes_chain_when_a_step_raises(
         async def _noop_write(_b: bytes) -> None:
             return None
 
-        ctx = CallContext(
-            connection_id=0, write=_noop_write, on_close=lambda _cb: None
-        )
+        ctx = CallContext(connection_id=0, write=_noop_write, on_close=lambda _cb: None)
 
         handlers = _build_registry(reg, run, db, subs)
         # The RPC call must not raise — the user committed to release;
         # cleanup errors are best-effort.
-        result = await handlers.invoke(
-            "release_session", {"id": s.id}, ctx
-        )
+        result = await handlers.invoke("release_session", {"id": s.id}, ctx)
         assert result["claude_session_id"] == "33333333-3333-3333-3333-333333333333"
 
         # Restore so list_all doesn't accidentally re-trip the patch.

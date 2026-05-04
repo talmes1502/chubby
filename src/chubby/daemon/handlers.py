@@ -26,9 +26,7 @@ class CallContext:
     on_close: Callable[[Callable[[], Awaitable[None]]], None]
 
 
-Handler = Callable[
-    [dict[str, Any], CallContext], Awaitable[dict[str, Any] | None]
-]
+Handler = Callable[[dict[str, Any], CallContext], Awaitable[dict[str, Any] | None]]
 
 
 class NoSuchHandler(Exception):

@@ -14,11 +14,10 @@ pipelines work.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from typing import Any
-
-import json
 
 import typer
 
@@ -107,9 +106,7 @@ def run(
                 return
             if bulk_filters_used and not confirm and OUT.mode is Mode.PRETTY:
                 preview = ", ".join(s["name"] for s in targets)
-                typer.confirm(
-                    f"release {len(targets)} sessions ({preview})?", abort=True
-                )
+                typer.confirm(f"release {len(targets)} sessions ({preview})?", abort=True)
 
             released: list[dict[str, Any]] = []
             failed: list[tuple[str, str]] = []
@@ -124,9 +121,7 @@ def run(
                 if len(targets) == 1 and not failed:
                     typer.echo(f"released {released[0]['name']}")
                 else:
-                    typer.echo(
-                        f"released: {len(released)} ok, {len(failed)} failed"
-                    )
+                    typer.echo(f"released: {len(released)} ok, {len(failed)} failed")
                     for name, err in failed:
                         typer.echo(f"  x {name}: {err}")
             elif OUT.mode is Mode.QUIET:
@@ -140,13 +135,14 @@ def run(
                 # actually happened. Previously emitted ``released``
                 # only — and a daemon-side cleanup error would surface
                 # as ``[]`` even when the work clearly happened.
-                typer.echo(json.dumps({
-                    "released": released,
-                    "failed": [
-                        {"name": name, "error": err}
-                        for name, err in failed
-                    ],
-                }))
+                typer.echo(
+                    json.dumps(
+                        {
+                            "released": released,
+                            "failed": [{"name": name, "error": err} for name, err in failed],
+                        }
+                    )
+                )
         finally:
             await c.close()
 
@@ -171,18 +167,14 @@ def _select_targets(
         matched = [s for s in live if s["name"] in wanted]
         missing = wanted - {s["name"] for s in matched}
         if missing:
-            raise typer.BadParameter(
-                f"no live session(s) named: {', '.join(sorted(missing))}"
-            )
+            raise typer.BadParameter(f"no live session(s) named: {', '.join(sorted(missing))}")
         return matched
     targets = live
     if tags:
         tagset = set(tags)
         targets = [t for t in targets if tagset.intersection(t.get("tags", []))]
     if idle_threshold_ms is not None:
-        targets = [
-            t for t in targets if t.get("last_activity_at", 0) <= idle_threshold_ms
-        ]
+        targets = [t for t in targets if t.get("last_activity_at", 0) <= idle_threshold_ms]
     return targets
 
 

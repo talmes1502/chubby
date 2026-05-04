@@ -70,9 +70,7 @@ async def test_usage_broadcast_emits_session_usage_changed(tmp_path: Path) -> No
             timeout=3.0,
         )
 
-        usage_events = [
-            (m, p) for m, p in subs.broadcasts if m == "session_usage_changed"
-        ]
+        usage_events = [(m, p) for m, p in subs.broadcasts if m == "session_usage_changed"]
         assert len(usage_events) == 1
         _, params = usage_events[0]
         assert params["session_id"] == "s_u"

@@ -9,7 +9,6 @@ deterministically in a tight test.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -35,9 +34,7 @@ async def test_set_ports_emits_event_on_change() -> None:
     s = await reg.register(name="t", kind=SessionKind.WRAPPED, cwd="/tmp")
     subs.broadcasts.clear()  # ignore session_added
 
-    changed = await reg.set_ports(
-        s.id, [{"port": 3000, "pid": 42, "address": "127.0.0.1"}]
-    )
+    changed = await reg.set_ports(s.id, [{"port": 3000, "pid": 42, "address": "127.0.0.1"}])
     assert changed is True
     events = [p for m, p in subs.broadcasts if m == "session_ports_changed"]
     assert len(events) == 1
@@ -54,9 +51,7 @@ async def test_set_ports_idempotent_when_unchanged() -> None:
 
     await reg.set_ports(s.id, [{"port": 3000, "pid": 42, "address": "0.0.0.0"}])
     subs.broadcasts.clear()
-    changed = await reg.set_ports(
-        s.id, [{"port": 3000, "pid": 42, "address": "127.0.0.1"}]
-    )
+    changed = await reg.set_ports(s.id, [{"port": 3000, "pid": 42, "address": "127.0.0.1"}])
     assert changed is False
     events = [m for m, _ in subs.broadcasts if m == "session_ports_changed"]
     assert events == []

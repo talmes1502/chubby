@@ -62,7 +62,7 @@ async def test_attach_existing_readonly_no_transcript(
         assert s["kind"] == "readonly"
         assert s["claude_session_id"] is None
         assert s["pid"] == 99999
-        assert s["name"] == f"myproj-99999"
+        assert s["name"] == "myproj-99999"
 
         await client.close()
     finally:
@@ -97,9 +97,7 @@ async def test_attach_existing_readonly_finds_transcript(
     sub = fake_root / "any-encoded-name"
     sub.mkdir(parents=True)
     transcript = sub / "abc-123-456.jsonl"
-    transcript.write_text(
-        json.dumps({"type": "first", "cwd": str(cwd)}) + "\n"
-    )
+    transcript.write_text(json.dumps({"type": "first", "cwd": str(cwd)}) + "\n")
 
     monkeypatch.setattr(hooks_mod, "claude_projects_root", lambda: fake_root)
 

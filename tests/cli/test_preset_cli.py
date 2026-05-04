@@ -16,9 +16,7 @@ from typer.testing import CliRunner
 
 
 @pytest.fixture(autouse=True)
-def _isolated_home(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Path:
+def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("CHUBBY_HOME", str(tmp_path))
     return tmp_path
 
@@ -103,6 +101,7 @@ def test_preset_apply_dispatches_to_spawn_session(
             pass
 
     import chubby.cli.commands.preset as preset_cmd
+
     monkeypatch.setattr(preset_cmd, "Client", _FakeClient)
 
     runner = CliRunner()
@@ -122,9 +121,7 @@ def test_preset_apply_dispatches_to_spawn_session(
     assert "{" not in call["params"]["branch"]
 
 
-def test_preset_apply_overrides_name(
-    _isolated_home: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_preset_apply_overrides_name(_isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``preset apply web --name custom`` overrides the resolved
     name without otherwise affecting the preset."""
     from chubby.cli.main import app
@@ -143,30 +140,25 @@ def test_preset_apply_overrides_name(
             pass
 
     import chubby.cli.commands.preset as preset_cmd
+
     monkeypatch.setattr(preset_cmd, "Client", _FakeClient)
 
     runner = CliRunner()
     runner.invoke(app, ["preset", "create", "web", "--cwd", "/tmp/web"])
-    r = runner.invoke(
-        app, ["preset", "apply", "web", "--name", "feature-x"]
-    )
+    r = runner.invoke(app, ["preset", "apply", "web", "--name", "feature-x"])
     assert r.exit_code == 0, r.output
     assert captured[0]["name"] == "feature-x"
     assert captured[0]["cwd"] == "/tmp/web"
 
 
-def test_preset_list_json_output(
-    _isolated_home: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_preset_list_json_output(_isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The shared OUT formatter applies — ``--json`` returns the
     raw array."""
     monkeypatch.setenv("CLAUDE_CODE", "1")  # auto-JSON via env
     from chubby.cli.main import app
 
     runner = CliRunner()
-    runner.invoke(
-        app, ["preset", "create", "web", "--cwd", "/x"]
-    )
+    runner.invoke(app, ["preset", "create", "web", "--cwd", "/x"])
     r = runner.invoke(app, ["preset", "list"])
     assert r.exit_code == 0, r.output
     parsed = json.loads(r.output.strip())

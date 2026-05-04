@@ -47,9 +47,7 @@ class WrapperClient:
         async with self._connect_lock:
             if self._reader is not None and self._writer is not None:
                 return
-            self._reader, self._writer = await asyncio.open_unix_connection(
-                str(self.sock_path)
-            )
+            self._reader, self._writer = await asyncio.open_unix_connection(str(self.sock_path))
             self._reader_task = asyncio.create_task(self._read_loop())
             self._writer_task = asyncio.create_task(self._write_loop())
 
@@ -122,12 +120,10 @@ class WrapperClient:
         if result is None:
             return {}
         if not isinstance(result, dict):
-            raise ChubError(
-                ErrorCode.INTERNAL, f"unexpected result type {type(result)}"
-            )
+            raise ChubError(ErrorCode.INTERNAL, f"unexpected result type {type(result)}")
         return result
 
-    async def events(self) -> "asyncio.Queue[Event]":
+    async def events(self) -> asyncio.Queue[Event]:
         """Return the inbound-events queue. Consumers should `await q.get()`.
 
         The queue is shared (single consumer expected): the wrapper main
@@ -176,9 +172,7 @@ class WrapperClient:
             {"session_id": self.session_id, "claude_pid": claude_pid},
         )
 
-    async def push_chunk(
-        self, *, seq: int, data: bytes, role: str = "raw"
-    ) -> None:
+    async def push_chunk(self, *, seq: int, data: bytes, role: str = "raw") -> None:
         if self.session_id is None:
             return
         await self._call(

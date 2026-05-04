@@ -49,6 +49,7 @@ def run(
             if pr is not None:
                 params["pr"] = pr
             r = await c.call("spawn_session", params)
+
             # Pretty: "spawned <id> (<name>)"; quiet: just the id;
             # json: the full session record. OUT.object handles the
             # session-wrapper extraction for the QUIET id path.

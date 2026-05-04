@@ -68,9 +68,7 @@ def run(
     force_download: bool = typer.Option(
         False, "--force-download", help="redownload the binary even if cached"
     ),
-    focus: str | None = typer.Option(
-        None, "--focus", help="Pre-focus this session at startup"
-    ),
+    focus: str | None = typer.Option(None, "--focus", help="Pre-focus this session at startup"),
     detached: bool = typer.Option(
         False, "--detached", help="Start with rail collapsed (compact view)"
     ),

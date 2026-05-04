@@ -47,9 +47,7 @@ async def test_wrapper_disconnect_marks_session_dead(chub_home: Path) -> None:
         observer = Client(sock)
         for _ in range(50):
             listed = await observer.call("list_sessions", {})
-            match = next(
-                (s for s in listed["sessions"] if s["id"] == sid), None
-            )
+            match = next((s for s in listed["sessions"] if s["id"] == sid), None)
             if match is not None and match["status"] == "dead":
                 break
             await asyncio.sleep(0.02)

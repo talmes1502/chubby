@@ -79,10 +79,18 @@ class _FakeClient:
         self.push_chunks: list[bytes] = []
         self._events: asyncio.Queue[Event] = asyncio.Queue()
 
-    async def register(self, *, name: str, cwd: str, pid: int, tags: list[str], claude_pid: int | None = None) -> str:
-        self.register_calls.append({
-            "name": name, "cwd": cwd, "pid": pid, "tags": tags, "claude_pid": claude_pid,
-        })
+    async def register(
+        self, *, name: str, cwd: str, pid: int, tags: list[str], claude_pid: int | None = None
+    ) -> str:
+        self.register_calls.append(
+            {
+                "name": name,
+                "cwd": cwd,
+                "pid": pid,
+                "tags": tags,
+                "claude_pid": claude_pid,
+            }
+        )
         self.session_id = "s_test"
         return "s_test"
 
@@ -140,9 +148,7 @@ async def _run_one_iteration(
 
     async def kick_restart() -> None:
         await asyncio.sleep(0.05)
-        await client._events.put(
-            Event(method="restart_claude", params={"session_id": "s_test"})
-        )
+        await client._events.put(Event(method="restart_claude", params={"session_id": "s_test"}))
 
     asyncio.create_task(kick_restart())
 
@@ -167,7 +173,9 @@ async def test_first_claude_launch_pushes_erase_display(
     """First iteration: harmless on a fresh grid but still pushed
     so the contract is uniform across iterations."""
     client = await _run_one_iteration(
-        monkeypatch, is_first_iteration=True, resume=None,
+        monkeypatch,
+        is_first_iteration=True,
+        resume=None,
     )
     assert client.push_chunks, "wrapper never pushed any chunks"
     assert client.push_chunks[0] == _ERASE_ALL, (
@@ -183,11 +191,11 @@ async def test_respawn_pushes_erase_display_before_new_render(
     produces, otherwise the TUI's vt grid keeps stale cells from the
     prior claude (the bug's symptom)."""
     client = await _run_one_iteration(
-        monkeypatch, is_first_iteration=False,
+        monkeypatch,
+        is_first_iteration=False,
         resume="00112233-4455-6677-8899-aabbccddeeff",
     )
     assert client.push_chunks, "wrapper never pushed any chunks"
     assert client.push_chunks[0] == _ERASE_ALL, (
-        f"first chunk on respawn should be erase-display; got "
-        f"{client.push_chunks[0]!r}"
+        f"first chunk on respawn should be erase-display; got {client.push_chunks[0]!r}"
     )

@@ -11,7 +11,6 @@ from collections.abc import AsyncIterator
 
 import ptyprocess
 
-
 # Env vars that signal "we're already inside a Claude Code agent
 # context" — passed through to a child claude they'd confuse the
 # child's session id resolution and hook firing. Strip them before

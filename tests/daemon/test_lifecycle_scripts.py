@@ -7,9 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from chubby.daemon.lifecycle_scripts import LifecycleResult, run_lifecycle
+from chubby.daemon.lifecycle_scripts import run_lifecycle
 
 
 async def test_empty_commands_returns_skipped(tmp_path: Path) -> None:

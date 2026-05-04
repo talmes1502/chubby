@@ -31,9 +31,7 @@ def _chub_inner_names(groups: list[dict]) -> list[str]:
     return out
 
 
-def test_install_hooks_idempotent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_install_hooks_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     _reload_module(monkeypatch, fake_home)
@@ -100,18 +98,14 @@ def test_install_hooks_removes_session_start_on_downgrade(
     runner = CliRunner()
     runner.invoke(app, ["install-hooks", "--auto-register"])
     settings = json.loads((fake_home / ".claude" / "settings.json").read_text())
-    assert "chubby-register-readonly" in _chub_inner_names(
-        settings["hooks"]["SessionStart"]
-    )
+    assert "chubby-register-readonly" in _chub_inner_names(settings["hooks"]["SessionStart"])
 
     runner.invoke(app, ["install-hooks"])
     settings = json.loads((fake_home / ".claude" / "settings.json").read_text())
     session_start = settings.get("hooks", {}).get("SessionStart", [])
     assert "chubby-register-readonly" not in _chub_inner_names(session_start)
     # Stop hook stays put.
-    assert "chubby-mark-idle" in _chub_inner_names(
-        settings["hooks"]["Stop"]
-    )
+    assert "chubby-mark-idle" in _chub_inner_names(settings["hooks"]["Stop"])
 
 
 def test_install_hooks_downgrade_preserves_user_session_start_entries(
@@ -155,9 +149,7 @@ def test_install_hooks_downgrade_preserves_user_session_start_entries(
     assert "chubby-register-readonly" not in names
 
 
-def test_install_hooks_preserves_existing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_install_hooks_preserves_existing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     claude_dir = fake_home / ".claude"
@@ -165,11 +157,7 @@ def test_install_hooks_preserves_existing(
     # Pre-existing user hook in the legacy flat shape — chubby must leave
     # user entries alone even if they don't match the current schema.
     pre_existing = {
-        "hooks": {
-            "SessionStart": [
-                {"name": "user-custom", "command": "echo custom"}
-            ]
-        },
+        "hooks": {"SessionStart": [{"name": "user-custom", "command": "echo custom"}]},
         "theme": "dark",
     }
     (claude_dir / "settings.json").write_text(json.dumps(pre_existing))
@@ -281,8 +269,7 @@ def test_install_hooks_migrates_anonymous_legacy_entries(
                         {
                             "type": "command",
                             "command": (
-                                "chub mark-idle "
-                                "--claude-session-id $CLAUDE_SESSION_ID || true"
+                                "chub mark-idle --claude-session-id $CLAUDE_SESSION_ID || true"
                             ),
                         }
                     ],
@@ -360,6 +347,4 @@ def test_install_hooks_dry_run_does_not_write(
     assert not (fake_home / ".claude" / "settings.json").exists()
     # The dry-run output should be valid JSON containing our hook names.
     out_json = json.loads(r.output)
-    assert "chubby-register-readonly" in _chub_inner_names(
-        out_json["hooks"]["SessionStart"]
-    )
+    assert "chubby-register-readonly" in _chub_inner_names(out_json["hooks"]["SessionStart"])

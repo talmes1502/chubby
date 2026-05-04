@@ -57,7 +57,7 @@ async def _can_connect(timeout: float = 0.5) -> bool:
             return True
         finally:
             await c.close()
-    except (OSError, asyncio.TimeoutError, ConnectionError):
+    except (TimeoutError, OSError, ConnectionError):
         return False
     except Exception:
         return False
@@ -105,8 +105,7 @@ async def _auto_attach_readonly() -> int:
         cands = [
             x
             for x in scan["candidates"]
-            if not x.get("already_attached")
-            and x.get("classification") == "promote_required"
+            if not x.get("already_attached") and x.get("classification") == "promote_required"
         ]
         n = 0
         for x in cands:
@@ -127,9 +126,7 @@ def run(
         "--auto-attach/--no-auto-attach",
         help="Bulk-register every promote_required candidate as readonly.",
     ),
-    no_hooks: bool = typer.Option(
-        False, "--no-hooks", help="Skip Claude hook install."
-    ),
+    no_hooks: bool = typer.Option(False, "--no-hooks", help="Skip Claude hook install."),
     no_tui: bool = typer.Option(
         False, "--no-tui", help="Don't launch the TUI; just bootstrap and exit."
     ),

@@ -27,11 +27,9 @@ async def test_capture_pane_and_send_keys(tmp_path: Path) -> None:
     await pre.wait()
     cmd = (
         f'{sys.executable} -c "import sys\n'
-        "for line in sys.stdin: print(\\\"echo:\\\", line.strip(), flush=True)\""
+        'for line in sys.stdin: print(\\"echo:\\", line.strip(), flush=True)"'
     )
-    new = await asyncio.create_subprocess_exec(
-        _tmux, "new-session", "-d", "-s", sess, cmd
-    )
+    new = await asyncio.create_subprocess_exec(_tmux, "new-session", "-d", "-s", sess, cmd)
     rc = await new.wait()
     assert rc == 0, "tmux new-session failed"
     target = f"{sess}:0.0"

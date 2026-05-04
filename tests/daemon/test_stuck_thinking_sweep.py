@@ -81,10 +81,14 @@ async def test_sweep_ignores_idle_and_dead(tmp_path: Path) -> None:
         subs = _FakeSubs()
         reg = Registry(hub_run_id="hr_t", db=db, subs=subs)  # type: ignore[arg-type]
         s_idle = await reg.register(
-            name="i", kind=SessionKind.WRAPPED, cwd=str(tmp_path),
+            name="i",
+            kind=SessionKind.WRAPPED,
+            cwd=str(tmp_path),
         )
         s_dead = await reg.register(
-            name="d", kind=SessionKind.WRAPPED, cwd=str(tmp_path),
+            name="d",
+            kind=SessionKind.WRAPPED,
+            cwd=str(tmp_path),
         )
         async with reg._lock:
             for sid, status in (

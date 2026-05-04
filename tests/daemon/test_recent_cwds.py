@@ -31,9 +31,7 @@ def short_home() -> Path:
 
 async def _rpc(sock_path: Path, method: str, params: dict) -> dict:
     reader, writer = await asyncio.open_unix_connection(str(sock_path))
-    body = json.dumps(
-        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
-    ).encode()
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
     writer.write(frame.encode(body))
     await writer.drain()
     raw = await frame.read_frame(reader)
@@ -51,9 +49,7 @@ async def test_recent_cwds_persistence_distinct_and_ordered(tmp_path: Path) -> N
     try:
         # Three sessions: /a (oldest), /b (middle), /a (newest — same cwd as the
         # oldest; should bubble /a to the front when we MAX(created_at)).
-        for i, (cwd, ts) in enumerate(
-            [("/a", 1000), ("/b", 2000), ("/a", 3000)]
-        ):
+        for i, (cwd, ts) in enumerate([("/a", 1000), ("/b", 2000), ("/a", 3000)]):
             await db.upsert_session(
                 Session(
                     id=f"s{i}",

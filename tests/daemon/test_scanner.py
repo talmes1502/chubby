@@ -25,7 +25,7 @@ async def test_process_cwd_for_self() -> None:
     cwd = await _process_cwd(os.getpid())
     if cwd is not None:  # may be None in some sandboxed CI
         # ASYNC240 noqa: just normalising paths in the assertion, not real I/O.
-        assert os.path.abspath(cwd) == os.path.abspath(os.getcwd())  # noqa: ASYNC240
+        assert os.path.abspath(cwd) == os.path.abspath(os.getcwd())
 
 
 async def test_process_cwd_for_nonexistent_pid() -> None:

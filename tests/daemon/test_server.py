@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import socket
 import tempfile
 from pathlib import Path
@@ -62,7 +61,7 @@ async def test_ping_round_trip(started_server: Path) -> None:
 async def test_unknown_method_returns_error(started_server: Path) -> None:
     resp = await _rpc(started_server, "nope", {})
     assert resp["id"] == 1
-    assert resp["error"]["code"] == -33005   # INVALID_PAYLOAD
+    assert resp["error"]["code"] == -33005  # INVALID_PAYLOAD
 
 
 async def test_uid_check_accepts_self(started_server: Path) -> None:

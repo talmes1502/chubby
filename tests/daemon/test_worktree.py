@@ -46,9 +46,7 @@ def _init_repo(tmp_path: Path) -> Path:
 
 
 @pytest.fixture(autouse=True)
-def _isolated_worktrees_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Path:
+def _isolated_worktrees_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect chubby's worktree root so tests can't leak into the
     user's real ``~/.claude/chubby/worktrees``."""
     root = tmp_path / "wt-root"

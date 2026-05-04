@@ -80,9 +80,7 @@ async def _run_migrations(conn: aiosqlite.Connection) -> None:
     ]
     for table, col, type_suffix in additions:
         try:
-            await conn.execute(
-                f"ALTER TABLE {table} ADD COLUMN {col} {type_suffix}"
-            )
+            await conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {type_suffix}")
         except Exception as e:  # aiosqlite wraps OperationalError
             msg = str(e).lower()
             if "duplicate column" in msg:
@@ -109,7 +107,7 @@ class Database:
         self.conn = conn
 
     @classmethod
-    async def open(cls, path: Path) -> "Database":
+    async def open(cls, path: Path) -> Database:
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = await aiosqlite.connect(str(path))
         await conn.executescript(SCHEMA)
@@ -150,10 +148,22 @@ class Database:
                  ended_at=excluded.ended_at, worktree_path=excluded.worktree_path,
                  first_user_message=excluded.first_user_message""",
             (
-                s.id, s.hub_run_id, s.name, s.color, s.kind.value, s.cwd,
-                s.claude_session_id, s.pid, s.tmux_target, json.dumps(s.tags),
-                s.status.value, s.created_at, s.last_activity_at, s.ended_at,
-                s.worktree_path, s.first_user_message,
+                s.id,
+                s.hub_run_id,
+                s.name,
+                s.color,
+                s.kind.value,
+                s.cwd,
+                s.claude_session_id,
+                s.pid,
+                s.tmux_target,
+                json.dumps(s.tags),
+                s.status.value,
+                s.created_at,
+                s.last_activity_at,
+                s.ended_at,
+                s.worktree_path,
+                s.first_user_message,
             ),
         )
         await self.conn.commit()

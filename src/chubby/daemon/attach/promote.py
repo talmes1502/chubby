@@ -15,7 +15,7 @@ import sys
 from chubby.daemon import paths
 
 
-async def wait_for_exit(pid: int, *, timeout: float = 600.0) -> bool:  # noqa: ASYNC109
+async def wait_for_exit(pid: int, *, timeout: float = 600.0) -> bool:
     """Poll ``kill(pid, 0)`` every 0.5s until the pid is dead or timeout fires.
 
     Returns ``True`` if the process exited, ``False`` if the timeout fired.

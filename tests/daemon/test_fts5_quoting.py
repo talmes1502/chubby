@@ -66,7 +66,11 @@ async def test_search_blank_query_returns_no_rows(tmp_path: Path) -> None:
     db = await Database.open(tmp_path / "s.db")
     try:
         await db.insert_message(
-            session_id="s_1", hub_run_id="hr_1", ts=1, role="user", content="hello",
+            session_id="s_1",
+            hub_run_id="hr_1",
+            ts=1,
+            role="user",
+            content="hello",
         )
         assert await db.search("") == []
         assert await db.search("   ") == []

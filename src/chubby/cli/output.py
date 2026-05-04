@@ -19,15 +19,14 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from collections.abc import Callable
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 import typer
 
 
-class Mode(str, Enum):
+class Mode(StrEnum):
     PRETTY = "pretty"
     JSON = "json"
     QUIET = "quiet"

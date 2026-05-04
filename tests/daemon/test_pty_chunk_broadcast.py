@@ -7,7 +7,6 @@ live PTY pane.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 from pathlib import Path
 from typing import Any
@@ -36,7 +35,9 @@ async def test_record_chunk_broadcasts_pty_chunk(tmp_path: Path) -> None:
         subs = _FakeSubs()
         reg = Registry(hub_run_id="hr_t", db=db, subs=subs)  # type: ignore[arg-type]
         s = await reg.register(
-            name="t", kind=SessionKind.WRAPPED, cwd=str(tmp_path),
+            name="t",
+            kind=SessionKind.WRAPPED,
+            cwd=str(tmp_path),
         )
         # record_chunk requires a writer be attached first.
         writer = LogWriter(tmp_path / "logs", color="#abc123", session_name="t")
@@ -46,9 +47,7 @@ async def test_record_chunk_broadcasts_pty_chunk(tmp_path: Path) -> None:
         await reg.record_chunk(s.id, chunk, role="assistant")
 
         # First broadcast must be the pty_chunk for this session.
-        pty_events = [
-            (m, p) for (m, p) in subs.broadcasts if m == "pty_chunk"
-        ]
+        pty_events = [(m, p) for (m, p) in subs.broadcasts if m == "pty_chunk"]
         assert len(pty_events) == 1, (
             f"expected exactly one pty_chunk event, got {subs.broadcasts!r}"
         )
@@ -56,9 +55,7 @@ async def test_record_chunk_broadcasts_pty_chunk(tmp_path: Path) -> None:
         assert params["session_id"] == s.id
         assert params["role"] == "assistant"
         decoded = base64.b64decode(params["chunk_b64"])
-        assert decoded == chunk, (
-            f"chunk_b64 round-trip mismatch: got {decoded!r}, want {chunk!r}"
-        )
+        assert decoded == chunk, f"chunk_b64 round-trip mismatch: got {decoded!r}, want {chunk!r}"
     finally:
         await db.close()
 
@@ -73,14 +70,14 @@ async def test_record_chunk_no_writer_no_broadcast(tmp_path: Path) -> None:
         subs = _FakeSubs()
         reg = Registry(hub_run_id="hr_t", db=db, subs=subs)  # type: ignore[arg-type]
         s = await reg.register(
-            name="nowriter", kind=SessionKind.WRAPPED, cwd=str(tmp_path),
+            name="nowriter",
+            kind=SessionKind.WRAPPED,
+            cwd=str(tmp_path),
         )
         # Deliberately do NOT attach_log_writer.
         await reg.record_chunk(s.id, b"never seen", role="assistant")
 
-        pty_events = [
-            (m, p) for (m, p) in subs.broadcasts if m == "pty_chunk"
-        ]
+        pty_events = [(m, p) for (m, p) in subs.broadcasts if m == "pty_chunk"]
         assert pty_events == [], (
             f"expected no pty_chunk broadcast when writer is absent, got {pty_events!r}"
         )
@@ -99,7 +96,9 @@ async def test_pty_ring_replay_buffer(tmp_path: Path) -> None:
         subs = _FakeSubs()
         reg = Registry(hub_run_id="hr_t", db=db, subs=subs)  # type: ignore[arg-type]
         s = await reg.register(
-            name="ring", kind=SessionKind.WRAPPED, cwd=str(tmp_path),
+            name="ring",
+            kind=SessionKind.WRAPPED,
+            cwd=str(tmp_path),
         )
         await reg.attach_log_writer(
             s.id,
@@ -112,9 +111,7 @@ async def test_pty_ring_replay_buffer(tmp_path: Path) -> None:
         await reg.record_chunk(s.id, b"line3\r\n", role="assistant")
 
         buf = reg.get_pty_buffer(s.id)
-        assert buf == b"line1\r\nline2\r\nline3\r\n", (
-            f"expected concatenated ring, got {buf!r}"
-        )
+        assert buf == b"line1\r\nline2\r\nline3\r\n", f"expected concatenated ring, got {buf!r}"
     finally:
         await db.close()
 
@@ -130,21 +127,23 @@ async def test_pty_ring_caps_at_max(tmp_path: Path) -> None:
         # Lower the cap for a focused test.
         reg._pty_ring_cap = 16  # type: ignore[misc]
         s = await reg.register(
-            name="big", kind=SessionKind.WRAPPED, cwd=str(tmp_path),
+            name="big",
+            kind=SessionKind.WRAPPED,
+            cwd=str(tmp_path),
         )
         await reg.attach_log_writer(
             s.id,
             LogWriter(tmp_path / "logs", color="#abc123", session_name="big"),
         )
 
-        await reg.record_chunk(s.id, b"AAAAAAAAAA", role="assistant")     # 10
-        await reg.record_chunk(s.id, b"BBBBBBBBBB", role="assistant")     # 10  -> 20 total -> trim to last 16
+        await reg.record_chunk(s.id, b"AAAAAAAAAA", role="assistant")  # 10
+        await reg.record_chunk(
+            s.id, b"BBBBBBBBBB", role="assistant"
+        )  # 10  -> 20 total -> trim to last 16
         buf = reg.get_pty_buffer(s.id)
         assert len(buf) == 16, f"expected ring size 16, got {len(buf)}"
         # Tail must be intact: the last 16 bytes of "AAAAAAAAAA" + "BBBBBBBBBB".
-        assert buf == (b"AAAAAAAAAA" + b"BBBBBBBBBB")[-16:], (
-            f"ring tail wrong: {buf!r}"
-        )
+        assert buf == (b"AAAAAAAAAA" + b"BBBBBBBBBB")[-16:], f"ring tail wrong: {buf!r}"
     finally:
         await db.close()
 
@@ -160,15 +159,20 @@ async def test_record_chunk_multiple_sessions_isolated(tmp_path: Path) -> None:
         reg = Registry(hub_run_id="hr_t", db=db, subs=subs)  # type: ignore[arg-type]
         a = await reg.register(name="a", kind=SessionKind.WRAPPED, cwd=str(tmp_path))
         b = await reg.register(name="b", kind=SessionKind.WRAPPED, cwd=str(tmp_path))
-        await reg.attach_log_writer(a.id, LogWriter(tmp_path / "la", color="#aaa", session_name="a"))
-        await reg.attach_log_writer(b.id, LogWriter(tmp_path / "lb", color="#bbb", session_name="b"))
+        await reg.attach_log_writer(
+            a.id, LogWriter(tmp_path / "la", color="#aaa", session_name="a")
+        )
+        await reg.attach_log_writer(
+            b.id, LogWriter(tmp_path / "lb", color="#bbb", session_name="b")
+        )
 
         await reg.record_chunk(a.id, b"alpha", role="assistant")
         await reg.record_chunk(b.id, b"beta", role="assistant")
 
         events = [
             (p["session_id"], base64.b64decode(p["chunk_b64"]))
-            for (m, p) in subs.broadcasts if m == "pty_chunk"
+            for (m, p) in subs.broadcasts
+            if m == "pty_chunk"
         ]
         assert (a.id, b"alpha") in events
         assert (b.id, b"beta") in events

@@ -29,9 +29,7 @@ def _ctx() -> CallContext:
     return CallContext(connection_id=0, write=_noop_write, on_close=lambda _cb: None)
 
 
-async def test_get_session_history_reads_jsonl_turns(
-    tmp_path: Path, monkeypatch
-) -> None:
+async def test_get_session_history_reads_jsonl_turns(tmp_path: Path, monkeypatch) -> None:
     """Records of type user / assistant become turns; everything else is
     dropped. Tool-use blocks render as the compact `⏺ Tool` summary the
     rest of the codebase already uses (see _extract_turn_text)."""
@@ -43,7 +41,8 @@ async def test_get_session_history_reads_jsonl_turns(
     jsonl = sub / f"{claude_session_id}.jsonl"
     jsonl.write_text(
         # last-prompt-style record — must be skipped.
-        json.dumps({"type": "last-prompt", "value": "ignored"}) + "\n"
+        json.dumps({"type": "last-prompt", "value": "ignored"})
+        + "\n"
         # User turn with plain string content.
         + json.dumps(
             {
@@ -51,7 +50,8 @@ async def test_get_session_history_reads_jsonl_turns(
                 "timestamp": "2025-01-01T00:00:00.000Z",
                 "message": {"role": "user", "content": "hello"},
             }
-        ) + "\n"
+        )
+        + "\n"
         # Assistant turn with text + tool_use blocks.
         + json.dumps(
             {
@@ -61,18 +61,20 @@ async def test_get_session_history_reads_jsonl_turns(
                     "role": "assistant",
                     "content": [
                         {"type": "text", "text": "let me look"},
-                        {"type": "tool_use", "name": "Read",
-                         "input": {"file_path": "/tmp/x.py"}},
+                        {"type": "tool_use", "name": "Read", "input": {"file_path": "/tmp/x.py"}},
                     ],
                 },
             }
-        ) + "\n"
+        )
+        + "\n"
         # An attachment-style record — must be skipped.
-        + json.dumps({"type": "attachment", "data": "..."}) + "\n"
+        + json.dumps({"type": "attachment", "data": "..."})
+        + "\n"
     )
 
     # Point the projects-root resolver at our fake tree.
     import chubby.daemon.hooks as hooks_mod
+
     monkeypatch.setattr(hooks_mod, "claude_projects_root", lambda: fake_root)
 
     # Build the dependency graph the handler closure expects.
@@ -82,6 +84,7 @@ async def test_get_session_history_reads_jsonl_turns(
         run_dir = tmp_path / "run"
         run_dir.mkdir(exist_ok=True)
         from chubby.daemon.events import EventLog
+
         run = HubRun(
             id="hr_t",
             started_at=0,
@@ -127,14 +130,13 @@ async def test_get_session_history_reads_jsonl_turns(
     assert tcs[0]["summary"] == "/tmp/x.py"
 
 
-async def test_get_session_history_returns_empty_when_unbound(
-    tmp_path: Path, monkeypatch
-) -> None:
+async def test_get_session_history_returns_empty_when_unbound(tmp_path: Path, monkeypatch) -> None:
     """If the chubby session has no claude_session_id yet (JSONL not bound),
     the handler returns an empty list rather than failing."""
     fake_root = tmp_path / "projects"
     fake_root.mkdir()
     import chubby.daemon.hooks as hooks_mod
+
     monkeypatch.setattr(hooks_mod, "claude_projects_root", lambda: fake_root)
 
     db = await Database.open(tmp_path / "s.db")
@@ -143,6 +145,7 @@ async def test_get_session_history_returns_empty_when_unbound(
         run_dir = tmp_path / "run"
         run_dir.mkdir(exist_ok=True)
         from chubby.daemon.events import EventLog
+
         run = HubRun(
             id="hr_t",
             started_at=0,

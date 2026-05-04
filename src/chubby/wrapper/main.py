@@ -152,6 +152,7 @@ def _resume_is_safe(claude_session_id: str | None) -> bool:
             continue
     return False
 
+
 # Strip the most common visual ANSI escape sequences before substring
 # matching: CSI ``...`` letter (covers SGR colors, cursor moves like
 # ``\x1b[1C`` that Claude uses to render words with single-space gaps),
@@ -247,7 +248,7 @@ class _RunOneResult:
     ``/detach`` release path — we exit cleanly, no restart).
     """
 
-    __slots__ = ("session_id", "restart_requested", "shutdown_requested")
+    __slots__ = ("restart_requested", "session_id", "shutdown_requested")
 
     def __init__(self) -> None:
         self.session_id: str | None = None
@@ -539,9 +540,7 @@ async def _run_one_claude(
         # has already returned; this is just a defensive backstop.
         if result.restart_requested:
             try:
-                await asyncio.wait_for(
-                    pty.closed.wait(), timeout=_RESTART_DRAIN_S
-                )
+                await asyncio.wait_for(pty.closed.wait(), timeout=_RESTART_DRAIN_S)
             except TimeoutError:
                 _diag("restart drain timeout — proceeding anyway")
     finally:
@@ -572,7 +571,6 @@ async def _run_one_claude(
     return result
 
 
-
 async def _run() -> int:
     args, passthrough = parse_args(sys.argv)
     name = args.name
@@ -599,9 +597,7 @@ async def _run() -> int:
         await asyncio.wait_for(client._ensure(), timeout=2.0)
     except (FileNotFoundError, ConnectionRefusedError, TimeoutError):
         _diag(f"chubbyd not reachable on {sock}; exec'ing plain claude")
-        sys.stderr.write(
-            f"chubby-claude: chubbyd not running on {sock}; running plain claude\n"
-        )
+        sys.stderr.write(f"chubby-claude: chubbyd not running on {sock}; running plain claude\n")
         _exec_claude_directly(passthrough)
         return 0
 
@@ -660,10 +656,7 @@ async def _run() -> int:
                 _diag(f"auto-respawn disabled via {_ENV_NO_AUTO_RESPAWN}")
                 return 0
             if resume is not None and not _resume_is_safe(resume):
-                _diag(
-                    f"dropping --resume {resume!r}: JSONL has no user "
-                    "turns; relaunching fresh"
-                )
+                _diag(f"dropping --resume {resume!r}: JSONL has no user turns; relaunching fresh")
                 resume = None
             _diag(
                 f"auto-respawning claude with --resume {resume!r} "
@@ -688,8 +681,7 @@ def main() -> None:
         import traceback
 
         sys.stderr.write(
-            f"[chubby-claude] fatal: {type(e).__name__}: {e}\n"
-            f"{traceback.format_exc()}\n"
+            f"[chubby-claude] fatal: {type(e).__name__}: {e}\n{traceback.format_exc()}\n"
         )
         sys.stderr.flush()
         raise

@@ -14,9 +14,7 @@ from chubby.daemon import paths
 
 
 def _pretty_run(r: dict[str, Any]) -> str:
-    started = datetime.fromtimestamp(r["started_at"] / 1000).strftime(
-        "%Y-%m-%d %H:%M"
-    )
+    started = datetime.fromtimestamp(r["started_at"] / 1000).strftime("%Y-%m-%d %H:%M")
     ended = (
         datetime.fromtimestamp(r["ended_at"] / 1000).strftime("%H:%M")
         if r["ended_at"]
@@ -32,9 +30,7 @@ def _pretty_match(m: dict[str, Any]) -> str:
 
 def run(
     run_id: str | None = typer.Argument(None),
-    tail: str | None = typer.Option(
-        None, "--tail", help="Tail one session's log (by name)"
-    ),
+    tail: str | None = typer.Option(None, "--tail", help="Tail one session's log (by name)"),
     search: str | None = typer.Option(None, "--search"),
 ) -> None:
     async def go() -> None:
@@ -62,9 +58,7 @@ def run(
             # plain — log files are inherently text streams.
             typer.echo(f"{run['id']}  notes={run.get('notes') or ''}")
             for s in sessions:
-                typer.echo(
-                    f"  {s['name']:20s} {s['kind']:14s} {s['status']:14s} {s['cwd']}"
-                )
+                typer.echo(f"  {s['name']:20s} {s['kind']:14s} {s['status']:14s} {s['cwd']}")
             if tail:
                 logfile = paths.runs_dir() / run_id / "logs" / f"{tail}.log"
                 if logfile.exists():

@@ -104,9 +104,7 @@ def test_broadcast_skips_dead_and_readonly(fake_client: type[FakeClient]) -> Non
 def test_broadcast_only_filter(fake_client: type[FakeClient]) -> None:
     fake_client.sessions = [_session("alpha"), _session("beta"), _session("gamma")]
     runner = CliRunner()
-    result = runner.invoke(
-        app, ["broadcast", "hi", "--yes", "--only", "alpha", "--only", "gamma"]
-    )
+    result = runner.invoke(app, ["broadcast", "hi", "--yes", "--only", "alpha", "--only", "gamma"])
     assert result.exit_code == 0, result.stdout
     sent_ids = sorted(c["session_id"] for c in fake_client.inject_calls)
     assert sent_ids == ["s_alpha", "s_gamma"]

@@ -25,18 +25,13 @@ def run(
     tag: list[str] = typer.Option(  # noqa: B008
         None, "--tag", help="Limit to sessions carrying this tag (repeatable)."
     ),
-    confirm: bool = typer.Option(
-        False, "--yes", help="Skip the confirmation prompt."
-    ),
+    confirm: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt."),
 ) -> None:
     async def go() -> None:
         c = Client(paths.sock_path())
         try:
             sessions = (await c.call("list_sessions", {})).get("sessions", [])
-            targets = [
-                s for s in sessions
-                if s["status"] != "dead" and s["kind"] != "readonly"
-            ]
+            targets = [s for s in sessions if s["status"] != "dead" and s["kind"] != "readonly"]
             if only:
                 only_set = set(only)
                 targets = [s for s in targets if s["name"] in only_set]

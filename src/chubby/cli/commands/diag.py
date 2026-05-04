@@ -23,9 +23,7 @@ from chubby.daemon import paths
 
 def run(
     name: str = typer.Argument(...),
-    tail: int = typer.Option(
-        0, "--tail", "-n", help="Show only the last N lines"
-    ),
+    tail: int = typer.Option(0, "--tail", "-n", help="Show only the last N lines"),
 ) -> None:
     async def go() -> None:
         c = Client(paths.sock_path())

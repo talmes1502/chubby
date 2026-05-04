@@ -7,9 +7,7 @@ from chubby.daemon.persistence import Database
 from chubby.daemon.session import Session, SessionKind, SessionStatus
 
 
-async def rebuild_from_events(
-    db: Database, log: EventLog, *, hub_run_id: str
-) -> None:
+async def rebuild_from_events(db: Database, log: EventLog, *, hub_run_id: str) -> None:
     sessions: dict[str, Session] = {}
     for ev in log.replay():
         e = ev.get("event")

@@ -47,6 +47,7 @@ IGNORED_PORTS: frozenset[int] = frozenset({22, 80, 443, 5432, 3306, 6379, 27017}
 @dataclass
 class PortInfo:
     """One detected listening port."""
+
     port: int
     pid: int
     address: str  # "127.0.0.1" / "0.0.0.0" / "::1" / etc.
@@ -81,17 +82,17 @@ async def _pgrep_children(parents: list[int]) -> list[int]:
         return []
     try:
         proc = await asyncio.create_subprocess_exec(
-            "pgrep", "-P", ",".join(str(p) for p in parents),
+            "pgrep",
+            "-P",
+            ",".join(str(p) for p in parents),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
     except FileNotFoundError:
         return []
     try:
-        stdout, _ = await asyncio.wait_for(
-            proc.communicate(), timeout=_PGREP_TIMEOUT_S
-        )
-    except asyncio.TimeoutError:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_PGREP_TIMEOUT_S)
+    except TimeoutError:
         try:
             proc.kill()
         except ProcessLookupError:
@@ -137,17 +138,21 @@ async def _listening_ports_lsof(pids: list[int]) -> list[PortInfo]:
     requested = set(pids)
     try:
         proc = await asyncio.create_subprocess_exec(
-            "lsof", "-p", pid_csv, "-iTCP", "-sTCP:LISTEN", "-P", "-n",
+            "lsof",
+            "-p",
+            pid_csv,
+            "-iTCP",
+            "-sTCP:LISTEN",
+            "-P",
+            "-n",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
     except FileNotFoundError:
         return []
     try:
-        stdout, _ = await asyncio.wait_for(
-            proc.communicate(), timeout=_LSOF_TIMEOUT_S
-        )
-    except asyncio.TimeoutError:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_LSOF_TIMEOUT_S)
+    except TimeoutError:
         try:
             proc.kill()
         except ProcessLookupError:
@@ -207,17 +212,16 @@ async def _listening_ports_proc(pids: list[int]) -> list[PortInfo]:
     """
     try:
         proc = await asyncio.create_subprocess_exec(
-            "ss", "-ltnpH",
+            "ss",
+            "-ltnpH",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
     except FileNotFoundError:
         return []
     try:
-        stdout, _ = await asyncio.wait_for(
-            proc.communicate(), timeout=_LSOF_TIMEOUT_S
-        )
-    except asyncio.TimeoutError:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_LSOF_TIMEOUT_S)
+    except TimeoutError:
         try:
             proc.kill()
         except ProcessLookupError:

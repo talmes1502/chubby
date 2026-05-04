@@ -44,7 +44,12 @@ async def ahead_behind(cwd: str) -> tuple[int, int] | None:
     """
     try:
         proc = await asyncio.create_subprocess_exec(
-            "git", "-C", cwd, "rev-list", "--left-right", "--count",
+            "git",
+            "-C",
+            cwd,
+            "rev-list",
+            "--left-right",
+            "--count",
             "@{u}...HEAD",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -53,10 +58,8 @@ async def ahead_behind(cwd: str) -> tuple[int, int] | None:
         # git not installed — nothing more we can do.
         return None
     try:
-        stdout, _stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=_GIT_TIMEOUT_S
-        )
-    except asyncio.TimeoutError:
+        stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=_GIT_TIMEOUT_S)
+    except TimeoutError:
         try:
             proc.kill()
         except ProcessLookupError:

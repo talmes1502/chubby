@@ -24,13 +24,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from chubby.daemon.logs import LogWriter
 from chubby.daemon.persistence import Database
 from chubby.daemon.registry import Registry
 from chubby.daemon.session import SessionKind, SessionStatus
-
 
 _ERASE_ALL = b"\x1b[2J\x1b[3J\x1b[H"
 
@@ -79,17 +76,15 @@ async def test_awaiting_user_pushes_erase_display_then_redraw_event(
         pty_chunks = [p for m, p in subs.broadcasts if m == "pty_chunk"]
         assert pty_chunks, "no pty_chunk broadcast — erase-display didn't fire"
         import base64
+
         first_chunk = base64.b64decode(pty_chunks[0]["chunk_b64"])
         assert first_chunk == _ERASE_ALL, (
-            f"first pty_chunk after AWAITING_USER should be erase-display; "
-            f"got {first_chunk!r}"
+            f"first pty_chunk after AWAITING_USER should be erase-display; got {first_chunk!r}"
         )
 
         # Step 2: redraw_claude event delivered to the wrapper.
         redraw_seen = any(b'"method":"redraw_claude"' in ev for ev in wrapper_events)
-        assert redraw_seen, (
-            f"wrapper never received redraw_claude event; got {wrapper_events!r}"
-        )
+        assert redraw_seen, f"wrapper never received redraw_claude event; got {wrapper_events!r}"
     finally:
         await db.close()
 
@@ -118,9 +113,7 @@ async def test_idle_status_does_not_force_redraw(tmp_path: Path) -> None:
 
         # No erase-display chunks, no redraw event.
         pty_chunks = [p for m, p in subs.broadcasts if m == "pty_chunk"]
-        assert pty_chunks == [], (
-            f"IDLE flip should NOT push pty_chunks; got {pty_chunks!r}"
-        )
+        assert pty_chunks == [], f"IDLE flip should NOT push pty_chunks; got {pty_chunks!r}"
         redraw_seen = any(b'"method":"redraw_claude"' in ev for ev in wrapper_events)
         assert not redraw_seen, "IDLE flip should NOT fire redraw_claude"
     finally:

@@ -10,17 +10,12 @@ from chubby.daemon.clock import now_ms
 
 
 class LogWriter:
-    def __init__(
-        self, run_logs_dir: Path, *, color: str, session_name: str
-    ) -> None:
+    def __init__(self, run_logs_dir: Path, *, color: str, session_name: str) -> None:
         self.path = run_logs_dir / f"{session_name}.log"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = asyncio.Lock()
         self._fh: IO[bytes] = open(self.path, "ab")
-        header = (
-            f"# chubby session: {session_name} color={color} "
-            f"started_at_ms={now_ms()}\n"
-        )
+        header = f"# chubby session: {session_name} color={color} started_at_ms={now_ms()}\n"
         self._fh.write(header.encode())
         self._fh.flush()
 

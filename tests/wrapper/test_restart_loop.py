@@ -9,10 +9,8 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
-from pathlib import Path
 
 from chubby.proto.rpc import Event
-from chubby.wrapper.client import WrapperClient
 
 
 class FakePty:
@@ -74,10 +72,18 @@ class FakeClient:
         self.push_chunks: list[bytes] = []
         self._events: asyncio.Queue[Event] = asyncio.Queue()
 
-    async def register(self, *, name: str, cwd: str, pid: int, tags: list[str], claude_pid: int | None = None) -> str:
-        self.register_calls.append({
-            "name": name, "cwd": cwd, "pid": pid, "tags": tags, "claude_pid": claude_pid,
-        })
+    async def register(
+        self, *, name: str, cwd: str, pid: int, tags: list[str], claude_pid: int | None = None
+    ) -> str:
+        self.register_calls.append(
+            {
+                "name": name,
+                "cwd": cwd,
+                "pid": pid,
+                "tags": tags,
+                "claude_pid": claude_pid,
+            }
+        )
         self.session_id = "s_test"
         return "s_test"
 
@@ -107,6 +113,7 @@ async def test_run_one_claude_restart_path(monkeypatch) -> None:
     import chubby.wrapper.main as wm
 
     monkeypatch.setattr(wm, "PtySession", FakePty)
+
     # Skip the per-pid sessionId capture (no real claude on disk).
     async def fake_wait_sid(pid: int, timeout_s: float) -> str | None:
         return "abcdef01-0000-0000-0000-000000000000"
@@ -122,9 +129,7 @@ async def test_run_one_claude_restart_path(monkeypatch) -> None:
 
     async def kick_restart() -> None:
         await asyncio.sleep(0.05)
-        await client._events.put(
-            Event(method="restart_claude", params={"session_id": "s_test"})
-        )
+        await client._events.put(Event(method="restart_claude", params={"session_id": "s_test"}))
 
     asyncio.create_task(kick_restart())
 
@@ -181,9 +186,7 @@ async def test_run_one_claude_resume_argv(monkeypatch) -> None:
     # End the iteration quickly: schedule a restart so the iter exits.
     async def kick_eof() -> None:
         await asyncio.sleep(0.05)
-        await client._events.put(
-            Event(method="restart_claude", params={"session_id": "s_test"})
-        )
+        await client._events.put(Event(method="restart_claude", params={"session_id": "s_test"}))
 
     asyncio.create_task(kick_eof())
 
@@ -234,9 +237,7 @@ async def test_run_one_claude_shutdown_path(monkeypatch) -> None:
 
     async def kick_shutdown() -> None:
         await asyncio.sleep(0.05)
-        await client._events.put(
-            Event(method="shutdown", params={"session_id": "s_test"})
-        )
+        await client._events.put(Event(method="shutdown", params={"session_id": "s_test"}))
 
     asyncio.create_task(kick_shutdown())
 

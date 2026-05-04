@@ -23,9 +23,7 @@ from chubby.daemon import paths
 
 
 def run(
-    target: str | None = typer.Argument(
-        None, help="tmux:session:window.pane, or omit with --pick"
-    ),
+    target: str | None = typer.Argument(None, help="tmux:session:window.pane, or omit with --pick"),
     pick: bool = typer.Option(False, "--pick"),
     list_: bool = typer.Option(False, "--list", "-l"),
     name: str | None = typer.Option(None, "--name"),
@@ -67,6 +65,7 @@ def run(
                     # agent context (rare enough to warrant the new
                     # readable form).
                     import json as _json
+
                     if OUT.mode is Mode.PRETTY:
                         OUT.list(cs, pretty_line=_pretty, empty_message="(no candidates)")
                     else:
@@ -107,9 +106,7 @@ def run(
                 for x in chosen:
                     nm = name or f"{os.path.basename(x['cwd'])}-{x['pid']}"
                     if x["classification"] != "tmux_full":
-                        typer.echo(
-                            f"  ! {nm}: not in tmux (use 'chubby promote {nm}')"
-                        )
+                        typer.echo(f"  ! {nm}: not in tmux (use 'chubby promote {nm}')")
                         continue
                     await c.call(
                         "attach_tmux",
@@ -128,13 +125,9 @@ def run(
             if not target.startswith("tmux:"):
                 raise typer.BadParameter("target must be tmux:session:window.pane")
             tmux_target = target.removeprefix("tmux:")
-            match = next(
-                (x for x in cs if x["tmux_target"] == tmux_target), None
-            )
+            match = next((x for x in cs if x["tmux_target"] == tmux_target), None)
             if match is None:
-                raise typer.BadParameter(
-                    f"no candidate with tmux_target {tmux_target}"
-                )
+                raise typer.BadParameter(f"no candidate with tmux_target {tmux_target}")
             nm = name or f"{os.path.basename(match['cwd'])}-{match['pid']}"
             await c.call(
                 "attach_tmux",

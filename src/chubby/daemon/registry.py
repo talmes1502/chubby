@@ -61,9 +61,7 @@ class Registry:
             await self.db.upsert_session(s)
             await self.db.set_preferred_color(s.name, s.color)
 
-    async def set_ports(
-        self, session_id: str, ports: list[dict[str, Any]]
-    ) -> bool:
+    async def set_ports(self, session_id: str, ports: list[dict[str, Any]]) -> bool:
         """Update a session's transient listening-ports cache and emit
         ``session_ports_changed`` if anything changed. Returns True if
         an event was emitted (used by tests).
@@ -72,6 +70,7 @@ class Registry:
         a server flapping between IPv4 and IPv6 listeners shouldn't
         cause spurious rail updates.
         """
+
         def _key_set(items: list[dict[str, Any]]) -> set[tuple[int, int]]:
             return {(int(i["port"]), int(i["pid"])) for i in items}
 
@@ -95,9 +94,7 @@ class Registry:
         )
         return True
 
-    async def set_first_preview(
-        self, session_id: str, text: str
-    ) -> bool:
+    async def set_first_preview(self, session_id: str, text: str) -> bool:
         """Cache the first user-turn from a session's transcript on
         the Session and broadcast ``session_first_preview_resolved``
         if it changed. Idempotent — calling with the same text is a
@@ -134,9 +131,7 @@ class Registry:
             s.worktree_path = path
         await self._persist(s)
 
-    async def set_git_status(
-        self, session_id: str, ahead: int | None, behind: int | None
-    ) -> bool:
+    async def set_git_status(self, session_id: str, ahead: int | None, behind: int | None) -> bool:
         """Update a session's transient ahead/behind counts and emit
         ``session_git_status_changed`` if anything changed. Returns
         True if an event was emitted (used by tests).
@@ -185,8 +180,12 @@ class Registry:
         color: str | None = None,
     ) -> Session:
         async with self._lock:
-            if any(s.name == name for s in self._by_id.values() if s.status is not SessionStatus.DEAD):
-                raise ChubError(ErrorCode.NAME_TAKEN, f"name `{name}` is already in use", {"name": name})
+            if any(
+                s.name == name for s in self._by_id.values() if s.status is not SessionStatus.DEAD
+            ):
+                raise ChubError(
+                    ErrorCode.NAME_TAKEN, f"name `{name}` is already in use", {"name": name}
+                )
             # Evict any dead session with this name. The new live row
             # takes over the name → keeping the dead row would create
             # two-rows-same-name in the rail, with the user's mental
@@ -252,9 +251,13 @@ class Registry:
             s = self._by_id.get(session_id)
             if s is None:
                 raise ChubError(ErrorCode.SESSION_NOT_FOUND, f"no session with id {session_id}")
-            if any(o.name == new_name and o.id != session_id and o.status is not SessionStatus.DEAD
-                   for o in self._by_id.values()):
-                raise ChubError(ErrorCode.NAME_TAKEN, f"name `{new_name}` is already in use", {"name": new_name})
+            if any(
+                o.name == new_name and o.id != session_id and o.status is not SessionStatus.DEAD
+                for o in self._by_id.values()
+            ):
+                raise ChubError(
+                    ErrorCode.NAME_TAKEN, f"name `{new_name}` is already in use", {"name": new_name}
+                )
             s.name = new_name
         await self._persist(s)
         await self._emit({"event": "session_renamed", "id": s.id, "name": new_name})
@@ -269,15 +272,11 @@ class Registry:
         await self._persist(s)
         await self._emit({"event": "session_recolored", "id": s.id, "color": color})
 
-    async def set_tags(
-        self, session_id: str, *, add: list[str], remove: list[str]
-    ) -> None:
+    async def set_tags(self, session_id: str, *, add: list[str], remove: list[str]) -> None:
         async with self._lock:
             s = self._by_id.get(session_id)
             if s is None:
-                raise ChubError(
-                    ErrorCode.SESSION_NOT_FOUND, f"no session {session_id}"
-                )
+                raise ChubError(ErrorCode.SESSION_NOT_FOUND, f"no session {session_id}")
             cur = set(s.tags)
             cur.update(add)
             cur.difference_update(remove)
@@ -285,9 +284,7 @@ class Registry:
         await self._persist(s)
         await self._emit({"event": "session_tagged", "id": s.id, "tags": s.tags})
 
-    async def set_claude_session_id(
-        self, session_id: str, claude_session_id: str
-    ) -> None:
+    async def set_claude_session_id(self, session_id: str, claude_session_id: str) -> None:
         """Bind a Claude transcript session id to a chubby session.
 
         Used by ``watch_for_transcript`` once it has discovered the
@@ -298,9 +295,7 @@ class Registry:
         async with self._lock:
             s = self._by_id.get(session_id)
             if s is None:
-                raise ChubError(
-                    ErrorCode.SESSION_NOT_FOUND, f"no session with id {session_id}"
-                )
+                raise ChubError(ErrorCode.SESSION_NOT_FOUND, f"no session with id {session_id}")
             s.claude_session_id = claude_session_id
         await self._persist(s)
         await self._emit(
@@ -407,9 +402,7 @@ class Registry:
     async def detach_wrapper(self, session_id: str) -> None:
         self._wrapper_writers.pop(session_id, None)
 
-    async def inject(
-        self, session_id: str, payload: bytes, *, auto_newline: bool = True
-    ) -> None:
+    async def inject(self, session_id: str, payload: bytes, *, auto_newline: bool = True) -> None:
         """Forward bytes to the wrapped session's PTY.
 
         ``auto_newline`` (default True for the legacy compose-bar
@@ -428,9 +421,7 @@ class Registry:
             return
         write = self._wrapper_writers.get(session_id)
         if write is None:
-            raise ChubError(
-                ErrorCode.WRAPPER_UNREACHABLE, "no wrapper for session"
-            )
+            raise ChubError(ErrorCode.WRAPPER_UNREACHABLE, "no wrapper for session")
         await write(
             encode_message(
                 Event(
@@ -458,9 +449,7 @@ class Registry:
             return
         write = self._wrapper_writers.get(session_id)
         if write is None:
-            raise ChubError(
-                ErrorCode.WRAPPER_UNREACHABLE, "no wrapper for session"
-            )
+            raise ChubError(ErrorCode.WRAPPER_UNREACHABLE, "no wrapper for session")
         await write(
             encode_message(
                 Event(
@@ -502,7 +491,7 @@ class Registry:
         if len(ring) > self._pty_ring_cap:
             # Trim to last cap bytes — keep the tail so the most
             # recent screen state is intact.
-            del ring[: len(ring)-self._pty_ring_cap]
+            del ring[: len(ring) - self._pty_ring_cap]
         # Broadcast the raw PTY chunk so live TUI subscribers can pump
         # it through their per-session vt emulator. Base64 because
         # JSON-RPC params don't tolerate arbitrary bytes (PTY output
@@ -522,9 +511,7 @@ class Registry:
         task = self._flush_tasks.get(session_id)
         if task and not task.done():
             task.cancel()
-        self._flush_tasks[session_id] = asyncio.create_task(
-            self._delayed_flush(session_id, role)
-        )
+        self._flush_tasks[session_id] = asyncio.create_task(self._delayed_flush(session_id, role))
 
     async def _delayed_flush(self, session_id: str, role: str) -> None:
         try:

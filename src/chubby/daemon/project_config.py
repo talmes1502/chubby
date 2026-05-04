@@ -36,6 +36,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -43,12 +44,13 @@ log = logging.getLogger(__name__)
 @dataclass
 class ProjectConfig:
     """Resolved lifecycle scripts for a session's project."""
+
     setup: list[str] = field(default_factory=list)
     teardown: list[str] = field(default_factory=list)
     run: list[str] = field(default_factory=list)
 
 
-def _read_json(path: Path) -> dict | None:
+def _read_json(path: Path) -> dict[str, Any] | None:
     """Return the parsed JSON dict at ``path``, or ``None`` if the
     file is missing, empty, or malformed. We log malformed configs
     but never raise — a broken config shouldn't block spawn."""
@@ -85,9 +87,7 @@ def _string_list(v: object) -> list[str]:
     return out
 
 
-def _apply_local_overlay(
-    base: list[str], local: object, key: str
-) -> list[str]:
+def _apply_local_overlay(base: list[str], local: object, key: str) -> list[str]:
     """Layer the local config's ``before``/``after`` arrays atop the
     base list. ``local`` is the local config's value for ``setup`` /
     ``teardown``: either a flat list (full replace) or an object with
@@ -121,7 +121,7 @@ def load_config(workspace_path: Path, repo_root_path: Path) -> ProjectConfig:
     """
     # Pick the committed base config. Worktree-specific committed
     # config wins over the repo-root one.
-    base: dict | None = None
+    base: dict[str, Any] | None = None
     if workspace_path != repo_root_path:
         base = _read_json(workspace_path / ".chubby" / "config.json")
     if base is None:

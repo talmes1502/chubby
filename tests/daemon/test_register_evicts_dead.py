@@ -105,7 +105,5 @@ async def test_register_evicts_multiple_dead_with_same_name() -> None:
     new = await reg.register(name="dup", kind=SessionKind.WRAPPED, cwd="/tmp")
     all_sessions = await reg.list_all()
     assert [s.id for s in all_sessions] == [new.id]
-    removed_ids = sorted(
-        p["id"] for m, p in subs.broadcasts if m == "session_removed"
-    )
+    removed_ids = sorted(p["id"] for m, p in subs.broadcasts if m == "session_removed")
     assert removed_ids == sorted([a.id, b.id])

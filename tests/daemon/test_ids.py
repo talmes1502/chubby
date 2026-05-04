@@ -1,4 +1,4 @@
-from chubby.daemon.ids import new_session_id, new_hub_run_id
+from chubby.daemon.ids import new_hub_run_id, new_session_id
 
 
 def test_session_id_prefix() -> None:

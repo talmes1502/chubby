@@ -24,7 +24,6 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-
 # Two example sessions — what list_sessions would return.
 _FAKE_SESSIONS = [
     {
@@ -126,9 +125,7 @@ def test_list_json_explicit_flag(fake_client: None) -> None:
     assert parsed == _FAKE_SESSIONS
 
 
-def test_list_json_via_claude_code_env(
-    fake_client: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_list_json_via_claude_code_env(fake_client: None, monkeypatch: pytest.MonkeyPatch) -> None:
     """Setting ``CLAUDE_CODE=1`` in the env (Claude Code subagent
     invoking us) flips the default to JSON without any CLI flag."""
     monkeypatch.setenv("CLAUDE_CODE", "1")
@@ -185,9 +182,7 @@ def test_quiet_wins_over_json(fake_client: None) -> None:
     assert lines == ["s_one", "s_two"]
 
 
-def test_explicit_pretty_flag_beats_env(
-    fake_client: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_explicit_pretty_flag_beats_env(fake_client: None, monkeypatch: pytest.MonkeyPatch) -> None:
     """No way to force pretty when CI is set today (we don't have a
     --pretty flag), so explicit flags only override toward more
     structure. Document by asserting CI alone gives JSON — the user
@@ -206,9 +201,7 @@ def test_spawn_quiet_prints_id(fake_client: None) -> None:
     """
     from chubby.cli.main import app
 
-    r = CliRunner().invoke(
-        app, ["--quiet", "spawn", "--name", "ws", "--cwd", "/tmp"]
-    )
+    r = CliRunner().invoke(app, ["--quiet", "spawn", "--name", "ws", "--cwd", "/tmp"])
     assert r.exit_code == 0, r.output
     assert r.output.strip() == "s_new"
 
@@ -216,9 +209,7 @@ def test_spawn_quiet_prints_id(fake_client: None) -> None:
 def test_spawn_json_prints_full_record(fake_client: None) -> None:
     from chubby.cli.main import app
 
-    r = CliRunner().invoke(
-        app, ["--json", "spawn", "--name", "ws", "--cwd", "/tmp"]
-    )
+    r = CliRunner().invoke(app, ["--json", "spawn", "--name", "ws", "--cwd", "/tmp"])
     assert r.exit_code == 0, r.output
     parsed = json.loads(r.output.strip())
     assert parsed["session"]["id"] == "s_new"
@@ -258,14 +249,13 @@ def test_spawn_expands_tilde_in_cwd(
             pass
 
     import chubby.cli.commands.spawn as spawn_cmd
+
     monkeypatch.setattr(spawn_cmd, "Client", _FakeClient)
     # Pin HOME so the test is hermetic.
     monkeypatch.setenv("HOME", "/Users/test")
 
     from chubby.cli.main import app
 
-    r = CliRunner().invoke(
-        app, ["spawn", "--name", "ws", "--cwd", "~/myrepo"]
-    )
+    r = CliRunner().invoke(app, ["spawn", "--name", "ws", "--cwd", "~/myrepo"])
     assert r.exit_code == 0, r.output
     assert captured["params"]["cwd"] == "/Users/test/myrepo"

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import signal
 from pathlib import Path
 
 import pytest
@@ -107,17 +106,32 @@ async def test_stop_unknown_returns_false(tmp_path: Path) -> None:
 async def test_stop_all_for_session(tmp_path: Path) -> None:
     reg = RunProcessRegistry()
     await reg.start(
-        session_id="s1", index=0, cmd="sleep 30", cwd=tmp_path,
-        env={}, log_path=tmp_path / "0.log", clock_ms=0,
+        session_id="s1",
+        index=0,
+        cmd="sleep 30",
+        cwd=tmp_path,
+        env={},
+        log_path=tmp_path / "0.log",
+        clock_ms=0,
     )
     await reg.start(
-        session_id="s1", index=1, cmd="sleep 30", cwd=tmp_path,
-        env={}, log_path=tmp_path / "1.log", clock_ms=0,
+        session_id="s1",
+        index=1,
+        cmd="sleep 30",
+        cwd=tmp_path,
+        env={},
+        log_path=tmp_path / "1.log",
+        clock_ms=0,
     )
     # A different session — must not be touched by stop_all_for_session("s1").
     await reg.start(
-        session_id="other", index=0, cmd="sleep 30", cwd=tmp_path,
-        env={}, log_path=tmp_path / "other.log", clock_ms=0,
+        session_id="other",
+        index=0,
+        cmd="sleep 30",
+        cwd=tmp_path,
+        env={},
+        log_path=tmp_path / "other.log",
+        clock_ms=0,
     )
 
     stopped = await reg.stop_all_for_session("s1")
@@ -155,12 +169,22 @@ async def test_natural_exit_clears_registry_entry(tmp_path: Path) -> None:
 async def test_list_for_session_returns_running_only(tmp_path: Path) -> None:
     reg = RunProcessRegistry()
     await reg.start(
-        session_id="s1", index=0, cmd="sleep 30", cwd=tmp_path,
-        env={}, log_path=tmp_path / "0.log", clock_ms=111,
+        session_id="s1",
+        index=0,
+        cmd="sleep 30",
+        cwd=tmp_path,
+        env={},
+        log_path=tmp_path / "0.log",
+        clock_ms=111,
     )
     await reg.start(
-        session_id="s2", index=0, cmd="sleep 30", cwd=tmp_path,
-        env={}, log_path=tmp_path / "s2.log", clock_ms=222,
+        session_id="s2",
+        index=0,
+        cmd="sleep 30",
+        cwd=tmp_path,
+        env={},
+        log_path=tmp_path / "s2.log",
+        clock_ms=222,
     )
     procs = reg.list_for_session("s1")
     assert len(procs) == 1

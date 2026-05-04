@@ -26,9 +26,7 @@ def run(name: str = typer.Argument(...)) -> None:
             if match is None:
                 raise typer.BadParameter(f"no session named {name!r}")
             if match["status"] != "dead":
-                raise typer.BadParameter(
-                    f"session {name!r} is not dead (status={match['status']})"
-                )
+                raise typer.BadParameter(f"session {name!r} is not dead (status={match['status']})")
             r = await c.call(
                 "spawn_session",
                 {
@@ -37,9 +35,7 @@ def run(name: str = typer.Argument(...)) -> None:
                     "tags": match["tags"],
                 },
             )
-            await c.call(
-                "rename_session", {"id": r["session"]["id"], "name": name}
-            )
+            await c.call("rename_session", {"id": r["session"]["id"], "name": name})
             typer.echo(f"respawned {name}")
         finally:
             await c.close()

@@ -22,9 +22,7 @@ def run(
         raise typer.BadParameter("--run and --session are mutually exclusive")
     if not yes:
         what = f"run {run_id}" if run_id else f"session {session}"
-        typer.confirm(
-            f"permanently delete logs and FTS entries for {what}?", abort=True
-        )
+        typer.confirm(f"permanently delete logs and FTS entries for {what}?", abort=True)
 
     async def go() -> None:
         c = Client(paths.sock_path())

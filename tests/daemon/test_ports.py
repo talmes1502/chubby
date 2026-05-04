@@ -8,7 +8,6 @@ that proves the OS-specific path actually finds a real listener.
 
 from __future__ import annotations
 
-import asyncio
 import socket
 import subprocess
 import sys
@@ -25,7 +24,6 @@ from chubby.daemon.ports import (
     listening_ports,
     process_tree,
 )
-
 
 # ---- Pure parsers ---------------------------------------------------
 
@@ -69,7 +67,7 @@ def test_parse_lsof_normalizes_wildcard_and_ipv6() -> None:
 def test_parse_ss_extracts_port_and_pid() -> None:
     """Linux ss output with ``-tlnpH``."""
     text = (
-        'LISTEN 0      511          127.0.0.1:3000           0.0.0.0:* '
+        "LISTEN 0      511          127.0.0.1:3000           0.0.0.0:* "
         'users:(("node",pid=4242,fd=23))\n'
     )
     infos = _parse_ss_output(text, requested_pids={4242})

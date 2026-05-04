@@ -11,7 +11,10 @@ import re
 import signal
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from chubby.daemon.project_config import ProjectConfig
 
 from chubby import __version__
 from chubby.daemon import paths
@@ -26,31 +29,32 @@ from chubby.daemon.server import Server
 from chubby.daemon.session import SessionKind, SessionStatus
 from chubby.daemon.subscriptions import SubscriptionHub
 from chubby.proto.errors import ChubError, ErrorCode
+from chubby.proto.rpc import Event, encode_message
 from chubby.proto.schema import (
     AttachExistingReadonlyParams,
     AttachExistingReadonlyResult,
     AttachTmuxParams,
     AttachTmuxResult,
+    ClaudeJsonlEntry,
     DetachSessionParams,
     GetHubRunParams,
     GetHubRunResult,
-    GetSessionHistoryParams,
     GetPtyBufferParams,
     GetPtyBufferResult,
+    GetSessionHistoryParams,
     InjectParams,
+    ListAllClaudeJsonlsParams,
+    ListAllClaudeJsonlsResult,
     ListHubRunsParams,
     ListHubRunsResult,
+    ListRunCommandsParams,
+    ListRunCommandsResult,
     ListSessionsParams,
     ListSessionsResult,
     MarkIdleParams,
     PromoteSessionParams,
     PurgeParams,
     PushOutputParams,
-    ClaudeJsonlEntry,
-    ListAllClaudeJsonlsParams,
-    ListAllClaudeJsonlsResult,
-    ListRunCommandsParams,
-    ListRunCommandsResult,
     RecentCwdsParams,
     RecentCwdsResult,
     RecolorSessionParams,
@@ -77,7 +81,6 @@ from chubby.proto.schema import (
     StopRunCommandResult,
     UpdateClaudePidParams,
 )
-from chubby.proto.rpc import Event, encode_message
 
 log = logging.getLogger("chubbyd")
 
@@ -90,6 +93,7 @@ def _parse_ts_ms(raw: Any) -> int:
         return 0
     try:
         from datetime import datetime
+
         # Claude uses ISO 8601 with optional Z suffix.
         return int(datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp() * 1000)
     except (ValueError, TypeError):
@@ -114,9 +118,7 @@ def _build_registry(
     async def version(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         return {"version": __version__, "protocol": PROTOCOL_VERSION}
 
-    async def register_wrapped(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def register_wrapped(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         from chubby.daemon import hooks as hooks_mod
 
         p = RegisterWrappedParams.model_validate(params)
@@ -150,44 +152,32 @@ def _build_registry(
         # Prefer the pid → sessionId mapping at ~/.claude/sessions/<pid>.json
         # when the wrapper supplied a claude_pid; that's a precise binding
         # immune to the mtime race that hits when two Claudes share a cwd.
-        task = asyncio.create_task(
-            hooks_mod.watch_for_transcript(reg, s, claude_pid=p.claude_pid)
-        )
+        task = asyncio.create_task(hooks_mod.watch_for_transcript(reg, s, claude_pid=p.claude_pid))
         background_tasks.add(task)
         task.add_done_callback(background_tasks.discard)
         return RegisterWrappedResult(session=SessionDict(**s.to_dict())).model_dump()
 
-    async def list_sessions(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def list_sessions(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         ListSessionsParams.model_validate(params)
         sessions = [SessionDict(**s.to_dict()) for s in await reg.list_all()]
         return ListSessionsResult(sessions=sessions).model_dump()
 
-    async def rename_session(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def rename_session(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         p = RenameSessionParams.model_validate(params)
         await reg.rename(p.id, p.name)
         return {}
 
-    async def recolor_session(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def recolor_session(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         p = RecolorSessionParams.model_validate(params)
         await reg.recolor(p.id, p.color)
         return {}
 
-    async def push_output(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def push_output(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         p = PushOutputParams.model_validate(params)
         await reg.record_chunk(p.session_id, base64.b64decode(p.data_b64), role=p.role)
         return {}
 
-    async def inject(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def inject(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         p = InjectParams.model_validate(params)
         s = await reg.get(p.session_id)
         if s.kind is SessionKind.READONLY:
@@ -208,9 +198,7 @@ def _build_registry(
         await reg.update_status(p.session_id, SessionStatus.THINKING)
         return {}
 
-    async def inject_raw(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def inject_raw(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         """Like inject, but: (a) does NOT flip the session into
         THINKING, and (b) does NOT auto-append \\r to the payload.
 
@@ -238,9 +226,7 @@ def _build_registry(
         )
         return {}
 
-    async def get_pty_buffer(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def get_pty_buffer(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         """Return the recent PTY bytes for a session so a TUI that
         attaches mid-conversation can prime its vt emulator and
         reconstruct claude's current screen. Capped at 64 KB on the
@@ -254,9 +240,7 @@ def _build_registry(
             buffer_b64=base64.b64encode(data).decode("ascii"),
         ).model_dump()
 
-    async def resize_pty(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def resize_pty(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         """Forward a TUI's view-frame resize back to the wrapper's PTY,
         so claude redraws to fit chubby's conversation pane."""
         p = ResizePtyParams.model_validate(params)
@@ -273,26 +257,21 @@ def _build_registry(
         await reg.resize(p.session_id, rows=p.rows, cols=p.cols)
         return {}
 
-    async def session_ended(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def session_ended(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         sid = params["session_id"]
         await reg.update_status(sid, SessionStatus.DEAD)
         await reg.detach_wrapper(sid)
         return {}
 
-    async def spawn_session(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def spawn_session(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         from pydantic import ValidationError
+
         try:
             p = SpawnSessionParams.model_validate(params)
         except ValidationError as e:
             # Translate pydantic missing-field errors into a clean
             # INVALID_PAYLOAD instead of bubbling up as INTERNAL.
-            raise ChubError(
-                ErrorCode.INVALID_PAYLOAD, f"invalid spawn params: {e}"
-            ) from None
+            raise ChubError(ErrorCode.INVALID_PAYLOAD, f"invalid spawn params: {e}") from None
         # Sessions are organized around a project cwd (rail grouping,
         # JSONL location, hooks scope), so empty cwd has no consistent
         # meaning. The TUI modal pre-fills $HOME and the CLI defaults to
@@ -354,12 +333,15 @@ def _build_registry(
         # itself (load_config tolerates a missing file gracefully).
         if repo_root_for_config is None:
             from chubby.daemon import worktree as _wt
+
             r = await _wt.repo_root(cwd)
             repo_root_for_config = str(r) if r is not None else cwd
         from chubby.daemon import lifecycle_scripts as _lifecycle
         from chubby.daemon import project_config as _pc
+
         project_cfg = _pc.load_config(
-            Path(cwd), Path(repo_root_for_config),
+            Path(cwd),
+            Path(repo_root_for_config),
         )
         if project_cfg.setup:
             setup_env = {
@@ -370,7 +352,9 @@ def _build_registry(
                 "CHUBBY_WORKSPACE_PATH": cwd,
             }
             res = await _lifecycle.run_lifecycle(
-                project_cfg.setup, cwd=Path(cwd), env=setup_env,
+                project_cfg.setup,
+                cwd=Path(cwd),
+                env=setup_env,
             )
             if res.status == "failed":
                 # Roll back the worktree so a half-setup repo doesn't
@@ -378,6 +362,7 @@ def _build_registry(
                 # cleanly.
                 if worktree_path is not None:
                     from chubby.daemon import worktree as _wt
+
                     try:
                         await _wt.remove_worktree(Path(worktree_path))
                     except Exception:  # pragma: no cover — defensive
@@ -406,8 +391,15 @@ def _build_registry(
         # child still has its end. Append-mode so respawn doesn't truncate.
         stderr_fp = open(stderr_path, "ab")
         wrapper_argv = [
-            sys.executable, "-m", "chubby.wrapper.main",
-            "--name", p.name, "--cwd", cwd, "--tags", ",".join(p.tags),
+            sys.executable,
+            "-m",
+            "chubby.wrapper.main",
+            "--name",
+            p.name,
+            "--cwd",
+            cwd,
+            "--tags",
+            ",".join(p.tags),
         ]
         # Phase 8d: when resuming a historical claude session, seed
         # the wrapper's ``resume`` variable on iteration 1 so the
@@ -441,9 +433,7 @@ def _build_registry(
                 await asyncio.sleep(0.1)
         raise ChubError(ErrorCode.INTERNAL, "spawned wrapper did not register")
 
-    async def search_transcripts(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def search_transcripts(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         p = SearchTranscriptsParams.model_validate(params)
         hub_run = None if p.all_runs else (p.hub_run_id or run.id)
         rows = await db.search(
@@ -454,9 +444,7 @@ def _build_registry(
         )
         return {"matches": rows}
 
-    async def get_session_history(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def get_session_history(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         """Read the bound JSONL transcript and return user/assistant turns
         so the TUI can seed its viewport on startup. Returns an empty list
         if no transcript is bound (yet) or no JSONL file is found."""
@@ -515,22 +503,22 @@ def _build_registry(
                         continue
                     ts_raw = rec.get("timestamp")
                     ts_ms = _parse_ts_ms(ts_raw) if ts_raw else 0
-                    turns.append({
-                        "role": "user" if t == "user" else "assistant",
-                        "text": text,
-                        "tool_calls": tool_calls,
-                        "ts": ts_ms,
-                    })
+                    turns.append(
+                        {
+                            "role": "user" if t == "user" else "assistant",
+                            "text": text,
+                            "tool_calls": tool_calls,
+                            "ts": ts_ms,
+                        }
+                    )
         except OSError:
             return {"turns": []}
 
         if p.limit > 0 and len(turns) > p.limit:
-            turns = turns[-p.limit:]
+            turns = turns[-p.limit :]
         return {"turns": turns}
 
-    async def register_readonly(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def register_readonly(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         p = RegisterReadonlyParams.model_validate(params)
         name = p.name or f"{os.path.basename(p.cwd.rstrip('/'))}-{p.claude_session_id[:4]}"
         s = await reg.register(
@@ -549,9 +537,7 @@ def _build_registry(
         task.add_done_callback(background_tasks.discard)
         return RegisterReadonlyResult(session=SessionDict(**s.to_dict())).model_dump()
 
-    async def mark_idle(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def mark_idle(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         p = MarkIdleParams.model_validate(params)
         for s in await reg.list_all():
             if s.claude_session_id == p.claude_session_id:
@@ -559,15 +545,11 @@ def _build_registry(
                 return {}
         return {}
 
-    async def list_hub_runs(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def list_hub_runs(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         ListHubRunsParams.model_validate(params)
         return ListHubRunsResult(runs=await db.list_hub_runs()).model_dump()
 
-    async def get_hub_run(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def get_hub_run(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         p = GetHubRunParams.model_validate(params)
         runs = [r for r in await db.list_hub_runs() if r["id"] == p.id]
         if not runs:
@@ -575,23 +557,17 @@ def _build_registry(
         sessions = [s.to_dict() for s in await db.list_sessions(hub_run_id=p.id)]
         return GetHubRunResult(run=runs[0], sessions=sessions).model_dump()
 
-    async def set_hub_run_note(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def set_hub_run_note(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         p = SetHubRunNoteParams.model_validate(params)
         await db.set_run_note(p.id, p.note)
         return {}
 
-    async def set_session_tags(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def set_session_tags(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         p = SetSessionTagsParams.model_validate(params)
         await reg.set_tags(p.id, add=p.add, remove=p.remove)
         return {}
 
-    async def scan_candidates(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def scan_candidates(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         from chubby.daemon.attach.scanner import scan
 
         ScanCandidatesParams.model_validate(params)
@@ -611,9 +587,7 @@ def _build_registry(
             ]
         ).model_dump()
 
-    async def attach_tmux(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def attach_tmux(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         from chubby.daemon.attach.tmux import watch_pane
 
         p = AttachTmuxParams.model_validate(params)
@@ -634,9 +608,7 @@ def _build_registry(
         task.add_done_callback(background_tasks.discard)
         return AttachTmuxResult(session=SessionDict(**s.to_dict())).model_dump()
 
-    async def attach_existing_readonly(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def attach_existing_readonly(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         """Register a running raw ``claude`` PID as a readonly session.
 
         JSONL discovery is encoding-free: we scan ``~/.claude/projects/*/*.jsonl``
@@ -663,9 +635,7 @@ def _build_registry(
             task = asyncio.create_task(hooks_mod.start_tailer(reg, s))
             background_tasks.add(task)
             task.add_done_callback(background_tasks.discard)
-        return AttachExistingReadonlyResult(
-            session=SessionDict(**s.to_dict())
-        ).model_dump()
+        return AttachExistingReadonlyResult(session=SessionDict(**s.to_dict())).model_dump()
 
     async def _run_teardown_if_configured(session_id: str) -> None:
         """Run any project ``teardown`` scripts before we tear down
@@ -682,6 +652,7 @@ def _build_registry(
         from chubby.daemon import lifecycle_scripts as _lifecycle
         from chubby.daemon import project_config as _pc
         from chubby.daemon import worktree as _wt
+
         r = await _wt.repo_root(s.cwd)
         repo_root_path = str(r) if r is not None else s.cwd
         cfg = _pc.load_config(Path(s.cwd), Path(repo_root_path))
@@ -695,12 +666,16 @@ def _build_registry(
             "CHUBBY_WORKSPACE_PATH": s.cwd,
         }
         res = await _lifecycle.run_lifecycle(
-            cfg.teardown, cwd=Path(s.cwd), env=env,
+            cfg.teardown,
+            cwd=Path(s.cwd),
+            env=env,
         )
         if res.status == "failed":
             log.warning(
                 "teardown for session %r failed at %r: %s",
-                s.name, res.failed_command, res.output_tail.strip(),
+                s.name,
+                res.failed_command,
+                res.output_tail.strip(),
             )
 
     async def _cleanup_worktree_if_owned(session_id: str) -> None:
@@ -716,45 +691,46 @@ def _build_registry(
         if not s.worktree_path:
             return
         from pathlib import Path as _Path
+
         from chubby.daemon import worktree as _wt
+
         try:
             await _wt.remove_worktree(_Path(s.worktree_path))
         except Exception as e:  # pragma: no cover — defensive
             log.warning(
                 "worktree cleanup failed for %s at %s: %s",
-                s.name, s.worktree_path, e,
+                s.name,
+                s.worktree_path,
+                e,
             )
 
     async def _load_project_config_for_session(
         session_id: str,
-    ) -> tuple[Path, "object"] | None:
+    ) -> tuple[Path, ProjectConfig] | None:
         """Resolve the project config for ``session_id``. Returns
         ``(workspace_path, ProjectConfig)`` or ``None`` if the session
         has no cwd (already torn down)."""
+        from chubby.daemon import project_config as _pc
+        from chubby.daemon import worktree as _wt
+
         try:
             s = await reg.get(session_id)
         except ChubError:
             return None
         if not s.cwd:
             return None
-        from chubby.daemon import project_config as _pc
-        from chubby.daemon import worktree as _wt
         r = await _wt.repo_root(s.cwd)
         repo_root_path = str(r) if r is not None else s.cwd
         cfg = _pc.load_config(Path(s.cwd), Path(repo_root_path))
         return Path(s.cwd), cfg
 
-    async def list_run_commands(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def list_run_commands(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         p = ListRunCommandsParams.model_validate(params)
         loaded = await _load_project_config_for_session(p.session_id)
         if loaded is None:
             return ListRunCommandsResult(commands=[]).model_dump()
         _, cfg = loaded
-        running = {
-            rp.index: rp for rp in run_processes.list_for_session(p.session_id)
-        }
+        running = {rp.index: rp for rp in run_processes.list_for_session(p.session_id)}
         out = []
         for i, cmd in enumerate(cfg.run):
             rp = running.get(i)
@@ -769,9 +745,7 @@ def _build_registry(
             )
         return ListRunCommandsResult(commands=out).model_dump()
 
-    async def start_run_command(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def start_run_command(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         p = StartRunCommandParams.model_validate(params)
         loaded = await _load_project_config_for_session(p.session_id)
         if loaded is None:
@@ -788,8 +762,7 @@ def _build_registry(
         if p.index < 0 or p.index >= len(cfg.run):
             raise ChubError(
                 ErrorCode.INVALID_PAYLOAD,
-                f"run index {p.index} out of range "
-                f"(0..{len(cfg.run) - 1})",
+                f"run index {p.index} out of range (0..{len(cfg.run) - 1})",
             )
         cmd = cfg.run[p.index]
         s = await reg.get(p.session_id)
@@ -819,16 +792,12 @@ def _build_registry(
             pid=meta.pid, log_path=str(meta.log_path), cmd=meta.cmd
         ).model_dump()
 
-    async def stop_run_command(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def stop_run_command(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         p = StopRunCommandParams.model_validate(params)
         stopped = await run_processes.stop(p.session_id, p.index)
         return StopRunCommandResult(stopped=stopped).model_dump()
 
-    async def detach_session(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def detach_session(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         p = DetachSessionParams.model_validate(params)
         # Resolve session (raises SESSION_NOT_FOUND if missing).
         await reg.get(p.id)
@@ -843,7 +812,9 @@ def _build_registry(
             except Exception as e:  # pragma: no cover — defensive
                 log.warning(
                     "detach_session %s: %s step failed: %s",
-                    p.id, label, e,
+                    p.id,
+                    label,
+                    e,
                 )
 
         await _safe("stop_run", run_processes.stop_all_for_session(p.id))
@@ -855,9 +826,7 @@ def _build_registry(
         await _safe("cleanup_worktree", _cleanup_worktree_if_owned(p.id))
         return {}
 
-    async def release_session(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def release_session(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         """Release a session from chubby's management — the daemon side
         of the TUI's ``/detach`` command.
 
@@ -889,9 +858,7 @@ def _build_registry(
             if write is not None:
                 try:
                     await write(
-                        encode_message(
-                            Event(method="shutdown", params={"session_id": s.id})
-                        )
+                        encode_message(Event(method="shutdown", params={"session_id": s.id}))
                     )
                 except Exception:
                     # The wrapper may already be gone; we still want to
@@ -902,6 +869,7 @@ def _build_registry(
             stop = reg._tmux_stops.get(s.id)
             if stop is not None:
                 stop.set()
+
         # Past this point the user has committed to releasing — every
         # remaining step is best-effort cleanup. If ANY of them raises
         # (e.g. ``subs.broadcast`` to a flaky subscriber, a teardown
@@ -914,7 +882,9 @@ def _build_registry(
             except Exception as e:  # pragma: no cover — defensive
                 log.warning(
                     "release_session %s: %s step failed: %s",
-                    s.id, label, e,
+                    s.id,
+                    label,
+                    e,
                 )
 
         # Stop any long-running ``run`` commands first so dev servers
@@ -933,57 +903,37 @@ def _build_registry(
         await _safe("remove_session", reg.remove_session(s.id))
         return result.model_dump()
 
-    async def promote_session(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def promote_session(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         from chubby.daemon.attach.promote import relaunch_wrapper, wait_for_exit
 
         p = PromoteSessionParams.model_validate(params)
         s = await reg.get(p.id)
         if s.kind is not SessionKind.READONLY:
-            raise ChubError(
-                ErrorCode.INVALID_PAYLOAD, "session is not readonly"
-            )
+            raise ChubError(ErrorCode.INVALID_PAYLOAD, "session is not readonly")
         if s.pid is None:
             await relaunch_wrapper(name=s.name, cwd=s.cwd, tags=list(s.tags))
             await reg.update_status(s.id, SessionStatus.DEAD)
             return {}
         if not await wait_for_exit(s.pid, timeout=600.0):
-            raise ChubError(
-                ErrorCode.INTERNAL, "timed out waiting for raw claude to exit"
-            )
+            raise ChubError(ErrorCode.INTERNAL, "timed out waiting for raw claude to exit")
         await reg.update_status(s.id, SessionStatus.DEAD)
         await relaunch_wrapper(name=s.name, cwd=s.cwd, tags=list(s.tags))
         return {}
 
-    async def purge(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def purge(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         p = PurgeParams.model_validate(params)
         if p.run_id is None and p.session is None:
-            raise ChubError(
-                ErrorCode.INVALID_PAYLOAD, "specify run_id or session"
-            )
+            raise ChubError(ErrorCode.INVALID_PAYLOAD, "specify run_id or session")
         if p.run_id is not None:
-            await db.conn.execute(
-                "DELETE FROM transcript_fts WHERE hub_run_id = ?", (p.run_id,)
-            )
-            await db.conn.execute(
-                "DELETE FROM sessions WHERE hub_run_id = ?", (p.run_id,)
-            )
-            await db.conn.execute(
-                "DELETE FROM hub_runs WHERE id = ?", (p.run_id,)
-            )
+            await db.conn.execute("DELETE FROM transcript_fts WHERE hub_run_id = ?", (p.run_id,))
+            await db.conn.execute("DELETE FROM sessions WHERE hub_run_id = ?", (p.run_id,))
+            await db.conn.execute("DELETE FROM hub_runs WHERE id = ?", (p.run_id,))
             await db.conn.commit()
         else:
             assert p.session is not None
             s = await reg.get_by_name(p.session)
-            await db.conn.execute(
-                "DELETE FROM transcript_fts WHERE session_id = ?", (s.id,)
-            )
-            await db.conn.execute(
-                "DELETE FROM sessions WHERE id = ?", (s.id,)
-            )
+            await db.conn.execute("DELETE FROM transcript_fts WHERE session_id = ?", (s.id,))
+            await db.conn.execute("DELETE FROM sessions WHERE id = ?", (s.id,))
             await db.conn.commit()
             # Drop in-memory state too so list_sessions stops returning it.
             async with reg._lock:
@@ -993,9 +943,7 @@ def _build_registry(
                 reg._buffers.pop(s.id, None)
         return {}
 
-    async def update_claude_pid(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def update_claude_pid(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         """Wrapper-side restart finished: refresh the daemon's view of the
         claude pid for an existing session and re-arm watch_for_transcript.
 
@@ -1017,16 +965,12 @@ def _build_registry(
         # claude_session_id is preserved on `s` so a quick lookup of
         # ~/.claude/sessions/<new_pid>.json will return the same UUID
         # (claude --resume keeps it).
-        task = asyncio.create_task(
-            hooks_mod.watch_for_transcript(reg, s, claude_pid=p.claude_pid)
-        )
+        task = asyncio.create_task(hooks_mod.watch_for_transcript(reg, s, claude_pid=p.claude_pid))
         background_tasks.add(task)
         task.add_done_callback(background_tasks.discard)
         return {}
 
-    async def refresh_claude_session(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def refresh_claude_session(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         """Push a ``restart_claude`` event over the wrapper's writer.
 
         The wrapper handles the actual SIGTERM + ``claude --resume <sid>``
@@ -1048,9 +992,7 @@ def _build_registry(
             )
         write = reg._wrapper_writers.get(p.id)
         if write is None:
-            raise ChubError(
-                ErrorCode.WRAPPER_UNREACHABLE, "wrapper not connected"
-            )
+            raise ChubError(ErrorCode.WRAPPER_UNREACHABLE, "wrapper not connected")
         await write(
             encode_message(
                 Event(
@@ -1061,9 +1003,7 @@ def _build_registry(
         )
         return {}
 
-    async def recent_cwds(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def recent_cwds(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         """Return the most-recently-used cwds across all sessions.
 
         Used by the TUI spawn modal's Ctrl+P picker so the user can
@@ -1074,9 +1014,7 @@ def _build_registry(
         cwds = await db.recent_cwds(p.limit)
         return RecentCwdsResult(cwds=cwds).model_dump()
 
-    async def list_all_claude_jsonls(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def list_all_claude_jsonls(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         """Phase 8d: scan ~/.claude/projects for every claude session
         on disk (chubby-tracked or not) and return one record per
         session sorted by recency. The TUI's cross-project history
@@ -1084,23 +1022,22 @@ def _build_registry(
         had" so users can resume any of them via ``claude --resume``.
         """
         p = ListAllClaudeJsonlsParams.model_validate(params)
+        from chubby.daemon import hooks as hooks_mod
+
         # Pure stat + read; no daemon state involved. Run in a thread
         # so a slow disk doesn't block the event loop.
         entries_raw = await asyncio.to_thread(
-            hooks_mod.list_all_claude_jsonls, limit=p.limit,
+            hooks_mod.list_all_claude_jsonls,
+            limit=p.limit,
         )
         entries = [ClaudeJsonlEntry(**e) for e in entries_raw]
         return ListAllClaudeJsonlsResult(entries=entries).model_dump()
 
-    async def subscribe_events(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def subscribe_events(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         sub_id = await subs.subscribe(ctx.write)
         return {"subscription_id": sub_id}
 
-    async def unsubscribe(
-        params: dict[str, Any], ctx: CallContext
-    ) -> dict[str, Any]:
+    async def unsubscribe(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         sid = int(params["subscription_id"])
         await subs.unsubscribe(sid)
         return {}
@@ -1174,11 +1111,15 @@ async def _sweep_stuck_thinking(
     flipped to IDLE (and broadcast as session_status_changed so the TUI
     sees the rail spinner stop).
     """
-    interval = interval_s if interval_s is not None else float(
-        paths.chubby_env("THINKING_SWEEP_S") or _SWEEP_INTERVAL_DEFAULT_S
+    interval = (
+        interval_s
+        if interval_s is not None
+        else float(paths.chubby_env("THINKING_SWEEP_S") or _SWEEP_INTERVAL_DEFAULT_S)
     )
-    max_age = max_age_s if max_age_s is not None else float(
-        paths.chubby_env("THINKING_MAX_S") or _SWEEP_MAX_AGE_DEFAULT_S
+    max_age = (
+        max_age_s
+        if max_age_s is not None
+        else float(paths.chubby_env("THINKING_MAX_S") or _SWEEP_MAX_AGE_DEFAULT_S)
     )
     while True:
         try:
@@ -1199,13 +1140,13 @@ async def _sweep_stuck_thinking(
 _GIT_STATUS_SWEEP_DEFAULT_S = 10.0
 
 
-async def _sweep_git_status(
-    reg: Registry, *, interval_s: float | None = None
-) -> None:
+async def _sweep_git_status(reg: Registry, *, interval_s: float | None = None) -> None:
     """Periodically refresh ``Session.git_ahead`` / ``git_behind`` for
     every non-DEAD session by shelling out to ``git rev-list``."""
-    interval = interval_s if interval_s is not None else float(
-        paths.chubby_env("GIT_STATUS_SWEEP_S") or _GIT_STATUS_SWEEP_DEFAULT_S
+    interval = (
+        interval_s
+        if interval_s is not None
+        else float(paths.chubby_env("GIT_STATUS_SWEEP_S") or _GIT_STATUS_SWEEP_DEFAULT_S)
     )
     while True:
         try:
@@ -1249,8 +1190,10 @@ _PORT_SWEEP_DEFAULT_S = 2.5
 async def _sweep_ports(reg: Registry, *, interval_s: float | None = None) -> None:
     """Periodically refresh ``Session.ports`` for every non-DEAD
     session that has a ``claude_pid`` recorded."""
-    interval = interval_s if interval_s is not None else float(
-        paths.chubby_env("PORT_SWEEP_S") or _PORT_SWEEP_DEFAULT_S
+    interval = (
+        interval_s
+        if interval_s is not None
+        else float(paths.chubby_env("PORT_SWEEP_S") or _PORT_SWEEP_DEFAULT_S)
     )
     while True:
         try:
@@ -1281,10 +1224,7 @@ async def _sweep_ports_once(reg: Registry) -> int:
             continue
         pids = await _ports.process_tree(int(s.pid))
         infos = await _ports.listening_ports(pids)
-        port_dicts = [
-            {"port": i.port, "pid": i.pid, "address": i.address}
-            for i in infos
-        ]
+        port_dicts = [{"port": i.port, "pid": i.pid, "address": i.address} for i in infos]
         if await reg.set_ports(s.id, port_dicts):
             changed += 1
     return changed
@@ -1336,9 +1276,7 @@ async def serve(*, stop_event: asyncio.Event | None = None) -> None:
         run = await start_run(db, resumed_from=resumed_from)
         try:
             subs = SubscriptionHub()
-            registry = Registry(
-                hub_run_id=run.id, db=db, event_log=run.event_log, subs=subs
-            )
+            registry = Registry(hub_run_id=run.id, db=db, event_log=run.event_log, subs=subs)
             if resumed_from:
                 for prev in await db.list_sessions(hub_run_id=resumed_from):
                     if prev.kind is SessionKind.READONLY:
@@ -1371,9 +1309,7 @@ async def serve(*, stop_event: asyncio.Event | None = None) -> None:
                 for t in pending:
                     t.cancel()
                 if server_closed_task in done and not stop_event.is_set():
-                    log.warning(
-                        "chubbyd: server closed unexpectedly; shutting down"
-                    )
+                    log.warning("chubbyd: server closed unexpectedly; shutting down")
             finally:
                 sweep_task.cancel()
                 git_sweep_task.cancel()

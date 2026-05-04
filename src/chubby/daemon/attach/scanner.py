@@ -69,10 +69,10 @@ async def _enumerate_claude_pids() -> list[int]:
     # Linux: walk /proc. These are synthetic-fs reads; treat as effectively
     # in-memory and accept the ASYNC240 lint exception.
     proc_root = Path("/proc")
-    if not proc_root.exists():  # noqa: ASYNC240
+    if not proc_root.exists():
         return []
     pids = []
-    for entry in proc_root.iterdir():  # noqa: ASYNC240
+    for entry in proc_root.iterdir():
         if not entry.name.isdigit():
             continue
         try:

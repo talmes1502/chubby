@@ -78,9 +78,7 @@ async def test_concurrent_push_and_inbound_inject_no_deadlock() -> None:
             # Background: 100 concurrent push_chunks from the client.
             async def burst() -> None:
                 tasks = [
-                    asyncio.create_task(
-                        client.push_chunk(seq=i, data=f"chunk-{i}".encode())
-                    )
+                    asyncio.create_task(client.push_chunk(seq=i, data=f"chunk-{i}".encode()))
                     for i in range(1, 101)
                 ]
                 await asyncio.gather(*tasks)

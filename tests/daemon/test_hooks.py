@@ -40,6 +40,7 @@ def test_find_jsonl_for_session_globs_any_subdir(tmp_path: Path, monkeypatch) ->
     (sub / "abc1234.jsonl").write_text("{}\n")
 
     import chubby.daemon.hooks as hooks_mod
+
     monkeypatch.setattr(hooks_mod, "claude_projects_root", lambda: fake_root)
 
     found = find_jsonl_for_session("abc1234")
@@ -47,9 +48,7 @@ def test_find_jsonl_for_session_globs_any_subdir(tmp_path: Path, monkeypatch) ->
     assert found.name == "abc1234.jsonl"
 
 
-def test_find_new_jsonl_for_cwd_matches_via_cwd_field(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_find_new_jsonl_for_cwd_matches_via_cwd_field(tmp_path: Path, monkeypatch) -> None:
     """find_new_jsonl_for_cwd should match by reading the cwd field inside
     the JSONL (encoding-free), not by computing a subdir name."""
     fake_root = tmp_path / "projects"
@@ -63,14 +62,11 @@ def test_find_new_jsonl_for_cwd_matches_via_cwd_field(
     other_cwd = str(tmp_path / "other")
     Path(other_cwd).mkdir(parents=True)
 
-    (sub_a / "match.jsonl").write_text(
-        json.dumps({"type": "first", "cwd": target_cwd}) + "\n"
-    )
-    (sub_b / "wrong.jsonl").write_text(
-        json.dumps({"type": "first", "cwd": other_cwd}) + "\n"
-    )
+    (sub_a / "match.jsonl").write_text(json.dumps({"type": "first", "cwd": target_cwd}) + "\n")
+    (sub_b / "wrong.jsonl").write_text(json.dumps({"type": "first", "cwd": other_cwd}) + "\n")
 
     import chubby.daemon.hooks as hooks_mod
+
     monkeypatch.setattr(hooks_mod, "claude_projects_root", lambda: fake_root)
 
     found = find_new_jsonl_for_cwd(target_cwd, since_ms=0)
@@ -144,10 +140,14 @@ def test_extract_turn_payload_keeps_pure_tool_use_turns() -> None:
 
     msg = {
         "role": "assistant",
-        "content": [{
-            "type": "tool_use", "id": "tu2",
-            "name": "Bash", "input": {"command": "ls -la"},
-        }],
+        "content": [
+            {
+                "type": "tool_use",
+                "id": "tu2",
+                "name": "Bash",
+                "input": {"command": "ls -la"},
+            }
+        ],
     }
     assert _extract_turn_text(msg) == ""
     text, tool_calls = _extract_turn_payload(msg)
@@ -327,9 +327,7 @@ async def test_tailer_flips_to_thinking_on_user_turn_from_awaiting(
         )
         + "\n"
     )
-    await asyncio.wait_for(
-        _tail_jsonl(reg, s.id, transcript, stop_after=1), timeout=3.0
-    )
+    await asyncio.wait_for(_tail_jsonl(reg, s.id, transcript, stop_after=1), timeout=3.0)
     await db.close()
     cur = await reg.get(s.id)
     assert cur.status is SessionStatus.THINKING, (
@@ -362,19 +360,12 @@ async def test_tailer_does_not_flip_dead_session_to_thinking(
     )
     reg._by_id[s.id] = s
     transcript.write_text(
-        json.dumps(
-            {"type": "user", "message": {"role": "user", "content": "x"}}
-        )
-        + "\n"
+        json.dumps({"type": "user", "message": {"role": "user", "content": "x"}}) + "\n"
     )
-    await asyncio.wait_for(
-        _tail_jsonl(reg, s.id, transcript, stop_after=1), timeout=3.0
-    )
+    await asyncio.wait_for(_tail_jsonl(reg, s.id, transcript, stop_after=1), timeout=3.0)
     await db.close()
     cur = await reg.get(s.id)
-    assert cur.status is SessionStatus.DEAD, (
-        f"DEAD must stay DEAD; got {cur.status}"
-    )
+    assert cur.status is SessionStatus.DEAD, f"DEAD must stay DEAD; got {cur.status}"
 
 
 async def test_tailer_skips_blank_invalid_and_non_turn_records(tmp_path: Path) -> None:
@@ -436,6 +427,7 @@ async def test_watch_for_transcript_binds_new_jsonl(tmp_path: Path, monkeypatch)
     sub.mkdir(parents=True)
 
     import chubby.daemon.hooks as hooks_mod
+
     monkeypatch.setattr(hooks_mod, "claude_projects_root", lambda: fake_root)
 
     db = await Database.open(tmp_path / "s.db")
@@ -446,16 +438,13 @@ async def test_watch_for_transcript_binds_new_jsonl(tmp_path: Path, monkeypatch)
     async def writer() -> None:
         await asyncio.sleep(0.05)
         (sub / "abc1234.jsonl").write_text(
-            json.dumps({"type": "first", "cwd": cwd}) + "\n"
-            + json.dumps(
-                {"type": "user", "message": {"role": "user", "content": "hello"}}
-            )
+            json.dumps({"type": "first", "cwd": cwd})
+            + "\n"
+            + json.dumps({"type": "user", "message": {"role": "user", "content": "hello"}})
             + "\n"
         )
 
-    watch_task = asyncio.create_task(
-        watch_for_transcript(reg, s, poll_interval=0.05, timeout=2.0)
-    )
+    watch_task = asyncio.create_task(watch_for_transcript(reg, s, poll_interval=0.05, timeout=2.0))
     try:
         await writer()
         await asyncio.sleep(0.3)
@@ -488,6 +477,7 @@ def test_session_id_for_pid_reads_mapping(tmp_path: Path, monkeypatch) -> None:
     )
 
     import chubby.daemon.hooks as hooks_mod
+
     monkeypatch.setattr(hooks_mod, "claude_sessions_dir", lambda: fake_dir)
 
     assert session_id_for_pid(12345) == "abc-1234-uuid"
@@ -499,6 +489,7 @@ def test_session_id_for_pid_missing_returns_none(tmp_path: Path, monkeypatch) ->
     fake_dir.mkdir()
 
     import chubby.daemon.hooks as hooks_mod
+
     monkeypatch.setattr(hooks_mod, "claude_sessions_dir", lambda: fake_dir)
 
     assert session_id_for_pid(99999) is None
@@ -512,9 +503,7 @@ def test_session_id_for_pid_missing_returns_none(tmp_path: Path, monkeypatch) ->
     assert session_id_for_pid(66666) is None
 
 
-async def test_watch_for_transcript_binds_via_claude_pid(
-    tmp_path: Path, monkeypatch
-) -> None:
+async def test_watch_for_transcript_binds_via_claude_pid(tmp_path: Path, monkeypatch) -> None:
     """Happy path with claude_pid: the pid mapping resolves the sessionId,
     we glob the JSONL by id (encoding-free), bind, and start tailing —
     even if a stale unrelated JSONL with a more recent mtime exists in
@@ -534,18 +523,15 @@ async def test_watch_for_transcript_binds_via_claude_pid(
     # A stale JSONL belonging to an UNRELATED active Claude in the same
     # cwd — newer mtime, would beat the new session in the legacy
     # mtime heuristic. We must NOT pick this one.
-    (sub / "stale-other.jsonl").write_text(
-        json.dumps({"type": "first", "cwd": cwd}) + "\n"
-    )
+    (sub / "stale-other.jsonl").write_text(json.dumps({"type": "first", "cwd": cwd}) + "\n")
 
     # The "real" JSONL for the wrapped session, with a known UUID we
     # surface via the pid mapping.
     real_id = "abc1234"
     (sub / f"{real_id}.jsonl").write_text(
-        json.dumps({"type": "first", "cwd": cwd}) + "\n"
-        + json.dumps(
-            {"type": "user", "message": {"role": "user", "content": "hello"}}
-        )
+        json.dumps({"type": "first", "cwd": cwd})
+        + "\n"
+        + json.dumps({"type": "user", "message": {"role": "user", "content": "hello"}})
         + "\n"
     )
     # Claude's per-pid mapping file — the precise binding we trust.
@@ -555,6 +541,7 @@ async def test_watch_for_transcript_binds_via_claude_pid(
     )
 
     import chubby.daemon.hooks as hooks_mod
+
     monkeypatch.setattr(hooks_mod, "claude_projects_root", lambda: fake_projects)
     monkeypatch.setattr(hooks_mod, "claude_sessions_dir", lambda: fake_sessions)
 
@@ -564,9 +551,7 @@ async def test_watch_for_transcript_binds_via_claude_pid(
     s = await reg.register(name="foo", kind=SessionKind.WRAPPED, cwd=cwd)
 
     watch_task = asyncio.create_task(
-        watch_for_transcript(
-            reg, s, claude_pid=claude_pid, poll_interval=0.05, timeout=2.0
-        )
+        watch_for_transcript(reg, s, claude_pid=claude_pid, poll_interval=0.05, timeout=2.0)
     )
     try:
         await asyncio.sleep(0.3)

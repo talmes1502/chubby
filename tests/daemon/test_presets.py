@@ -20,9 +20,7 @@ from chubby.daemon.presets import (
 
 
 @pytest.fixture(autouse=True)
-def _isolated_home(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Path:
+def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect chubby's home dir so tests don't touch real config."""
     monkeypatch.setenv("CHUBBY_HOME", str(tmp_path))
     return tmp_path

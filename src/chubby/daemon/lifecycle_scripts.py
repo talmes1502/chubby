@@ -39,6 +39,7 @@ class LifecycleResult:
     """Result of running a *single* lifecycle script. The ``Skipped``
     case fires when the command list is empty — callers can treat it
     interchangeably with ``Ok`` in their happy path."""
+
     status: str  # "ok" | "skipped" | "failed"
     output_tail: str = ""
     exit_code: int | None = None
@@ -79,10 +80,8 @@ async def _run_one(
         )
     timed_out = False
     try:
-        stdout, _ = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout_s
-        )
-    except asyncio.TimeoutError:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+    except TimeoutError:
         timed_out = True
         # SIGHUP first — zsh under ``-l`` ignores SIGTERM but honours
         # SIGHUP (kernel sends it on real-TTY hangup, so shells expect
@@ -92,19 +91,15 @@ async def _run_one(
         except ProcessLookupError:
             pass
         try:
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=_KILL_GRACE_S
-            )
-        except asyncio.TimeoutError:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_KILL_GRACE_S)
+        except TimeoutError:
             try:
                 proc.kill()
             except ProcessLookupError:
                 pass
             try:
-                stdout, _ = await asyncio.wait_for(
-                    proc.communicate(), timeout=1.0
-                )
-            except asyncio.TimeoutError:
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=1.0)
+            except TimeoutError:
                 stdout = b""
     text = stdout.decode("utf-8", errors="replace") if stdout else ""
     if len(text) > tail_bytes:

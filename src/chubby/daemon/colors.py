@@ -31,7 +31,11 @@ class ColorAllocator:
         self._round_robin = itertools.cycle(PALETTE)
 
     def allocate(self, *, in_use: set[str], preferred_for_name: str | None) -> str:
-        if preferred_for_name and preferred_for_name in PALETTE and preferred_for_name not in in_use:
+        if (
+            preferred_for_name
+            and preferred_for_name in PALETTE
+            and preferred_for_name not in in_use
+        ):
             return preferred_for_name
         for c in PALETTE:
             if c not in in_use:

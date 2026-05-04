@@ -1,14 +1,14 @@
 """JSON-RPC 2.0 envelope. We use a subset:
-  - Request: {"jsonrpc": "2.0", "id": int, "method": str, "params": obj}
-  - Response: {"jsonrpc": "2.0", "id": int, "result": ...} OR {... "error": {code, message, data?}}
-  - Event (server-push, no id): {"jsonrpc": "2.0", "method": str, "params": obj}
+- Request: {"jsonrpc": "2.0", "id": int, "method": str, "params": obj}
+- Response: {"jsonrpc": "2.0", "id": int, "result": ...} OR {... "error": {code, message, data?}}
+- Event (server-push, no id): {"jsonrpc": "2.0", "method": str, "params": obj}
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Union
+from typing import Any
 
 from chubby.proto.errors import ChubError, ErrorCode
 
@@ -39,7 +39,7 @@ class Event:
     params: JSON = field(default_factory=dict)
 
 
-Message = Union[Request, Response, Event]
+Message = Request | Response | Event
 
 
 def encode_message(msg: Message) -> bytes:
@@ -65,7 +65,9 @@ def decode_message(raw: bytes) -> Message:
     if not isinstance(body, dict) or body.get("jsonrpc") != "2.0":
         raise ChubError(ErrorCode.INVALID_PAYLOAD, "missing jsonrpc=2.0")
     if "method" in body and "id" in body:
-        return Request(id=int(body["id"]), method=str(body["method"]), params=body.get("params") or {})
+        return Request(
+            id=int(body["id"]), method=str(body["method"]), params=body.get("params") or {}
+        )
     if "method" in body:
         return Event(method=str(body["method"]), params=body.get("params") or {})
     if "id" in body:

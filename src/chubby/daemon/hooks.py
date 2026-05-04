@@ -38,9 +38,7 @@ _CMD_RE = re.compile(
     r"(?:\s*<command-args>(?P<args>.*?)</command-args>)?",
     re.DOTALL,
 )
-_STDOUT_RE = re.compile(
-    r"<local-command-stdout>(?P<body>.*?)</local-command-stdout>", re.DOTALL
-)
+_STDOUT_RE = re.compile(r"<local-command-stdout>(?P<body>.*?)</local-command-stdout>", re.DOTALL)
 
 
 def _strip_command_xml(text: str) -> str:
@@ -362,18 +360,18 @@ def _summarize_tool_use(block: dict[str, Any]) -> str:
 # tuple matters: the first key with a non-empty value wins. Tools not
 # listed fall through to a generic "name=value, …" rendering.
 _TOOL_SUMMARY_KEYS: dict[str, tuple[str, ...]] = {
-    "Bash":      ("command",),
+    "Bash": ("command",),
     "BashOutput": ("bash_id", "shell_id"),
-    "Read":      ("file_path",),
-    "Edit":      ("file_path",),
-    "Write":     ("file_path",),
+    "Read": ("file_path",),
+    "Edit": ("file_path",),
+    "Write": ("file_path",),
     "MultiEdit": ("file_path",),
     "NotebookEdit": ("notebook_path",),
-    "Grep":      ("pattern",),
-    "Glob":      ("pattern",),
-    "WebFetch":  ("url",),
+    "Grep": ("pattern",),
+    "Glob": ("pattern",),
+    "WebFetch": ("url",),
     "WebSearch": ("query",),
-    "Task":      ("description",),
+    "Task": ("description",),
 }
 
 
@@ -484,13 +482,15 @@ def _extract_turn_payload(
         elif btype == "tool_use":
             name = block.get("name", "?")
             summary = _summarize_tool_input(name, block.get("input"))
-            tool_calls.append({
-                "id": block.get("id", ""),
-                "name": name,
-                "summary": summary,
-                "result_preview": "",
-                "result_is_error": False,
-            })
+            tool_calls.append(
+                {
+                    "id": block.get("id", ""),
+                    "name": name,
+                    "summary": summary,
+                    "result_preview": "",
+                    "result_is_error": False,
+                }
+            )
     text = "\n".join(text_parts)
     if text:
         text = _strip_command_xml(text)
@@ -608,9 +608,7 @@ async def _tail_jsonl(
                                 },
                             )
                     # Tool-result-only user records carry no prose; skip.
-                    if not isinstance(message, dict) or not isinstance(
-                        message.get("content"), str
-                    ):
+                    if not isinstance(message, dict) or not isinstance(message.get("content"), str):
                         continue
             text, tool_calls = _extract_turn_payload(message)
             if not text and not tool_calls:
@@ -636,8 +634,7 @@ async def _tail_jsonl(
                 fts_body = text
                 if tool_calls:
                     summary_lines = "\n".join(
-                        f"⏺ {tc['name']} {tc['summary']}".strip()
-                        for tc in tool_calls
+                        f"⏺ {tc['name']} {tc['summary']}".strip() for tc in tool_calls
                     )
                     fts_body = (text + "\n" + summary_lines) if text else summary_lines
                 await registry.db.insert_message(
@@ -661,17 +658,9 @@ async def _tail_jsonl(
                         in_raw = usage.get("input_tokens")
                         out_raw = usage.get("output_tokens")
                         cache_raw = usage.get("cache_read_input_tokens")
-                        input_tokens = (
-                            int(in_raw) if isinstance(in_raw, int | float) else 0
-                        )
-                        output_tokens = (
-                            int(out_raw) if isinstance(out_raw, int | float) else 0
-                        )
-                        cache_read = (
-                            int(cache_raw)
-                            if isinstance(cache_raw, int | float)
-                            else 0
-                        )
+                        input_tokens = int(in_raw) if isinstance(in_raw, int | float) else 0
+                        output_tokens = int(out_raw) if isinstance(out_raw, int | float) else 0
+                        cache_read = int(cache_raw) if isinstance(cache_raw, int | float) else 0
                         if registry.subs is not None:
                             await registry.subs.broadcast(
                                 "session_usage_changed",
@@ -715,9 +704,7 @@ async def _tail_jsonl(
                         SessionStatus.IDLE,
                         SessionStatus.AWAITING_USER,
                     ):
-                        await registry.update_status(
-                            session_id, SessionStatus.THINKING
-                        )
+                        await registry.update_status(session_id, SessionStatus.THINKING)
                 except ChubError:
                     pass
             if role == "assistant" and not tool_calls:
@@ -744,9 +731,7 @@ async def _tail_jsonl(
                 try:
                     cur = await registry.get(session_id)
                     if cur.status is SessionStatus.THINKING:
-                        await registry.update_status(
-                            session_id, SessionStatus.IDLE
-                        )
+                        await registry.update_status(session_id, SessionStatus.IDLE)
                 except ChubError:
                     pass
             indexed += 1
@@ -820,9 +805,7 @@ async def watch_for_transcript(
         # Fallback: legacy mtime-based scan. Used when no claude_pid was
         # supplied or when the pid-keyed file never showed up.
         while now_ms() < deadline:
-            found = await asyncio.to_thread(
-                find_new_jsonl_for_cwd, session.cwd, session.created_at
-            )
+            found = await asyncio.to_thread(find_new_jsonl_for_cwd, session.cwd, session.created_at)
             if found is not None:
                 claude_session_id = found.stem
                 break

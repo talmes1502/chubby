@@ -64,10 +64,8 @@ async def _run_git(
     except FileNotFoundError:
         return -1, "", "git not found on PATH"
     try:
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout_s
-        )
-    except asyncio.TimeoutError:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+    except TimeoutError:
         try:
             proc.kill()
         except ProcessLookupError:
@@ -157,9 +155,7 @@ async def worktree_exists(path: Path) -> bool:
     return needle in out
 
 
-async def add_worktree(
-    repo_root_path: Path, branch: str, base: str = "HEAD"
-) -> Path:
+async def add_worktree(repo_root_path: Path, branch: str, base: str = "HEAD") -> Path:
     """Create a worktree for ``branch`` at the chubby-managed path.
 
     If ``branch`` already exists locally, checks it out into the
@@ -176,9 +172,7 @@ async def add_worktree(
         return target
     target.parent.mkdir(parents=True, exist_ok=True)
     if await branch_exists(repo_root_path, branch):
-        rc, _, stderr = await _run_git(
-            repo_root_path, "worktree", "add", str(target), branch
-        )
+        rc, _, stderr = await _run_git(repo_root_path, "worktree", "add", str(target), branch)
     else:
         rc, _, stderr = await _run_git(
             repo_root_path, "worktree", "add", "-b", branch, str(target), base
@@ -202,9 +196,7 @@ async def remove_worktree(path: Path) -> None:
     if not path.exists():
         return
     # Try the clean path first.
-    rc, _, stderr = await _run_git(
-        path, "worktree", "remove", "--force", str(path)
-    )
+    rc, _, stderr = await _run_git(path, "worktree", "remove", "--force", str(path))
     if rc == 0:
         return
     log.warning(
@@ -228,7 +220,12 @@ async def resolve_pr_branch(repo_root_path: Path, pr_number: int) -> str | None:
     """
     try:
         proc = await asyncio.create_subprocess_exec(
-            "gh", "pr", "view", str(pr_number), "--json", "headRefName",
+            "gh",
+            "pr",
+            "view",
+            str(pr_number),
+            "--json",
+            "headRefName",
             cwd=str(repo_root_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -236,10 +233,8 @@ async def resolve_pr_branch(repo_root_path: Path, pr_number: int) -> str | None:
     except FileNotFoundError:
         return None
     try:
-        stdout, _stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=_GIT_TIMEOUT_S
-        )
-    except asyncio.TimeoutError:
+        stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=_GIT_TIMEOUT_S)
+    except TimeoutError:
         try:
             proc.kill()
         except ProcessLookupError:
@@ -248,6 +243,7 @@ async def resolve_pr_branch(repo_root_path: Path, pr_number: int) -> str | None:
     if proc.returncode != 0:
         return None
     import json
+
     try:
         data = json.loads(stdout.decode("utf-8", errors="replace"))
     except json.JSONDecodeError:

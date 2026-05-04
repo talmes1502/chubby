@@ -21,9 +21,7 @@ class Client:
 
     async def _connect(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         if self._reader is None or self._writer is None:
-            self._reader, self._writer = await asyncio.open_unix_connection(
-                str(self.sock_path)
-            )
+            self._reader, self._writer = await asyncio.open_unix_connection(str(self.sock_path))
         return self._reader, self._writer
 
     async def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:

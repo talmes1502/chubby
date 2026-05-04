@@ -29,10 +29,9 @@ from chubby.cli.commands._hook_input import read_hook_payload
 
 def test_read_hook_payload_parses_json(monkeypatch: pytest.MonkeyPatch) -> None:
     payload = {"session_id": "abc", "cwd": "/tmp"}
-    monkeypatch.setattr(
-        "sys.stdin", io.StringIO(json.dumps(payload))
-    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     monkeypatch.setattr("sys.stdin.isatty", lambda: False, raising=False)
+
     # The isatty patch above doesn't bind to StringIO; patch via a
     # tiny wrapper instead.
     class _NonTtyStdin(io.StringIO):
@@ -69,6 +68,7 @@ def test_read_hook_payload_returns_empty_on_tty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Don't hang waiting for stdin when invoked interactively."""
+
     class _TtyStdin(io.StringIO):
         def isatty(self) -> bool:
             return True
@@ -146,9 +146,7 @@ def test_mark_idle_no_payload_is_silent_noop(
 
     r = CliRunner().invoke(app, ["mark-idle"])
     assert r.exit_code == 0, r.output
-    assert called is False, (
-        "no session id available → must not even open a daemon connection"
-    )
+    assert called is False, "no session id available → must not even open a daemon connection"
 
 
 def test_register_readonly_reads_payload_from_stdin(
@@ -170,9 +168,7 @@ def test_register_readonly_reads_payload_from_stdin(
         async def close(self) -> None:
             pass
 
-    monkeypatch.setattr(
-        "chubby.cli.commands.register_readonly.Client", _FakeClient
-    )
+    monkeypatch.setattr("chubby.cli.commands.register_readonly.Client", _FakeClient)
 
     from chubby.cli.main import app
 

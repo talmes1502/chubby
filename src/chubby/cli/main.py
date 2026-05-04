@@ -55,6 +55,8 @@ def _root(
     interactive default.
     """
     output.configure(json_flag=json_output, quiet_flag=quiet)
+
+
 app.command(name="up")(up.run)
 app.command(name="down")(down.run)
 app.command(name="start")(start.run)

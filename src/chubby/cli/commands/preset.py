@@ -111,9 +111,7 @@ def apply_cmd(
     override_name: str | None = typer.Option(
         None, "--name", help="Override the resolved session name."
     ),
-    override_cwd: str | None = typer.Option(
-        None, "--cwd", help="Override the resolved cwd."
-    ),
+    override_cwd: str | None = typer.Option(None, "--cwd", help="Override the resolved cwd."),
     override_branch: str | None = typer.Option(
         None, "--branch", help="Override (or set) the branch."
     ),
@@ -138,9 +136,7 @@ def apply_cmd(
         c = Client(paths.sock_path())
         try:
             r = await c.call("spawn_session", params)
-            OUT.object(
-                r, pretty_line=lambda _: f"spawned {r['session']['id']} ({params['name']})"
-            )
+            OUT.object(r, pretty_line=lambda _: f"spawned {r['session']['id']} ({params['name']})")
         finally:
             await c.close()
 

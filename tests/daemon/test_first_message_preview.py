@@ -8,8 +8,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from chubby.daemon.hooks import peek_first_user_message
 from chubby.daemon.registry import Registry
 from chubby.daemon.session import SessionKind
@@ -137,9 +135,7 @@ async def test_set_first_preview_emits_event() -> None:
 
     changed = await reg.set_first_preview(s.id, "explain ssm")
     assert changed is True
-    events = [
-        p for m, p in subs.broadcasts if m == "session_first_preview_resolved"
-    ]
+    events = [p for m, p in subs.broadcasts if m == "session_first_preview_resolved"]
     assert len(events) == 1
     assert events[0]["id"] == s.id
     assert events[0]["first_user_message"] == "explain ssm"

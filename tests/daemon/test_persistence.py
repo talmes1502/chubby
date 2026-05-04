@@ -20,9 +20,16 @@ async def test_insert_session_round_trip(tmp_path: Path) -> None:
 
     db = await Database.open(tmp_path / "state.db")
     s = Session(
-        id="s_x", hub_run_id="hr_y", name="frontend", color="#5fafff",
-        kind=SessionKind.WRAPPED, cwd="/tmp", created_at=1, last_activity_at=1,
-        status=SessionStatus.IDLE, pid=42,
+        id="s_x",
+        hub_run_id="hr_y",
+        name="frontend",
+        color="#5fafff",
+        kind=SessionKind.WRAPPED,
+        cwd="/tmp",
+        created_at=1,
+        last_activity_at=1,
+        status=SessionStatus.IDLE,
+        pid=42,
     )
     await db.upsert_session(s)
     rows = await db.list_sessions(hub_run_id="hr_y")

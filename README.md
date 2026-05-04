@@ -33,7 +33,13 @@ See [docs/install.md](docs/install.md) for the full path. The short version:
 
 ```bash
 pipx install chubby
-chubby install-hooks            # registers the Stop hook (add --auto-register to also track every raw `claude` run)
+chubby start                    # daemon + hooks + TUI in one command
+```
+
+Or do it piecewise:
+
+```bash
+chubby install-hooks            # Stop hook (add --auto-register to track every raw `claude` run)
 chubby up --detach              # start the daemon
 chubby tui                      # open the TUI
 ```

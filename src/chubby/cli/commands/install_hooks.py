@@ -75,6 +75,7 @@ def _build_hooks(*, auto_register: bool) -> dict[str, list[dict[str, Any]]]:
         out["SessionStart"] = [_SESSION_START_GROUP]
     return out
 
+
 _CHUBBY_NAMES = {
     _REGISTER_NAME,
     _MARK_IDLE_NAME,
@@ -121,10 +122,7 @@ def _migrate_legacy_entries(entries: list[Any]) -> list[Any]:
             continue
         # Flat-shape legacy entry: {"name": "...", "command": "..."}
         if "matcher" not in e:
-            if (
-                isinstance(e.get("name"), str)
-                and e["name"] in _CHUBBY_NAMES
-            ):
+            if isinstance(e.get("name"), str) and e["name"] in _CHUBBY_NAMES:
                 continue
             if _is_owned_command(e.get("command")):
                 continue
@@ -134,10 +132,7 @@ def _migrate_legacy_entries(entries: list[Any]) -> list[Any]:
         if isinstance(inner, list) and any(
             isinstance(h, dict)
             and (
-                (
-                    isinstance(h.get("name"), str)
-                    and h["name"] in _CHUBBY_NAMES
-                )
+                (isinstance(h.get("name"), str) and h["name"] in _CHUBBY_NAMES)
                 or _is_owned_command(h.get("command"))
             )
             for h in inner
@@ -153,9 +148,7 @@ def _has_chubby_hook(group: dict[str, Any], name: str) -> bool:
     inner = group.get("hooks")
     if not isinstance(inner, list):
         return False
-    return any(
-        isinstance(h, dict) and h.get("name") == name for h in inner
-    )
+    return any(isinstance(h, dict) and h.get("name") == name for h in inner)
 
 
 def run(
@@ -172,9 +165,7 @@ def run(
         ),
     ),
 ) -> None:
-    settings: dict[str, Any] = (
-        json.loads(SETTINGS.read_text()) if SETTINGS.exists() else {}
-    )
+    settings: dict[str, Any] = json.loads(SETTINGS.read_text()) if SETTINGS.exists() else {}
     hooks = settings.setdefault("hooks", {})
     desired = _build_hooks(auto_register=auto_register)
     # Always sweep both events: the user may have previously installed
@@ -205,7 +196,4 @@ def run(
         shutil.copy(SETTINGS, SETTINGS.with_suffix(".json.bak"))
     SETTINGS.write_text(json.dumps(settings, indent=2) + "\n")
     suffix = " (with auto-register)" if auto_register else ""
-    typer.echo(
-        f"chubby hooks installed in {SETTINGS}{suffix} "
-        f"(backup at {SETTINGS}.bak)"
-    )
+    typer.echo(f"chubby hooks installed in {SETTINGS}{suffix} (backup at {SETTINGS}.bak)")

@@ -58,6 +58,6 @@ async def test_resume_marks_dead_pids(chub_home: Path) -> None:
     finally:
         del os.environ["CHUBBY_RESUME"]
 
-    assert any(
-        s["name"] == "x" and s["status"] == "dead" for s in sessions
-    ), f"expected resumed `x` session marked dead, got: {sessions!r}"
+    assert any(s["name"] == "x" and s["status"] == "dead" for s in sessions), (
+        f"expected resumed `x` session marked dead, got: {sessions!r}"
+    )

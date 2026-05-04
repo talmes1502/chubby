@@ -13,9 +13,11 @@ async def test_register_persists_to_db(tmp_path: Path) -> None:
     await r.register(name="frontend", kind=SessionKind.WRAPPED, cwd="/tmp", pid=1)
     rows = await db.list_sessions(hub_run_id="hr_t")
     assert len(rows) == 1
-    assert any(json_line for json_line in log.replay()
-               if json_line.get("event") == "session_added"
-               and json_line.get("name") == "frontend")
+    assert any(
+        json_line
+        for json_line in log.replay()
+        if json_line.get("event") == "session_added" and json_line.get("name") == "frontend"
+    )
     await db.close()
 
 

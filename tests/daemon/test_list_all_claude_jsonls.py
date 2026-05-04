@@ -29,11 +29,16 @@ def _write_session(home: Path, project: str, sid: str, cwd: str, prompt: str) ->
     path = proj_dir / f"{sid}.jsonl"
     with path.open("w", encoding="utf-8") as f:
         f.write(json.dumps({"type": "summary", "summary": "x", "cwd": cwd}) + "\n")
-        f.write(json.dumps({
-            "type": "user",
-            "message": {"role": "user", "content": prompt},
-            "cwd": cwd,
-        }) + "\n")
+        f.write(
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"role": "user", "content": prompt},
+                    "cwd": cwd,
+                }
+            )
+            + "\n"
+        )
     return path
 
 

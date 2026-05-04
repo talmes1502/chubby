@@ -57,9 +57,7 @@ async def test_setup_script_runs_before_wrapper(
         # spawn_session returns AFTER setup completes (it's awaited
         # inline before the wrapper subprocess fires), so the file
         # must exist by the time we get here.
-        assert (project / "SENTINEL").exists(), (
-            "setup script did not run before wrapper spawn"
-        )
+        assert (project / "SENTINEL").exists(), "setup script did not run before wrapper spawn"
         await client.close()
     finally:
         stop.set()

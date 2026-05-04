@@ -62,9 +62,7 @@ async def test_get_unknown_raises() -> None:
 
 async def test_set_tags_add_remove_dedup_and_sort() -> None:
     r = Registry(hub_run_id="hr_test")
-    s = await r.register(
-        name="x", kind=SessionKind.WRAPPED, cwd="/tmp", pid=1, tags=["a", "b"]
-    )
+    s = await r.register(name="x", kind=SessionKind.WRAPPED, cwd="/tmp", pid=1, tags=["a", "b"])
     await r.set_tags(s.id, add=["c", "a"], remove=["b"])
     assert (await r.get(s.id)).tags == ["a", "c"]
 

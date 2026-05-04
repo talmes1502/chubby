@@ -36,6 +36,7 @@ class Preset:
     """One saved spawn template. ``name`` is the lookup key (must be
     unique). All other fields are optional — a minimal preset is just
     ``{"name": "web", "cwd": "~/web"}``."""
+
     name: str
     cwd: str = ""
     branch: str | None = None
@@ -53,7 +54,7 @@ class Preset:
         return d
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "Preset":
+    def from_dict(cls, raw: dict[str, Any]) -> Preset:
         # Tolerant parser — extra fields are dropped, missing ones use
         # defaults. Reading a presets.json from a future version that
         # adds new keys won't break older daemons.
@@ -87,7 +88,7 @@ class Preset:
         result: dict[str, Any] = {
             "name": ov.get("name") or _subst(self.name),
             "cwd": os.path.expanduser(ov.get("cwd") or _subst(self.cwd)),
-            "tags": list(ov.get("tags") if isinstance(ov.get("tags"), list) else self.tags),
+            "tags": list(ov_tags if isinstance(ov_tags := ov.get("tags"), list) else self.tags),
         }
         eff_branch = ov.get("branch") if "branch" in ov else self.branch
         if eff_branch:

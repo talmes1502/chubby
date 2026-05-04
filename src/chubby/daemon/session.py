@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class SessionKind(str, Enum):
+class SessionKind(StrEnum):
     WRAPPED = "wrapped"
     SPAWNED = "spawned"
     TMUX_ATTACHED = "tmux_attached"
     READONLY = "readonly"
 
 
-class SessionStatus(str, Enum):
+class SessionStatus(StrEnum):
     IDLE = "idle"
     THINKING = "thinking"
     AWAITING_USER = "awaiting_user"

@@ -47,9 +47,7 @@ def _session(
         "kind": kind,
         "tags": tags or [],
         "last_activity_at": (
-            last_activity_ms
-            if last_activity_ms is not None
-            else int(time.time() * 1000)
+            last_activity_ms if last_activity_ms is not None else int(time.time() * 1000)
         ),
     }
 
@@ -94,8 +92,8 @@ def _make_fake_client(
 def test_release_single_name_dispatches_release_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from chubby.cli.main import app
     import chubby.cli.commands.release as release_cmd
+    from chubby.cli.main import app
 
     captured: list[dict[str, Any]] = []
     monkeypatch.setattr(
@@ -116,8 +114,8 @@ def test_release_single_name_dispatches_release_session(
 
 
 def test_release_unknown_name_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-    from chubby.cli.main import app
     import chubby.cli.commands.release as release_cmd
+    from chubby.cli.main import app
 
     captured: list[dict[str, Any]] = []
     monkeypatch.setattr(
@@ -136,8 +134,8 @@ def test_release_skips_dead_includes_readonly(
     """Dead sessions are skipped (they're already torn down) but
     readonly sessions are included so the user can clear the rail of
     auto-registered claude sessions they never spawned."""
-    from chubby.cli.main import app
     import chubby.cli.commands.release as release_cmd
+    from chubby.cli.main import app
 
     captured: list[dict[str, Any]] = []
     sessions = [
@@ -145,23 +143,17 @@ def test_release_skips_dead_includes_readonly(
         _session(sid="s2", name="zombie", status="dead"),
         _session(sid="s3", name="watcher", kind="readonly"),
     ]
-    monkeypatch.setattr(
-        release_cmd, "Client", _make_fake_client(sessions, captured)
-    )
+    monkeypatch.setattr(release_cmd, "Client", _make_fake_client(sessions, captured))
     r = CliRunner().invoke(app, ["release", "--all", "--yes"])
     assert r.exit_code == 0, r.output
-    released_ids = sorted(
-        c["params"]["id"]
-        for c in captured
-        if c["method"] == "release_session"
-    )
+    released_ids = sorted(c["params"]["id"] for c in captured if c["method"] == "release_session")
     # Wrapped + readonly both released; dead skipped.
     assert released_ids == ["s1", "s3"]
 
 
 def test_release_tag_filters_by_tag(monkeypatch: pytest.MonkeyPatch) -> None:
-    from chubby.cli.main import app
     import chubby.cli.commands.release as release_cmd
+    from chubby.cli.main import app
 
     captured: list[dict[str, Any]] = []
     sessions = [
@@ -169,22 +161,16 @@ def test_release_tag_filters_by_tag(monkeypatch: pytest.MonkeyPatch) -> None:
         _session(sid="s2", name="api", tags=["backend"]),
         _session(sid="s3", name="ui-tests", tags=["frontend", "tests"]),
     ]
-    monkeypatch.setattr(
-        release_cmd, "Client", _make_fake_client(sessions, captured)
-    )
+    monkeypatch.setattr(release_cmd, "Client", _make_fake_client(sessions, captured))
     r = CliRunner().invoke(app, ["release", "--tag", "frontend", "--yes"])
     assert r.exit_code == 0, r.output
-    released_ids = sorted(
-        c["params"]["id"]
-        for c in captured
-        if c["method"] == "release_session"
-    )
+    released_ids = sorted(c["params"]["id"] for c in captured if c["method"] == "release_session")
     assert released_ids == ["s1", "s3"]
 
 
 def test_release_idle_since_drops_recent(monkeypatch: pytest.MonkeyPatch) -> None:
-    from chubby.cli.main import app
     import chubby.cli.commands.release as release_cmd
+    from chubby.cli.main import app
 
     captured: list[dict[str, Any]] = []
     now = int(time.time() * 1000)
@@ -192,16 +178,10 @@ def test_release_idle_since_drops_recent(monkeypatch: pytest.MonkeyPatch) -> Non
         _session(sid="s_old", name="stale", last_activity_ms=now - 3 * 60 * 60 * 1000),
         _session(sid="s_new", name="fresh", last_activity_ms=now - 30 * 1000),
     ]
-    monkeypatch.setattr(
-        release_cmd, "Client", _make_fake_client(sessions, captured)
-    )
+    monkeypatch.setattr(release_cmd, "Client", _make_fake_client(sessions, captured))
     r = CliRunner().invoke(app, ["release", "--idle-since", "1h", "--yes"])
     assert r.exit_code == 0, r.output
-    released_ids = [
-        c["params"]["id"]
-        for c in captured
-        if c["method"] == "release_session"
-    ]
+    released_ids = [c["params"]["id"] for c in captured if c["method"] == "release_session"]
     assert released_ids == ["s_old"]
 
 
@@ -210,8 +190,8 @@ def test_release_falls_back_to_detach_when_no_claude_id(
 ) -> None:
     """release_session refuses sessions without a bound claude id;
     the CLI falls back to detach_session for those."""
-    from chubby.cli.main import app
     import chubby.cli.commands.release as release_cmd
+    from chubby.cli.main import app
 
     captured: list[dict[str, Any]] = []
     monkeypatch.setattr(
@@ -257,14 +237,12 @@ def test_release_idle_since_bad_format(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_release_quiet_flag_emits_ids(monkeypatch: pytest.MonkeyPatch) -> None:
-    from chubby.cli.main import app
     import chubby.cli.commands.release as release_cmd
+    from chubby.cli.main import app
 
     captured: list[dict[str, Any]] = []
     sessions = [_session(sid="s1", name="web"), _session(sid="s2", name="api")]
-    monkeypatch.setattr(
-        release_cmd, "Client", _make_fake_client(sessions, captured)
-    )
+    monkeypatch.setattr(release_cmd, "Client", _make_fake_client(sessions, captured))
     # Global --quiet flag must come before subcommand under typer.
     r = CliRunner().invoke(app, ["--quiet", "release", "--all", "--yes"])
     assert r.exit_code == 0, r.output
@@ -279,17 +257,16 @@ def test_release_json_flag_emits_released_and_failed(
     outer agent sees BOTH outcomes. The original shape was just the
     released list, which silently swallowed daemon-side cleanup errors
     and showed ``[]`` even when work happened."""
-    from chubby.cli.main import app
     import chubby.cli.commands.release as release_cmd
+    from chubby.cli.main import app
 
     captured: list[dict[str, Any]] = []
     sessions = [_session(sid="s1", name="web")]
-    monkeypatch.setattr(
-        release_cmd, "Client", _make_fake_client(sessions, captured)
-    )
+    monkeypatch.setattr(release_cmd, "Client", _make_fake_client(sessions, captured))
     r = CliRunner().invoke(app, ["--json", "release", "--all", "--yes"])
     assert r.exit_code == 0, r.output
     import json as _json
+
     parsed = _json.loads(r.output.strip().splitlines()[-1])
     assert parsed == {
         "released": [{"id": "s1", "name": "web"}],
@@ -311,16 +288,12 @@ def test_release_json_includes_failures(
         def __init__(self, _sock: Any) -> None:
             pass
 
-        async def call(
-            self, method: str, params: dict[str, Any]
-        ) -> dict[str, Any]:
+        async def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
             captured.append({"method": method, "params": params})
             if method == "list_sessions":
                 return {"sessions": [_session(sid="s1", name="web")]}
             if method in ("release_session", "detach_session"):
-                raise ChubError(
-                    ErrorCode.WRAPPER_UNREACHABLE, "wrapper gone"
-                )
+                raise ChubError(ErrorCode.WRAPPER_UNREACHABLE, "wrapper gone")
             raise AssertionError(f"unexpected RPC: {method}")
 
         async def close(self) -> None:
@@ -330,9 +303,7 @@ def test_release_json_includes_failures(
 
     from chubby.cli.main import app
 
-    r = CliRunner().invoke(
-        app, ["--json", "release", "--all", "--yes"]
-    )
+    r = CliRunner().invoke(app, ["--json", "release", "--all", "--yes"])
     assert r.exit_code == 0, r.output
     import json as _json
 

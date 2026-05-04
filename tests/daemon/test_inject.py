@@ -44,9 +44,7 @@ async def test_inject_tmux_kind_dispatches_to_tmux_module(
 
     monkeypatch.setattr(tmux_mod, "inject_tmux", fake_inject_tmux)
     r = Registry(hub_run_id="hr_t")
-    s = await r.register(
-        name="tm", kind=SessionKind.TMUX_ATTACHED, cwd="/tmp", tmux_target="x:0.0"
-    )
+    s = await r.register(name="tm", kind=SessionKind.TMUX_ATTACHED, cwd="/tmp", tmux_target="x:0.0")
     await r.inject(s.id, b"x")
     assert captured == [("tm", b"x")]
 

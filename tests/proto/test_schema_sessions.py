@@ -2,28 +2,23 @@ import pytest
 from pydantic import ValidationError
 
 from chubby.proto.schema import (
-    RegisterWrappedParams,
-    RegisterWrappedResult,
     ListSessionsParams,
     ListSessionsResult,
-    RenameSessionParams,
     RecolorSessionParams,
+    RegisterWrappedParams,
+    RenameSessionParams,
 )
 
 
 def test_register_wrapped_params_required_fields() -> None:
-    p = RegisterWrappedParams.model_validate(
-        {"name": "frontend", "cwd": "/tmp", "pid": 42}
-    )
+    p = RegisterWrappedParams.model_validate({"name": "frontend", "cwd": "/tmp", "pid": 42})
     assert p.name == "frontend"
     assert p.tags == []
 
 
 def test_register_wrapped_params_extra_rejected() -> None:
     with pytest.raises(ValidationError):
-        RegisterWrappedParams.model_validate(
-            {"name": "x", "cwd": "/tmp", "pid": 1, "evil": True}
-        )
+        RegisterWrappedParams.model_validate({"name": "x", "cwd": "/tmp", "pid": 1, "evil": True})
 
 
 def test_list_sessions_params_optional() -> None:

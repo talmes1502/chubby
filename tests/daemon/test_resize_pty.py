@@ -59,7 +59,10 @@ async def test_resize_tmux_kind_is_noop() -> None:
 
     r = Registry(hub_run_id="hr_t")
     s = await r.register(
-        name="tm", kind=SessionKind.TMUX_ATTACHED, cwd="/tmp", tmux_target="x:0.0",
+        name="tm",
+        kind=SessionKind.TMUX_ATTACHED,
+        cwd="/tmp",
+        tmux_target="x:0.0",
     )
     await r.attach_wrapper(s.id, write)
     await r.resize(s.id, rows=24, cols=80)

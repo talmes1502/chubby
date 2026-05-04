@@ -33,9 +33,7 @@ def short_home() -> Path:
 
 async def _rpc(sock_path: Path, method: str, params: dict) -> dict:
     reader, writer = await asyncio.open_unix_connection(str(sock_path))
-    body = json.dumps(
-        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
-    ).encode()
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
     writer.write(frame.encode(body))
     await writer.drain()
     raw = await frame.read_frame(reader)
@@ -71,9 +69,7 @@ async def test_refresh_claude_unknown_session(short_home: Path, monkeypatch) -> 
         await server_task
 
 
-async def test_refresh_claude_pushes_event_to_wrapper(
-    short_home: Path, monkeypatch
-) -> None:
+async def test_refresh_claude_pushes_event_to_wrapper(short_home: Path, monkeypatch) -> None:
     """End-to-end: register a wrapper, manually bind it to a fake
     claude_session_id, call refresh_claude_session, and confirm a
     ``restart_claude`` event lands on the wrapper's transport.
@@ -83,17 +79,19 @@ async def test_refresh_claude_pushes_event_to_wrapper(
         # Register a wrapped session over a persistent connection — we
         # need to keep the writer open to receive the server-pushed event.
         reader, writer = await asyncio.open_unix_connection(str(sock))
-        body = json.dumps({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "register_wrapped",
-            "params": {
-                "name": "reftest",
-                "cwd": "/tmp",
-                "pid": 999999,
-                "tags": [],
-            },
-        }).encode()
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "register_wrapped",
+                "params": {
+                    "name": "reftest",
+                    "cwd": "/tmp",
+                    "pid": 999999,
+                    "tags": [],
+                },
+            }
+        ).encode()
         writer.write(frame.encode(body))
         await writer.drain()
         raw = await frame.read_frame(reader)
@@ -128,11 +126,15 @@ async def test_refresh_claude_pushes_event_to_wrapper(
         # We'll instead trigger refresh by ALSO registering a readonly
         # session (which sets claude_session_id at register time) and
         # confirm that the kind gate rejects readonly.
-        ro_out = await _rpc(sock, "register_readonly", {
-            "cwd": "/tmp",
-            "claude_session_id": "00000000-0000-0000-0000-000000000000",
-            "name": "ro_reftest",
-        })
+        ro_out = await _rpc(
+            sock,
+            "register_readonly",
+            {
+                "cwd": "/tmp",
+                "claude_session_id": "00000000-0000-0000-0000-000000000000",
+                "name": "ro_reftest",
+            },
+        )
         ro_sid = ro_out["result"]["session"]["id"]
         ro_refresh = await _rpc(sock, "refresh_claude_session", {"id": ro_sid})
         assert ro_refresh["error"]["code"] == ErrorCode.INVALID_PAYLOAD.value
@@ -145,9 +147,7 @@ async def test_refresh_claude_pushes_event_to_wrapper(
         await server_task
 
 
-async def test_refresh_claude_wrapper_unreachable(
-    short_home: Path, monkeypatch
-) -> None:
+async def test_refresh_claude_wrapper_unreachable(short_home: Path, monkeypatch) -> None:
     """If the wrapper's writer is detached (transport closed), the RPC
     returns WRAPPER_UNREACHABLE so the TUI can surface a clear error
     rather than silently dropping the request."""
@@ -158,9 +158,7 @@ async def test_refresh_claude_wrapper_unreachable(
     from chubby.proto.errors import ChubError
 
     reg = Registry(hub_run_id="hr_t")
-    s = await reg.register(
-        name="x", kind=SessionKind.WRAPPED, cwd="/tmp", pid=1
-    )
+    s = await reg.register(name="x", kind=SessionKind.WRAPPED, cwd="/tmp", pid=1)
     # Manually bind a claude_session_id so the kind/sid gate passes.
     await reg.set_claude_session_id(s.id, "00000000-0000-0000-0000-000000000001")
 
@@ -186,9 +184,7 @@ async def test_refresh_claude_emits_restart_event() -> None:
     from chubby.proto.rpc import Event, encode_message
 
     reg = Registry(hub_run_id="hr_t")
-    s = await reg.register(
-        name="x", kind=SessionKind.WRAPPED, cwd="/tmp", pid=1
-    )
+    s = await reg.register(name="x", kind=SessionKind.WRAPPED, cwd="/tmp", pid=1)
     await reg.set_claude_session_id(s.id, "11111111-1111-1111-1111-111111111111")
 
     captured: list[bytes] = []
@@ -200,9 +196,7 @@ async def test_refresh_claude_emits_restart_event() -> None:
 
     # Reproduce the handler's emit. We don't go through the RPC
     # machinery here; we just confirm the encode round-trips correctly.
-    await write(
-        encode_message(Event(method="restart_claude", params={"session_id": s.id}))
-    )
+    await write(encode_message(Event(method="restart_claude", params={"session_id": s.id})))
     assert captured, "no bytes pushed to wrapper writer"
     body = json.loads(captured[0])
     assert body["method"] == "restart_claude"
@@ -218,9 +212,7 @@ async def test_update_claude_pid_updates_session_pid() -> None:
     from chubby.daemon.session import SessionKind
 
     reg = Registry(hub_run_id="hr_t")
-    s = await reg.register(
-        name="x", kind=SessionKind.WRAPPED, cwd="/tmp", pid=42
-    )
+    s = await reg.register(name="x", kind=SessionKind.WRAPPED, cwd="/tmp", pid=42)
     # The handler's core mutation is "s.pid = new_pid" plus rerunning
     # watch_for_transcript. We assert on the mutation; the watcher is
     # tested elsewhere.

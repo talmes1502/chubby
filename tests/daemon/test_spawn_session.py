@@ -57,9 +57,7 @@ class _FakeProc:
 
 async def _rpc(sock_path: Path, method: str, params: dict) -> dict:
     reader, writer = await asyncio.open_unix_connection(str(sock_path))
-    body = json.dumps(
-        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
-    ).encode()
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
     writer.write(frame.encode(body))
     await writer.drain()
     raw = await frame.read_frame(reader)
@@ -165,9 +163,7 @@ async def test_spawn_session_explicit_cwd_passes_through(
 
     sock, stop, server_task = await _start_daemon(short_home, monkeypatch)
     try:
-        out = await _rpc(
-            sock, "spawn_session", {"name": "with_cwd", "cwd": "/var/tmp"}
-        )
+        out = await _rpc(sock, "spawn_session", {"name": "with_cwd", "cwd": "/var/tmp"})
         assert "result" in out or out["error"]["code"] == ErrorCode.INTERNAL.value
         assert captured, "expected create_subprocess_exec to be called"
         assert _cwd_arg_from_call(_wrapper_call(captured)) == "/var/tmp"

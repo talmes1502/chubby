@@ -3,7 +3,34 @@ target-version = "py312"
 
 [lint]
 select = ["E", "F", "W", "I", "B", "UP", "N", "ASYNC", "RUF"]
-ignore = ["E501"]
+# E501 — long lines are fine.
+# ASYNC2xx — chubby uses stdlib asyncio with deliberate blocking I/O
+#   on non-hot startup paths (config reads, path expansion, etc.). The
+#   ASYNC2xx family wants trio/anyio.Path-style alternatives, which we
+#   don't import.
+# RUF003 — em-dash / × in comments are deliberate prose style, not bugs.
+# N818  — Exception class names ("ChubError" not "ChubException") are
+#   the project convention; codebase-wide rename is gratuitous churn.
+# B904  — `raise X from Y` chaining is good practice but most of our
+#   except-then-raise chains intentionally collapse the cause into a
+#   user-facing message; flagging every site is noise.
+ignore = [
+    "E501",
+    "ASYNC220", "ASYNC221", "ASYNC230", "ASYNC240", "ASYNC251", "ASYNC109",
+    "RUF003",
+    "N818",
+    "B904",
+]
+
+[lint.per-file-ignores]
+# Tests legitimately use patterns the lint flags as suspect:
+#   RUF006 — fire-and-forget asyncio.create_task in fixtures (we
+#     await the underlying assertion, not the task).
+#   B017   — pytest.raises(Exception) when the test cares only that
+#     *something* raised, not the exact type.
+#   N806   — class-binding gymnastics (real_FakePty = FakePty before
+#     subclassing) deliberately preserve the class name in mocks.
+"tests/**" = ["RUF006", "B017", "N806"]
 
 [format]
 quote-style = "double"

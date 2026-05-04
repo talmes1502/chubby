@@ -38,9 +38,7 @@ def run(
                 },
             )
             for m in r["matches"]:
-                typer.echo(
-                    f"[{m['session_id']} {m['hub_run_id']} {m['ts']}] {m['snippet']}"
-                )
+                typer.echo(f"[{m['session_id']} {m['hub_run_id']} {m['ts']}] {m['snippet']}")
         finally:
             await c.close()
 
