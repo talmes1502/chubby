@@ -27,7 +27,7 @@ pipx install 'git+https://github.com/talmes1502/chubby.git'
 The TUI is a separate Go binary downloaded automatically the first time you run `chubby tui`. To install it eagerly:
 
 ```bash
-chubby tui --force-download
+chubby tui   # uses chubby-tui from $PATH (placed there by install.sh)
 ```
 
 Or build from source:

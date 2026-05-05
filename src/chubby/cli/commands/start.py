@@ -165,4 +165,4 @@ def run(
     # Pass explicit values for every option — calling a typer-decorated
     # function directly leaves un-passed kwargs as OptionInfo sentinels,
     # which then leak into env and break os.execvpe().
-    tui_mod.run(force_download=False, focus=None, detached=False)
+    tui_mod.run(focus=None, detached=False)
