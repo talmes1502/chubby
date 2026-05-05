@@ -21,9 +21,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/USER/chubby/tui/internal/rpc"
-	"github.com/USER/chubby/tui/internal/ptypane"
-	"github.com/USER/chubby/tui/internal/views"
+	"github.com/talmes1502/chubby/tui/internal/rpc"
+	"github.com/talmes1502/chubby/tui/internal/ptypane"
+	"github.com/talmes1502/chubby/tui/internal/views"
 )
 
 // Turn is a single transcript entry — a user prompt or an assistant

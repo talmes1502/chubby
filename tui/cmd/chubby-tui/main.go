@@ -12,8 +12,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/USER/chubby/tui/internal/model"
-	"github.com/USER/chubby/tui/internal/rpc"
+	"github.com/talmes1502/chubby/tui/internal/model"
+	"github.com/talmes1502/chubby/tui/internal/rpc"
 )
 
 // Version is the chubby-tui binary version. Set via -ldflags by

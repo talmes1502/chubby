@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/USER/chubby/tui/internal/views"
+	"github.com/talmes1502/chubby/tui/internal/views"
 )
 
 // Help text must mention every Phase 1-7 feature so the user

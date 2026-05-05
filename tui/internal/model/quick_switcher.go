@@ -14,7 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/USER/chubby/tui/internal/views"
+	"github.com/talmes1502/chubby/tui/internal/views"
 )
 
 // quickSwitcherState backs ModeQuickSwitcher: a single textinput

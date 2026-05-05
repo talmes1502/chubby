@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/USER/chubby/tui/internal/views"
+	"github.com/talmes1502/chubby/tui/internal/views"
 )
 
 // TestSendComposed_RoutesMoveToFolder: typing "/movetofolder backend"

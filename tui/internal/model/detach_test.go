@@ -12,8 +12,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/USER/chubby/tui/internal/rpc"
-	"github.com/USER/chubby/tui/internal/views"
+	"github.com/talmes1502/chubby/tui/internal/rpc"
+	"github.com/talmes1502/chubby/tui/internal/views"
 )
 
 // fakeReleaseDaemon is a fake RPC server that replies to

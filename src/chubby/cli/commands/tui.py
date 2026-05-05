@@ -55,7 +55,8 @@ def _release_url(version: str, asset: str) -> str:
 
 def _fetch(url: str) -> bytes:
     with urllib.request.urlopen(url, timeout=60) as r:
-        return r.read()
+        data: bytes = r.read()
+    return data
 
 
 def _expected_sha256(checksums: bytes, asset: str) -> str | None:
@@ -149,16 +150,12 @@ def run(
         os.execvpe(str(local_dev), [str(local_dev), *sys.argv[2:]], env)
         return
     if force_download or not bin_path.exists():
-        CACHE.mkdir(parents=True, exist_ok=True)
-        url = _binary_url(__version__)
-        typer.echo(f"downloading {url}")
         try:
-            urllib.request.urlretrieve(url, bin_path)
+            _download_and_extract(__version__, bin_path)
         except Exception as e:
             raise typer.BadParameter(
                 f"failed to download chubby-tui: {e}\n"
                 f"either build it yourself (cd tui && go build ./cmd/chubby-tui) "
-                f"and place it at {bin_path}, or `brew install USER/chubby/chubby-tui`."
+                f"and place it at {bin_path}, or run install.sh from the repo."
             ) from e
-        bin_path.chmod(0o755)
     os.execvpe(str(bin_path), [str(bin_path), *sys.argv[2:]], env)

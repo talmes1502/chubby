@@ -3,7 +3,7 @@ package model
 import (
 	"testing"
 
-	"github.com/USER/chubby/tui/internal/rpc"
+	"github.com/talmes1502/chubby/tui/internal/rpc"
 )
 
 // scrollTestModel returns a model with a focused session, a long

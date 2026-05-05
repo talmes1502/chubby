@@ -4,19 +4,22 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/talmes1502/chubby/main/install.sh | bash
 #
-# Idempotent: re-running upgrades. Drops everything in ~/Apps/chubby
-# (the source tree) and ~/.local/bin/chubby-tui (the Go binary).
-# The Python parts go wherever pipx installs them (typically
-# ~/.local/pipx/venvs/chubby-orchestrator).
+# No source clone. Installs both halves directly from upstream:
+#   - Python CLI:   pipx install 'git+https://…'  → ~/.local/pipx/venvs/
+#   - Go TUI binary: go install github.com/talmes1502/chubby/tui/cmd/chubby-tui@latest
+#                    →  $GOBIN (defaults to ~/go/bin); we pin to
+#                       ~/.local/bin so the Python CLI's `chubby tui`
+#                       finds it on $PATH.
+#
+# Both target dirs already exist on a machine that has pipx (the
+# prereq below). No new directories are created on the user's box.
+#
+# Re-run = upgrade. Both pipx and `go install` refresh the latest tip.
 
 set -euo pipefail
 
-REPO_URL="https://github.com/talmes1502/chubby"
-# ~/Applications matches the macOS convention for per-user apps
-# (sibling of /Applications, no admin needed). Works on Linux too —
-# it's just a regular dir there. Override with CHUBBY_SRC_DIR.
-APPS_DIR="${HOME}/Applications"
-SRC_DIR="${CHUBBY_SRC_DIR:-${APPS_DIR}/chubby}"
+REPO_GIT_URL="https://github.com/talmes1502/chubby.git"
+GO_PKG="github.com/talmes1502/chubby/tui/cmd/chubby-tui@latest"
 BIN_DIR="${HOME}/.local/bin"
 
 red()   { printf '\033[0;31m%s\033[0m\n' "$*" >&2; }
@@ -32,7 +35,7 @@ require_cmd() {
     fi
 }
 
-# --- prereqs ----------------------------------------------------------------
+# --- prereqs ---------------------------------------------------------------
 case "$(uname -s)" in
     Darwin|Linux) ;;
     *)
@@ -46,7 +49,6 @@ require_cmd go     "install Go 1.22+ from https://go.dev/dl/  (or: brew install 
 require_cmd pipx   "install pipx: brew install pipx  OR  python3 -m pip install --user pipx"
 require_cmd claude "install Claude Code CLI from https://docs.claude.com/claude-code"
 
-# Python ≥ 3.11 — pipx will use whatever python it was bootstrapped with.
 PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 PY_MAJOR=${PY_VER%%.*}
 PY_MINOR=${PY_VER#*.}
@@ -56,32 +58,17 @@ if [[ "$PY_MAJOR" -lt 3 ]] || { [[ "$PY_MAJOR" -eq 3 ]] && [[ "$PY_MINOR" -lt 11
     exit 1
 fi
 
-# --- source tree ------------------------------------------------------------
-mkdir -p "$(dirname "${SRC_DIR}")"
-if [[ -d "${SRC_DIR}/.git" ]]; then
-    blue "↻ updating ${SRC_DIR}"
-    git -C "${SRC_DIR}" fetch --quiet origin main
-    git -C "${SRC_DIR}" reset --hard --quiet origin/main
-else
-    blue "↓ cloning into ${SRC_DIR}"
-    git clone --quiet "${REPO_URL}" "${SRC_DIR}"
-fi
-
-# --- python side: chubby / chubbyd / chubby-claude --------------------------
-blue "▸ installing the Python CLI via pipx"
-# `pipx reinstall` upgrades cleanly if the package is already there;
-# `pipx install` is the first-time path. Try reinstall first, fall
-# through to install on a fresh machine.
+# --- python side: chubby / chubbyd / chubby-claude -------------------------
+blue "▸ installing Python CLI via pipx (from ${REPO_GIT_URL})"
 if pipx list --short 2>/dev/null | grep -q '^chubby-orchestrator '; then
-    pipx reinstall chubby-orchestrator >/dev/null
+    pipx upgrade --quiet chubby-orchestrator
 else
-    pipx install --quiet "${SRC_DIR}"
+    pipx install --quiet "git+${REPO_GIT_URL}"
 fi
 
 # --- go side: chubby-tui ---------------------------------------------------
-blue "▸ building chubby-tui (Go)"
-mkdir -p "${BIN_DIR}"
-( cd "${SRC_DIR}/tui" && go build -ldflags "-s -w" -o "${BIN_DIR}/chubby-tui" ./cmd/chubby-tui )
+blue "▸ installing chubby-tui via 'go install ${GO_PKG}'"
+GOBIN="${BIN_DIR}" go install "${GO_PKG}"
 
 # --- PATH check ------------------------------------------------------------
 case ":${PATH}:" in
@@ -94,7 +81,7 @@ esac
 
 green ""
 green "✓ chubby installed"
-green "  source:    ${SRC_DIR}"
-green "  binary:    ${BIN_DIR}/chubby-tui"
+green "  python CLI:  $(command -v chubby 2>/dev/null || echo "(restart shell, then: chubby)")"
+green "  tui binary:  ${BIN_DIR}/chubby-tui"
 green ""
-green "  Run it:    chubby start"
+green "  Run it:      chubby start"

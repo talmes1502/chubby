@@ -5,7 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/USER/chubby/tui/internal/views"
+	"github.com/talmes1502/chubby/tui/internal/views"
 )
 
 // TestAttachPicker_OpensOnCtrlA verifies Ctrl+A in main mode flips the

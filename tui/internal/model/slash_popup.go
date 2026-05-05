@@ -10,7 +10,7 @@ package model
 import (
 	"strings"
 
-	"github.com/USER/chubby/tui/internal/views"
+	"github.com/talmes1502/chubby/tui/internal/views"
 )
 
 // updateSlashPopup recomputes the matching commands based on the

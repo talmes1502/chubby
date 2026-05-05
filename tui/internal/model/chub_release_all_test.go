@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/USER/chubby/tui/internal/views"
+	"github.com/talmes1502/chubby/tui/internal/views"
 )
 
 // Bare ":release-all" must NOT actually release anything — it returns

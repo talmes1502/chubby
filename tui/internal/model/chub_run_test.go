@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/USER/chubby/tui/internal/views"
+	"github.com/talmes1502/chubby/tui/internal/views"
 )
 
 func TestDoChubRun_NoFocusedSession(t *testing.T) {

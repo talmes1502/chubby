@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USER/chubby/tui/internal/rpc"
+	"github.com/talmes1502/chubby/tui/internal/rpc"
 )
 
 // TestEvMsg_TranscriptMessage_AppendsTurn drives the reducer with a

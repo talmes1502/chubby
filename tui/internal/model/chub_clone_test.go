@@ -3,7 +3,7 @@ package model
 import (
 	"testing"
 
-	"github.com/USER/chubby/tui/internal/views"
+	"github.com/talmes1502/chubby/tui/internal/views"
 )
 
 // nextCloneName picks the first free "<base>-N" name with N>=2,

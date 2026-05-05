@@ -3,7 +3,7 @@ package model
 import (
 	"testing"
 
-	"github.com/USER/chubby/tui/internal/rpc"
+	"github.com/talmes1502/chubby/tui/internal/rpc"
 )
 
 // TestAppendTranscriptTurn_AppendsNew adds a turn to an empty conversation

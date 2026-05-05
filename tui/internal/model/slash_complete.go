@@ -10,7 +10,7 @@ package model
 import (
 	"regexp"
 
-	"github.com/USER/chubby/tui/internal/views"
+	"github.com/talmes1502/chubby/tui/internal/views"
 )
 
 // slashCmdRe matches a fully-typed slash command name with no argument

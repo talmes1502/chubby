@@ -28,7 +28,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/USER/chubby/tui/internal/views"
+	"github.com/talmes1502/chubby/tui/internal/views"
 )
 
 // tryPathComplete attempts directory-name completion for the cwd field.

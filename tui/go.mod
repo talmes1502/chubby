@@ -1,4 +1,4 @@
-module github.com/USER/chubby/tui
+module github.com/talmes1502/chubby/tui
 
 go 1.24.4
 

@@ -9,8 +9,8 @@ package model
 import (
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/USER/chubby/tui/internal/ptypane"
-	"github.com/USER/chubby/tui/internal/views"
+	"github.com/talmes1502/chubby/tui/internal/ptypane"
+	"github.com/talmes1502/chubby/tui/internal/views"
 )
 
 // viewportRender is the result of renderViewport. The lineCount field

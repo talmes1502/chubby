@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/USER/chubby/tui/internal/rpc"
+	"github.com/talmes1502/chubby/tui/internal/rpc"
 )
 
 // helper: build a session_usage_changed evMsg with the given fields.
