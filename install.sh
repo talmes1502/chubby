@@ -4,22 +4,24 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/talmes1502/chubby/main/install.sh | bash
 #
-# No source clone. Installs both halves directly from upstream:
-#   - Python CLI:   pipx install 'git+https://…'  → ~/.local/pipx/venvs/
-#   - Go TUI binary: go install github.com/talmes1502/chubby/tui/cmd/chubby-tui@latest
-#                    →  $GOBIN (defaults to ~/go/bin); we pin to
-#                       ~/.local/bin so the Python CLI's `chubby tui`
-#                       finds it on $PATH.
+# Installs both halves of chubby from prebuilt artifacts:
+#   - Python CLI:     pipx install 'git+https://…'  → ~/.local/pipx/venvs/
+#   - Go TUI binary:  curl + tar from GitHub release → ~/.local/bin/chubby-tui
 #
-# Both target dirs already exist on a machine that has pipx (the
-# prereq below). No new directories are created on the user's box.
+# No Go toolchain required (we ship prebuilt binaries via GoReleaser).
+# No source clone, no temp dir, no app dir created. Both target dirs
+# already exist if the user has pipx installed (the only real prereq).
 #
-# Re-run = upgrade. Both pipx and `go install` refresh the latest tip.
+# Re-run = upgrade. pipx upgrade picks up the latest main; the binary
+# always pulls v$CHUBBY_VERSION (tracks the python package's version).
 
 set -euo pipefail
 
 REPO_GIT_URL="https://github.com/talmes1502/chubby.git"
-GO_PKG="github.com/talmes1502/chubby/tui/cmd/chubby-tui@latest"
+RELEASE_BASE="https://github.com/talmes1502/chubby/releases/download"
+# Pin to a specific version so the prebuilt binary matches whatever
+# the python wheel claims. Override via env if you need a non-default.
+CHUBBY_VERSION="${CHUBBY_VERSION:-0.1.0}"
 BIN_DIR="${HOME}/.local/bin"
 
 red()   { printf '\033[0;31m%s\033[0m\n' "$*" >&2; }
@@ -37,16 +39,26 @@ require_cmd() {
 
 # --- prereqs ---------------------------------------------------------------
 case "$(uname -s)" in
-    Darwin|Linux) ;;
+    Darwin) os=darwin ;;
+    Linux)  os=linux ;;
     *)
         red "✗ chubby supports macOS and Linux only (saw $(uname -s))"
         exit 1
         ;;
 esac
 
-require_cmd git    "install via your package manager (brew install git / apt install git)"
-require_cmd go     "install Go 1.22+ from https://go.dev/dl/  (or: brew install go)"
+case "$(uname -m)" in
+    arm64|aarch64) arch=arm64 ;;
+    x86_64|amd64)  arch=amd64 ;;
+    *)
+        red "✗ unsupported CPU architecture: $(uname -m)"
+        exit 1
+        ;;
+esac
+
 require_cmd pipx   "install pipx: brew install pipx  OR  python3 -m pip install --user pipx"
+require_cmd curl   "install via your package manager"
+require_cmd tar    "should be preinstalled — what flavor of unix is this?"
 require_cmd claude "install Claude Code CLI from https://docs.claude.com/claude-code"
 
 PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
@@ -66,9 +78,39 @@ else
     pipx install --quiet "git+${REPO_GIT_URL}"
 fi
 
-# --- go side: chubby-tui ---------------------------------------------------
-blue "▸ installing chubby-tui via 'go install ${GO_PKG}'"
-GOBIN="${BIN_DIR}" go install "${GO_PKG}"
+# --- go side: prebuilt chubby-tui binary -----------------------------------
+asset="chubby-tui_${CHUBBY_VERSION}_${os}_${arch}.tar.gz"
+url="${RELEASE_BASE}/v${CHUBBY_VERSION}/${asset}"
+blue "▸ downloading prebuilt chubby-tui from ${url}"
+
+mkdir -p "${BIN_DIR}"
+tmpdir=$(mktemp -d)
+trap 'rm -rf "${tmpdir}"' EXIT
+
+if ! curl -fsSL "${url}" -o "${tmpdir}/${asset}"; then
+    red "✗ failed to download ${url}"
+    red "  if you know what you're doing, rebuild from source:"
+    red "    go install github.com/talmes1502/chubby/tui/cmd/chubby-tui@latest"
+    exit 1
+fi
+
+# Verify against checksums.txt before extracting.
+if curl -fsSL "${RELEASE_BASE}/v${CHUBBY_VERSION}/checksums.txt" -o "${tmpdir}/checksums.txt"; then
+    expected=$(awk -v a="${asset}" '$2==a {print $1}' "${tmpdir}/checksums.txt")
+    if [[ -n "${expected}" ]]; then
+        actual=$(shasum -a 256 "${tmpdir}/${asset}" | awk '{print $1}')
+        if [[ "${expected}" != "${actual}" ]]; then
+            red "✗ sha256 mismatch for ${asset}"
+            red "  expected ${expected}"
+            red "  got      ${actual}"
+            exit 1
+        fi
+    fi
+fi
+
+tar -xzf "${tmpdir}/${asset}" -C "${tmpdir}"
+mv "${tmpdir}/chubby-tui" "${BIN_DIR}/chubby-tui"
+chmod 0755 "${BIN_DIR}/chubby-tui"
 
 # --- PATH check ------------------------------------------------------------
 case ":${PATH}:" in
@@ -80,7 +122,7 @@ case ":${PATH}:" in
 esac
 
 green ""
-green "✓ chubby installed"
+green "✓ chubby installed (v${CHUBBY_VERSION})"
 green "  python CLI:  $(command -v chubby 2>/dev/null || echo "(restart shell, then: chubby)")"
 green "  tui binary:  ${BIN_DIR}/chubby-tui"
 green ""
