@@ -11,7 +11,7 @@ readme = "README.md"
 license = {text = "MIT"}
 authors = [{name = "talmes1502"}]
 urls = {Homepage = "https://github.com/talmes1502/chubby", Source = "https://github.com/talmes1502/chubby"}
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
   "typer>=0.12",
   "ptyprocess>=0.7",
