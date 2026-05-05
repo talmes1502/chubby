@@ -16,8 +16,11 @@ import (
 	"github.com/USER/chubby/tui/internal/rpc"
 )
 
-// Version is the chubby-tui binary version.
-const Version = "0.1.0"
+// Version is the chubby-tui binary version. Set via -ldflags by
+// GoReleaser at release time so a tagged build identifies itself
+// without a separate constant to keep in sync. Local `go build`
+// keeps the dev-default below.
+var Version = "0.0.0+dev"
 
 // chubbyEnv reads CHUBBY_<name> with CHUB_<name> as a backward-compat
 // fallback (mirrors paths.chubby_env() in the Python daemon).

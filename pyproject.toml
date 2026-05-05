@@ -1,7 +1,16 @@
 [project]
-name = "chubby"
-version = "0.1.0"
-description = "Hub for orchestrating multiple Claude Code CLI sessions"
+# Distribution name on PyPI. The bare name "chubby" was already
+# taken by an unrelated IGitt-based project, so installs collided.
+# The CLI commands ("chubby", "chubbyd", "chubby-claude") are
+# unaffected — those are defined in [project.scripts] below and
+# stay as-is.
+name = "chubby-orchestrator"
+dynamic = ["version"]
+description = "Local TUI orchestrator for parallel Claude Code sessions"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "talmes1502"}]
+urls = {Homepage = "https://github.com/talmes1502/chubby", Source = "https://github.com/talmes1502/chubby"}
 requires-python = ">=3.12"
 dependencies = [
   "typer>=0.12",
@@ -29,6 +38,13 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+# Single source of truth: src/chubby/version.py.  Tag-triggered
+# release CI rewrites this file before `python -m build` so a
+# `git tag v0.2.0 && git push --tags` yields chubby-0.2.0 on
+# PyPI without juggling two version fields.
+path = "src/chubby/version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/chubby"]

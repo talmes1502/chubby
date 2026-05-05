@@ -5,16 +5,20 @@ For local development the command first looks for a hand-built binary at
 ``cd tui && go build ./cmd/chubby-tui``). Falls back to the legacy
 ``~/Documents/a/Code/chub/tui/chubby-tui`` path so the on-disk repo
 directory does not have to be renamed during the chub->chubby transition.
-Otherwise it downloads the release binary for the current OS/arch from
-GitHub and caches it under
-``~/.cache/chubby/tui/chubby-tui-<version>``.
+Otherwise it downloads the release tarball produced by GoReleaser
+(see ``tui/.goreleaser.yaml``), verifies its sha256 against
+``checksums.txt`` from the same release, and caches the extracted
+binary under ``~/.cache/chubby/tui/chubby-tui-<version>``.
 """
 
 from __future__ import annotations
 
+import hashlib
+import io
 import os
 import platform
 import sys
+import tarfile
 import urllib.request
 from pathlib import Path
 
@@ -31,13 +35,70 @@ LOCAL_DEV_BINS = (
     Path.home() / "Documents" / "a" / "Code" / "chubby" / "tui" / "chubby-tui",
     Path.home() / "Documents" / "a" / "Code" / "chub" / "tui" / "chubby-tui",
 )
+RELEASE_BASE = "https://github.com/talmes1502/chubby/releases/download"
 
 
-def _binary_url(version: str) -> str:
+def _archive_name(version: str) -> str:
+    """Return ``chubby-tui_<version>_<os>_<arch>.tar.gz`` matching the
+    archive ``name_template`` in ``tui/.goreleaser.yaml``. The version
+    in the file name is the tag *without* a leading ``v`` (GoReleaser's
+    ``{{ .Version }}`` strips it)."""
     sysname = platform.system().lower()  # darwin | linux
     arch = platform.machine().lower()  # arm64 | x86_64
     arch_go = "amd64" if arch == "x86_64" else arch
-    return f"https://github.com/USER/chubby/releases/download/v{version}/chubby-tui-{sysname}-{arch_go}"
+    return f"chubby-tui_{version}_{sysname}_{arch_go}.tar.gz"
+
+
+def _release_url(version: str, asset: str) -> str:
+    return f"{RELEASE_BASE}/v{version}/{asset}"
+
+
+def _fetch(url: str) -> bytes:
+    with urllib.request.urlopen(url, timeout=60) as r:
+        return r.read()
+
+
+def _expected_sha256(checksums: bytes, asset: str) -> str | None:
+    """Parse a goreleaser ``checksums.txt`` (one ``<sha256>  <name>``
+    per line) and return the digest for ``asset``."""
+    for line in checksums.decode("utf-8", errors="replace").splitlines():
+        digest, _, name = line.strip().partition("  ")
+        if name == asset:
+            return digest
+    return None
+
+
+def _download_and_extract(version: str, dest: Path) -> None:
+    """Pull the matching release tarball, verify its sha256 against
+    the release's ``checksums.txt``, and write the inner ``chubby-tui``
+    binary to ``dest``. Raises on any mismatch — better to refuse than
+    to exec an unverified binary the user might assume is genuine."""
+    asset = _archive_name(version)
+    archive_url = _release_url(version, asset)
+    checksums_url = _release_url(version, "checksums.txt")
+
+    typer.echo(f"downloading {archive_url}")
+    archive = _fetch(archive_url)
+
+    typer.echo(f"verifying against {checksums_url}")
+    checksums = _fetch(checksums_url)
+    expected = _expected_sha256(checksums, asset)
+    if expected is None:
+        raise RuntimeError(f"{asset} not listed in checksums.txt — release may be incomplete")
+    actual = hashlib.sha256(archive).hexdigest()
+    if actual != expected:
+        raise RuntimeError(
+            f"sha256 mismatch for {asset}: expected {expected}, got {actual}"
+        )
+
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tf:
+        member = tf.getmember("chubby-tui")
+        extracted = tf.extractfile(member)
+        if extracted is None:
+            raise RuntimeError(f"chubby-tui not present inside {asset}")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(extracted.read())
+        dest.chmod(0o755)
 
 
 def _local_dev_bin() -> Path | None:

@@ -32,8 +32,8 @@ Designed for the `git worktree` workflow: every session can opt into its own bra
 See [docs/install.md](docs/install.md) for the full path. The short version:
 
 ```bash
-pipx install chubby
-chubby start                    # daemon + hooks + TUI in one command
+pipx install chubby-orchestrator     # the CLI commands stay `chubby` / `chubbyd` / `chubby-claude`
+chubby start                          # daemon + hooks + TUI in one command
 ```
 
 Or do it piecewise:
@@ -42,6 +42,12 @@ Or do it piecewise:
 chubby install-hooks            # Stop hook (add --auto-register to track every raw `claude` run)
 chubby up --detach              # start the daemon
 chubby tui                      # open the TUI
+```
+
+Until v1 is on PyPI you can also install directly from the repo:
+
+```bash
+pipx install 'git+https://github.com/talmes1502/chubby.git'
 ```
 
 Requires macOS or Linux, Python 3.12+, the `claude` CLI on PATH, and `git` 2.20+.

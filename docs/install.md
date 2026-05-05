@@ -11,10 +11,18 @@
 ## Install
 
 ```bash
-pipx install chubby
+pipx install chubby-orchestrator
 ```
 
 This gives you three commands: `chubby`, `chubbyd`, `chubby-claude`.
+
+(The PyPI distribution name is `chubby-orchestrator` — the bare `chubby` name was already taken on PyPI by an unrelated package.)
+
+Until the first PyPI release, install directly from the repo:
+
+```bash
+pipx install 'git+https://github.com/talmes1502/chubby.git'
+```
 
 The TUI is a separate Go binary downloaded automatically the first time you run `chubby tui`. To install it eagerly:
 
@@ -25,7 +33,7 @@ chubby tui --force-download
 Or build from source:
 
 ```bash
-git clone https://github.com/USER/chubby
+git clone https://github.com/talmes1502/chubby
 cd chubby/tui
 go build -o ~/.local/bin/chubby-tui ./cmd/chubby-tui
 ```

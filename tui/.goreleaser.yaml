@@ -1,0 +1,73 @@
+# GoReleaser config for the chubby-tui binary.
+#
+# What this produces on a tag-triggered release (v0.2.0):
+#   chubby-tui_0.2.0_darwin_amd64.tar.gz
+#   chubby-tui_0.2.0_darwin_arm64.tar.gz
+#   chubby-tui_0.2.0_linux_amd64.tar.gz
+#   chubby-tui_0.2.0_linux_arm64.tar.gz
+#   checksums.txt
+#
+# Windows is intentionally skipped — chubbyd uses Unix sockets and
+# os.forkpty, so the daemon side has no Windows port. Shipping a
+# windows-only TUI binary would talk to nothing.
+#
+# Local dry-run:    goreleaser release --snapshot --clean
+# CI invocation:    goreleaser release --clean   (after a tag push)
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: chubby-tui
+    main: ./cmd/chubby-tui
+    binary: chubby-tui
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      # Inject the tag's stripped version (no leading "v") into
+      # main.Version. -s -w drops debug info and symbol tables to
+      # shave a few MB off the tarball — chubby-tui doesn't ship a
+      # crash reporter so symbols are dead weight.
+      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}}
+    targets:
+      - darwin_amd64
+      - darwin_arm64
+      - linux_amd64
+      - linux_arm64
+
+archives:
+  - formats: [tar.gz]
+    # Pin the asset basename to chubby-tui_… (not the go.mod module
+    # name) so the python wrapper's --force-download URL builder
+    # has a stable filename to construct.
+    name_template: >-
+      chubby-tui_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+snapshot:
+  version_template: '{{ incpatch .Version }}-next'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+      - Merge pull request
+
+release:
+  github:
+    owner: talmes1502
+    name: chubby
+  # Draft so a human eyes the auto-generated notes before flipping
+  # the release public. Tag-pushing -rcN auto-marks prerelease.
+  draft: true
+  prerelease: auto
+  name_template: 'v{{ .Version }}'
