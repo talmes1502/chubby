@@ -12,8 +12,11 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/talmes1502/chubby"
-APPS_DIR="${HOME}/Apps"
-SRC_DIR="${APPS_DIR}/chubby"
+# ~/Applications matches the macOS convention for per-user apps
+# (sibling of /Applications, no admin needed). Works on Linux too —
+# it's just a regular dir there. Override with CHUBBY_SRC_DIR.
+APPS_DIR="${HOME}/Applications"
+SRC_DIR="${CHUBBY_SRC_DIR:-${APPS_DIR}/chubby}"
 BIN_DIR="${HOME}/.local/bin"
 
 red()   { printf '\033[0;31m%s\033[0m\n' "$*" >&2; }
@@ -54,7 +57,7 @@ if [[ "$PY_MAJOR" -lt 3 ]] || { [[ "$PY_MAJOR" -eq 3 ]] && [[ "$PY_MINOR" -lt 11
 fi
 
 # --- source tree ------------------------------------------------------------
-mkdir -p "${APPS_DIR}"
+mkdir -p "$(dirname "${SRC_DIR}")"
 if [[ -d "${SRC_DIR}/.git" ]]; then
     blue "↻ updating ${SRC_DIR}"
     git -C "${SRC_DIR}" fetch --quiet origin main
