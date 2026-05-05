@@ -36,12 +36,12 @@ async def test_set_session_tags_round_trip(chub_home: Path) -> None:
 
         await c.call(
             "set_session_tags",
-            {"id": sid, "add": ["sentra", "backend"], "remove": ["existing"]},
+            {"id": sid, "add": ["frontend", "backend"], "remove": ["existing"]},
         )
 
         listed = (await c.call("list_sessions", {}))["sessions"]
         match = next(s for s in listed if s["id"] == sid)
-        assert match["tags"] == ["backend", "sentra"]
+        assert match["tags"] == ["backend", "frontend"]
 
         await c.close()
     finally:

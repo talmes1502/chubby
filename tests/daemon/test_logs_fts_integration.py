@@ -18,7 +18,7 @@ async def test_record_chunk_writes_log_and_indexes_fts(tmp_path: Path) -> None:
     writer = LogWriter(logs_dir, color=s.color, session_name=s.name)
     await reg.attach_log_writer(s.id, writer)
 
-    payload = b"DELAYED_QUEUE_FULL appeared in run\n"
+    payload = b"RATE_LIMIT_EXCEEDED appeared in run\n"
     await reg.record_chunk(s.id, payload, role="raw")
 
     # Wait for the debounced flush (200ms) to fire.
@@ -30,7 +30,7 @@ async def test_record_chunk_writes_log_and_indexes_fts(tmp_path: Path) -> None:
     assert payload in log_path.read_bytes()
 
     # FTS index populated.
-    rows = await db.search("DELAYED_QUEUE_FULL")
+    rows = await db.search("RATE_LIMIT_EXCEEDED")
     assert len(rows) >= 1
     assert rows[0]["session_id"] == s.id
 

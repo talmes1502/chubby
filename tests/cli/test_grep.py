@@ -30,7 +30,7 @@ async def test_search_transcripts_finds_pushed_output(chub_home: Path) -> None:
         sid = r["session"]["id"]
 
         # Push some output containing the search target.
-        payload = b"DELAYED_QUEUE_FULL appeared in run\n"
+        payload = b"RATE_LIMIT_EXCEEDED appeared in run\n"
         await client.call(
             "push_output",
             {
@@ -47,7 +47,7 @@ async def test_search_transcripts_finds_pushed_output(chub_home: Path) -> None:
         result = await client.call(
             "search_transcripts",
             {
-                "query": "DELAYED_QUEUE_FULL",
+                "query": "RATE_LIMIT_EXCEEDED",
                 "session_id": None,
                 "hub_run_id": None,
                 "all_runs": False,

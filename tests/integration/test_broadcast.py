@@ -112,12 +112,12 @@ def test_broadcast_only_filter(fake_client: type[FakeClient]) -> None:
 
 def test_broadcast_tag_filter(fake_client: type[FakeClient]) -> None:
     fake_client.sessions = [
-        _session("alpha", tags=["sentra"]),
+        _session("alpha", tags=["frontend"]),
         _session("beta", tags=["personal"]),
-        _session("gamma", tags=["sentra", "backend"]),
+        _session("gamma", tags=["frontend", "backend"]),
     ]
     runner = CliRunner()
-    result = runner.invoke(app, ["broadcast", "hi", "--yes", "--tag", "sentra"])
+    result = runner.invoke(app, ["broadcast", "hi", "--yes", "--tag", "frontend"])
     assert result.exit_code == 0, result.stdout
     sent_ids = sorted(c["session_id"] for c in fake_client.inject_calls)
     assert sent_ids == ["s_alpha", "s_gamma"]

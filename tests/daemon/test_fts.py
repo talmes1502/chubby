@@ -17,9 +17,9 @@ async def test_insert_and_search(tmp_path: Path) -> None:
         hub_run_id="hr_1",
         ts=2,
         role="user",
-        content="DELAYED_QUEUE_FULL error appeared",
+        content="RATE_LIMIT_EXCEEDED error appeared",
     )
-    rows = await db.search("DELAYED_QUEUE_FULL")
+    rows = await db.search("RATE_LIMIT_EXCEEDED")
     await db.close()
     assert len(rows) == 1
     assert rows[0]["session_id"] == "s_1"

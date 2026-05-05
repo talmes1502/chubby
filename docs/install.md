@@ -57,16 +57,16 @@ chubby list                                                       # pretty
 chubby list --json                                                # machine-readable
 chubby list --quiet | xargs -L1 chubby release                    # one id per line
 chubby send backend "what are we working on?"
-chubby broadcast --tag sentra "run tests"
+chubby broadcast --tag frontend "run tests"
 
 # Release: full teardown (runs teardown scripts, removes worktree)
 chubby release web                                                # one session
-chubby release --tag sentra --yes                                 # all matching tag
+chubby release --tag frontend --yes                                 # all matching tag
 chubby release --idle-since 2h --yes                              # idle longer than 2h (s/m/h/d)
 chubby release --all --yes                                        # every live session
 
 # History & search
-chubby grep "DELAYED_QUEUE_FULL"
+chubby grep "RATE_LIMIT_EXCEEDED"
 chubby history                          # past hub-runs (chubby-tracked)
 # (cross-project history — every claude session ever — is in the TUI:
 #  Shift+H from the rail)
