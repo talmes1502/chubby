@@ -1222,6 +1222,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pty[s.ID] = ptypane.New(w, h, m.ptyResponderFor(s.ID))
 			}
 		}
+		// New session(s) just arrived — push the actual conversation-
+		// pane dimensions down so the wrapped claude redraws to the
+		// real terminal width. Without this, ptyprocess.spawn's
+		// default of (24, 80) leaves claude rendering at 80 cols even
+		// on a 200-col terminal: the conversation pane shows a giant
+		// blank gap on the right where claude refused to draw. Resize
+		// both sides — the local vt grid (so chubby's emulator
+		// matches the daemon's PTY) and the wrapper (via resize_pty
+		// → setwinsize → SIGWINCH so claude itself recomputes its
+		// layout). The RPC and Pane.Resize are both idempotent on
+		// no-change, so re-running on every listMsg is cheap.
+		if w, h := m.lastViewportInnerW, m.lastViewportInnerH; w >= 10 && h >= 5 {
+			for _, p := range m.pty {
+				p.Resize(w, h)
+			}
+			cmds = append(cmds, m.resizeAllPtys(w, h))
+		}
 		// First listMsg + no sessions: auto-spawn a "temp" session at
 		// $HOME so the user has something to chat with immediately. The
 		// modal only appears as a fallback when auto-spawn fails (e.g.
