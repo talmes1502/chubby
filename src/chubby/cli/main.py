@@ -31,6 +31,7 @@ from chubby.cli.commands import (
     tag,
     tui,
     up,
+    update,
 )
 from chubby.cli.commands import list as list_cmd
 
@@ -79,6 +80,7 @@ app.command(name="attach")(attach.run)
 app.command(name="promote")(promote.run)
 app.command(name="detach")(detach.run)
 app.command(name="release")(release.run)
+app.command(name="update")(update.run)
 app.command(name="tui")(tui.run)
 app.command(name="purge")(purge.run)
 app.command(name="diag")(diag.run)

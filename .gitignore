@@ -13,3 +13,4 @@ tui/chubby-tui
 .coverage
 coverage.xml
 .DS_Store
+src/chubby/version.py

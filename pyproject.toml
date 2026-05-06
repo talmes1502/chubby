@@ -36,15 +36,22 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
-# Single source of truth: src/chubby/version.py.  Tag-triggered
-# release CI rewrites this file before `python -m build` so a
-# `git tag v0.2.0 && git push --tags` yields chubby-0.2.0 on
-# PyPI without juggling two version fields.
-path = "src/chubby/version.py"
+# Auto-derive the version from git tags. ``git tag v0.2.0 && git push
+# --tags`` IS the version bump — no manual version.py edit. Between
+# tags, we serialize as ``0.1.1.dev<N>+g<sha>`` so wheels still install
+# (PEP 440 dev/local format). The ``raw-options`` indirection lets us
+# also write the resolved version to src/chubby/version.py at build
+# time so `from chubby import __version__` keeps working at runtime
+# without parsing git.
+source = "vcs"
+raw-options = { local_scheme = "no-local-version" }
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/chubby/version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/chubby"]

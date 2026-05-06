@@ -142,6 +142,13 @@ def run(
     verb = "started" if started else "running"
     typer.echo(f"daemon {verb} (pid {pid})")
 
+    # Best-effort: ask GitHub if a newer release is out, prompt the
+    # user, exec install.sh on yes. Cached for 24h so this is a no-op
+    # most starts. Failures are silent.
+    from chubby.cli.commands import _update_check
+
+    _update_check.prompt_to_update_if_available()
+
     if not no_hooks:
         from chubby.cli.commands import install_hooks
 
