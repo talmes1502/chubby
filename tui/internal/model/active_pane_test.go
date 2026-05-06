@@ -2,6 +2,7 @@ package model
 
 import (
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -279,6 +280,153 @@ func TestPaneConversation_ForwardsClaudeKeysToPTY(t *testing.T) {
 			}
 			if mm.pendingDeleteID != "" {
 				t.Fatalf("%s must not arm two-tap release (got %q) — Ctrl+D is claude's EOF here", tc.name, mm.pendingDeleteID)
+			}
+		})
+	}
+}
+
+// TestPaneConversation_EscEscSwitchesToRail: vim-style double-tap.
+// First Esc goes to claude (cancel); second Esc within escEscWindow
+// switches pane.
+func TestPaneConversation_EscEscSwitchesToRail(t *testing.T) {
+	_, cl := startFakeDaemon(t)
+	m := Model{
+		client:         cl,
+		mode:           ModeMain,
+		compose:        views.NewCompose(),
+		groupCollapsed: map[string]bool{},
+		sessions:       []Session{{ID: "s1", Name: "api", Status: StatusIdle, Kind: KindWrapped}},
+		focused:        0,
+		activePane:     PaneConversation,
+		scrollOffset:   map[string]int{},
+		newSinceScroll: map[string]int{},
+	}
+	// First Esc: armed, pane unchanged.
+	out, _ := m.handleKeyMain(tea.KeyMsg{Type: tea.KeyEsc})
+	m = out.(Model)
+	if m.activePane != PaneConversation {
+		t.Fatalf("first Esc must not switch pane (only arm); got %v", m.activePane)
+	}
+	if m.lastEscAt.IsZero() {
+		t.Fatalf("first Esc must stamp lastEscAt for the double-tap window")
+	}
+	// Second Esc within window: switches pane.
+	out, _ = m.handleKeyMain(tea.KeyMsg{Type: tea.KeyEsc})
+	m = out.(Model)
+	if m.activePane != PaneRail {
+		t.Fatalf("second Esc within window must switch to rail; got %v", m.activePane)
+	}
+	if !m.lastEscAt.IsZero() {
+		t.Fatalf("lastEscAt should clear after the toggle to prevent triple-fire")
+	}
+}
+
+// TestPaneConversation_StaleEscDoesNotSwitch: a second Esc beyond
+// escEscWindow re-arms instead of switching.
+func TestPaneConversation_StaleEscDoesNotSwitch(t *testing.T) {
+	_, cl := startFakeDaemon(t)
+	m := Model{
+		client:         cl,
+		mode:           ModeMain,
+		compose:        views.NewCompose(),
+		groupCollapsed: map[string]bool{},
+		sessions:       []Session{{ID: "s1", Name: "api", Status: StatusIdle, Kind: KindWrapped}},
+		focused:        0,
+		activePane:     PaneConversation,
+		// Pretend the first Esc was way before the window.
+		lastEscAt:      time.Now().Add(-time.Second),
+		scrollOffset:   map[string]int{},
+		newSinceScroll: map[string]int{},
+	}
+	out, _ := m.handleKeyMain(tea.KeyMsg{Type: tea.KeyEsc})
+	mm := out.(Model)
+	if mm.activePane != PaneConversation {
+		t.Fatalf("stale Esc must not switch pane; got %v", mm.activePane)
+	}
+	if mm.lastEscAt.IsZero() || time.Since(mm.lastEscAt) > time.Second {
+		t.Fatalf("stale Esc should re-arm with a fresh timestamp")
+	}
+}
+
+// TestPaneRail_EscEscSwitchesToConversation: symmetry — double-tap
+// works the other way too.
+func TestPaneRail_EscEscSwitchesToConversation(t *testing.T) {
+	_, cl := startFakeDaemon(t)
+	m := Model{
+		client:         cl,
+		mode:           ModeMain,
+		compose:        views.NewCompose(),
+		groupCollapsed: map[string]bool{},
+		sessions:       []Session{{ID: "s1", Name: "api", Status: StatusIdle, Kind: KindWrapped}},
+		focused:        0,
+		activePane:     PaneRail,
+		scrollOffset:   map[string]int{},
+		newSinceScroll: map[string]int{},
+	}
+	out, _ := m.handleKeyMain(tea.KeyMsg{Type: tea.KeyEsc})
+	m = out.(Model)
+	out, _ = m.handleKeyMain(tea.KeyMsg{Type: tea.KeyEsc})
+	mm := out.(Model)
+	if mm.activePane != PaneConversation {
+		t.Fatalf("Esc-Esc in rail should switch to conversation; got %v", mm.activePane)
+	}
+}
+
+// TestF8_CyclesSessionForwardInBothPanes: F8 is the universal
+// (every layout, every terminal) forward-cycle chord. F-keys are
+// the only chord family that's reliably deliverable across
+// keyboards; Ctrl+\ works on US/UK but not on Hebrew (where the
+// backslash key requires AltGr that doesn't pair with Ctrl).
+func TestF8_CyclesSessionForwardInBothPanes(t *testing.T) {
+	paneNames := map[ActivePane]string{PaneConversation: "conversation", PaneRail: "rail"}
+	for _, pane := range []ActivePane{PaneConversation, PaneRail} {
+		t.Run(paneNames[pane], func(t *testing.T) {
+			m := Model{
+				mode:    ModeMain,
+				compose: views.NewCompose(),
+				sessions: []Session{
+					{ID: "s1", Name: "alpha"},
+					{ID: "s2", Name: "beta"},
+				},
+				focused:        0,
+				activePane:     pane,
+				groupCollapsed: map[string]bool{},
+				scrollOffset:   map[string]int{},
+				newSinceScroll: map[string]int{},
+			}
+			out, _ := m.handleKeyMain(tea.KeyMsg{Type: tea.KeyF8})
+			mm := out.(Model)
+			if mm.focused != 1 {
+				t.Fatalf("F8 in %v should cycle focus 0→1; got %d", paneNames[pane], mm.focused)
+			}
+		})
+	}
+}
+
+// TestF7_CyclesSessionReverseInBothPanes: F7 mirrors F8 in the
+// reverse direction.
+func TestF7_CyclesSessionReverseInBothPanes(t *testing.T) {
+	paneNames := map[ActivePane]string{PaneConversation: "conversation", PaneRail: "rail"}
+	for _, pane := range []ActivePane{PaneConversation, PaneRail} {
+		t.Run(paneNames[pane], func(t *testing.T) {
+			m := Model{
+				mode:    ModeMain,
+				compose: views.NewCompose(),
+				sessions: []Session{
+					{ID: "s1", Name: "alpha"},
+					{ID: "s2", Name: "beta"},
+				},
+				focused:        0,
+				activePane:     pane,
+				groupCollapsed: map[string]bool{},
+				scrollOffset:   map[string]int{},
+				newSinceScroll: map[string]int{},
+			}
+			out, _ := m.handleKeyMain(tea.KeyMsg{Type: tea.KeyF7})
+			mm := out.(Model)
+			// 0 → -1 wraps to (len-1) = 1 in cycleFocusedSession.
+			if mm.focused != 1 {
+				t.Fatalf("F7 in %v should reverse-cycle 0→1 (wrap); got %d", paneNames[pane], mm.focused)
 			}
 		})
 	}

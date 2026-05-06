@@ -492,6 +492,14 @@ type Model struct {
 	// so a stray Ctrl+D doesn't nuke a real session by accident.
 	pendingDeleteID string
 	pendingDeleteAt time.Time
+
+	// Esc-Esc pane-toggle state. The first Esc still flows to
+	// claude's PTY (cancel is idempotent — a stray Esc cancelling
+	// twice is fine), but a second Esc within escEscWindow flips
+	// the active pane instead of being delivered. Vim-style chord;
+	// works on every keyboard layout and never collides with a key
+	// claude wants to read for itself.
+	lastEscAt time.Time
 }
 
 // pendingDeleteWindow is how long the user has to confirm a Ctrl+D
@@ -499,6 +507,12 @@ type Model struct {
 // drifting back to typing, long enough that a deliberate double-tap
 // reaches it.
 const pendingDeleteWindow = 3 * time.Second
+
+// escEscWindow is the max gap between the two Escs of an Esc-Esc
+// pane toggle. 500ms is roomy enough for a deliberate double-tap
+// without catching a single Esc the user followed with a typed Esc
+// later in the same flow.
+const escEscWindow = 500 * time.Millisecond
 
 // sessionUsage holds the running token totals + rolling samples for
 // one session. samples is bounded at 10 entries — enough to span the
@@ -1891,28 +1905,55 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // handleKeyConversation runs while the conversation pane is active —
 // the user is talking to claude. Claude owns the keyboard. We
-// intercept only the two chubby-essential chords:
+// intercept only chubby-essential chords:
 //
-//	F6      → switch to the rail pane (chubby's command mode)
-//	Ctrl+\  → forward-cycle the focused session
+//	Esc-Esc        → switch to the rail pane (vim-style double-tap)
+//	F6             → switch pane (alias)
+//	F8 / Ctrl+\    → forward-cycle session
+//	F7             → reverse-cycle session
 //
 // Everything else flows to the embedded PTY untouched. That means
 // Tab autocompletes claude's slash commands, Shift+Tab cycles
 // claude's permission modes, Ctrl+R is claude's reverse history
 // search, Ctrl+D exits the prompt — the user gets the keymap
 // claude documents, not a chubby override.
+//
+// Why F-keys for cycle: bubbletea (and the underlying terminal
+// protocol) only decodes Ctrl+letter and Ctrl+@/[\\]^_ as distinct
+// chords. Ctrl+. and Ctrl+, look obvious but are not reportable
+// across terminals, and Ctrl+\ specifically can't be produced on
+// Hebrew/Israeli keyboard layouts (the backslash sits behind an
+// AltGr combo that the OS doesn't pair with Ctrl). F-keys are the
+// one universally-deliverable chord family — every terminal, every
+// layout. Ctrl+\ is kept as an alias on layouts where it still
+// works (US, UK).
 func (m Model) handleKeyConversation(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "esc":
+		now := time.Now()
+		if !m.lastEscAt.IsZero() && now.Sub(m.lastEscAt) <= escEscWindow {
+			// Second Esc in the window → switch pane. Don't deliver
+			// this one to claude (the first already cancelled there;
+			// claude doesn't need a second cancel).
+			m.lastEscAt = time.Time{}
+			m.activePane = PaneRail
+			return m, nil
+		}
+		// First Esc: deliver to claude AND start the window. If a
+		// second comes within escEscWindow, the branch above fires.
+		m.lastEscAt = now
+		return m, m.routeKeyToPty(msg)
 	case "f6":
+		// Kept as an alias for muscle memory and as an escape hatch
+		// when the user genuinely wants Esc to reach claude without
+		// any double-tap risk.
 		m.activePane = PaneRail
 		return m, nil
-	case "ctrl+\\":
-		// Bubble Tea's keyboard reporting can't reliably distinguish
-		// Ctrl+Tab from plain Tab on most terminals (both arrive as
-		// 0x09), so the dedicated forward-cycle chord lives on
-		// Ctrl+\ — distinct, free in claude's keymap, and easy to
-		// reach with the pinky.
+	case "f8", "ctrl+\\":
 		m.cycleFocusedSession(+1)
+		return m, nil
+	case "f7":
+		m.cycleFocusedSession(-1)
 		return m, nil
 	}
 	return m, m.routeKeyToPty(msg)
@@ -1953,16 +1994,33 @@ func (m Model) handleKeyRail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Bare Tab from the rail with no autocomplete to consume falls
 		// through to claude's PTY (claude has its own Tab semantics).
 		return m, m.routeKeyToPty(msg)
+	case "esc":
+		// Esc-Esc symmetry with the conversation pane: a deliberate
+		// double-tap flips back. First Esc still goes to claude (its
+		// PTY is still attached even from the rail), so a stray Esc
+		// doesn't change panes by itself.
+		now := time.Now()
+		if !m.lastEscAt.IsZero() && now.Sub(m.lastEscAt) <= escEscWindow {
+			m.lastEscAt = time.Time{}
+			m.activePane = PaneConversation
+			return m, nil
+		}
+		m.lastEscAt = now
+		return m, m.routeKeyToPty(msg)
 	case "f6":
 		m.activePane = PaneConversation
 		return m, nil
-	case "ctrl+\\":
-		// Mirror of conversation-pane Ctrl+\ — power-user forward cycle.
+	case "f8", "ctrl+\\":
+		// Forward-cycle. F8 is the universal binding (works on
+		// every layout / terminal); Ctrl+\ is the US-layout legacy
+		// alias.
 		m.cycleFocusedSession(+1)
 		return m, nil
-	case "shift+tab":
-		// Reverse-cycle is rail-only because Shift+Tab is claude's
-		// permission-mode toggle in the conversation pane.
+	case "f7", "shift+tab":
+		// Reverse-cycle. F7 works in both panes; Shift+Tab is the
+		// rail-only legacy binding (Shift+Tab is claude's
+		// permission-mode toggle in the conversation pane, so we
+		// can't expose it there).
 		m.cycleFocusedSession(-1)
 		return m, nil
 	case "up", "k":
@@ -4197,27 +4255,33 @@ const helpBody = `chubby-tui keys
        (↑↓ / PgUp PgDn scroll · Esc / q / Enter to close)
 
 PANE MODEL  (K9s/tmux-style)
-  Two panes share the keyboard. F6 toggles which one is "active".
+  Two panes share the keyboard. Switch between them with:
+
+      Esc-Esc  → vim-style double-tap (any pane). The first Esc
+                 still goes to claude (cancel is idempotent); the
+                 second within 500ms flips the pane.
+      F6       → same effect, single-tap alias.
 
   CONVERSATION pane (default — claude owns the keyboard)
-    Only TWO chubby chords are live:
-      F6       → switch to the rail pane (chubby command mode)
-      Ctrl+\   → cycle focused session forward
+    Only the pane-management chords are live:
+      Esc-Esc / F6   → switch to rail
+      F8 / Ctrl+\    → cycle focused session forward
+      F7             → cycle focused session reverse
     Everything else flows to claude untouched. So:
       Tab autocompletes claude's slash commands
       Shift+Tab cycles claude's permission modes
       Ctrl+R is claude's reverse history search
       Ctrl+D exits claude's prompt
       Ctrl+T toggles tasks
-      Up/Down/PgUp/PgDn/Home/End/Esc/Enter — all claude's
+      Up/Down/PgUp/PgDn/Home/End/Enter — all claude's
 
   RAIL pane (chubby command mode)
-    The full keymap below. Press F6 to leave.
+    The full keymap below. Press Esc-Esc or F6 to leave.
 
 NAVIGATION  (rail pane)
   Ctrl+D (twice)     release the focused session and remove from chubby
-  Ctrl+\             cycle focused session forward
-  Shift+Tab          cycle focused session (reverse)
+  F8 / Ctrl+\        cycle focused session forward
+  F7 / Shift+Tab     cycle focused session reverse
   Up/Down/PgUp/PgDn  walk rail cursor (5 rows for PgUp/PgDn)
   Home/End           jump to top / bottom of rail
   Space              toggle folder collapse

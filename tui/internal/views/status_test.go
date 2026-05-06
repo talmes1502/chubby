@@ -18,19 +18,19 @@ func containsAll(haystack string, needles ...string) (string, bool) {
 
 func TestRawStatusBar_ModeMainEmptyCompose(t *testing.T) {
 	got := rawStatusBar(StatusModeMain, false, 0, false, false)
-	if missing, ok := containsAll(got, "F6 → claude", "Ctrl+\\", "Ctrl+A", "Ctrl+B", "Ctrl+D", "Ctrl+H", "Ctrl+J", "Ctrl+N", "Ctrl+P", "Ctrl+K", "Ctrl+Y", "?", "q"); ok {
+	if missing, ok := containsAll(got, "Esc-Esc → claude", "F8", "Ctrl+A", "Ctrl+B", "Ctrl+D", "Ctrl+H", "Ctrl+J", "Ctrl+N", "Ctrl+P", "Ctrl+K", "Ctrl+Y", "?", "q"); ok {
 		t.Fatalf("ModeMain (empty compose, rail) missing %q: %s", missing, got)
 	}
 }
 
 // TestRawStatusBar_ModeMainConversationPane: in the conversation pane
 // claude owns the keyboard. Status bar should advertise the small
-// set of chubby chords still live (F6, Ctrl+\, Ctrl+C) and NOT the
-// rail-only chords (Ctrl+B/D/N/...) so users aren't confused into
-// pressing them.
+// set of chubby chords still live (Esc-Esc/F6 → rail, F8 cycle,
+// Ctrl+C interrupt) and NOT the rail-only chords (Ctrl+B/D/N/...)
+// so users aren't confused into pressing them.
 func TestRawStatusBar_ModeMainConversationPane(t *testing.T) {
 	got := rawStatusBar(StatusModeMain, false, 0, false, true)
-	if missing, ok := containsAll(got, "claude", "F6", "Ctrl+\\", "Ctrl+C"); ok {
+	if missing, ok := containsAll(got, "claude", "Esc-Esc", "F6", "F8", "Ctrl+C"); ok {
 		t.Fatalf("ModeMain (conversation pane) missing %q: %s", missing, got)
 	}
 	for _, n := range []string{"Ctrl+B", "Ctrl+N", "Ctrl+D×2", "Ctrl+R rename", "Ctrl+Y"} {

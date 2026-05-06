@@ -68,13 +68,12 @@ func rawStatusBar(mode StatusMode, composeHasText bool, broadcastField int, atta
 			return "Enter send · Shift+Enter newline · @name redirect · Tab complete · Esc clear"
 		}
 		if inConversationPane {
-			// Claude owns the keyboard. Only F6 + Ctrl+\ are live;
-			// everything else (Tab, Shift+Tab, Ctrl+R, Ctrl+D, etc.)
-			// is forwarded to claude. Press F6 to unlock the full
-			// chubby keymap on the rail side.
-			return "claude has keyboard · F6 → rail (chubby chords) · Ctrl+\\ cycle session · Ctrl+C interrupt"
+			// Claude owns the keyboard. Only the pane-management
+			// chords are live; everything else (Tab, Shift+Tab,
+			// Ctrl+R, Ctrl+D, etc.) is forwarded to claude.
+			return "claude has keyboard · Esc-Esc / F6 → rail · F8 cycle session · Ctrl+C interrupt"
 		}
-		return "F6 → claude · Ctrl+\\ cycle · Ctrl+D×2 release · /cmd or @name · Ctrl+B broadcast · Ctrl+H history · Ctrl+N new · Ctrl+F new folder · Ctrl+A attach · Ctrl+P respawn · Ctrl+R rename · Ctrl+K search · Ctrl+Y copy · Ctrl+O file · ? help · q quit · Ctrl+J toggle rail"
+		return "Esc-Esc → claude · F8 cycle · Ctrl+D×2 release · /cmd or @name · Ctrl+B broadcast · Ctrl+H history · Ctrl+N new · Ctrl+F new folder · Ctrl+A attach · Ctrl+P respawn · Ctrl+R rename · Ctrl+K search · Ctrl+Y copy · Ctrl+O file · ? help · q quit · Ctrl+J toggle rail"
 	case StatusModeBroadcast:
 		switch broadcastField {
 		case 0:
