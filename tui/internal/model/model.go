@@ -3676,6 +3676,11 @@ func (m Model) openEditorPathPrompt() (tea.Model, tea.Cmd) {
 	t := textinput.New()
 	t.Prompt = "▸ "
 	t.CharLimit = 0
+	t.Placeholder = "path to file (~ expands)"
+	// Initial width — renderEditorPane re-sizes to the actual pane
+	// width on each draw, but a roomy default keeps the prefilled
+	// cwd visible during the first frame too.
+	t.Width = 80
 	if s := m.focusedSession(); s != nil && s.Cwd != "" {
 		init := s.Cwd
 		if !strings.HasSuffix(init, "/") {
@@ -4023,7 +4028,18 @@ func (m Model) renderEditorPane(w, h int) string {
 		dim := views.Dim
 		title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).
 			Render("Open file")
-		body := title + "\n\n" + m.editor.pathInput.View() + "\n\n"
+		// Re-size the textinput to match the current inner pane
+		// width so a long prefill (e.g. a deep cwd path) doesn't
+		// clip on the right at the bubble-default 20 chars. Math:
+		// border (2) + horizontal padding (2) + prompt "▸ " (2) ≈ 6.
+		// Mutate a local copy — renderEditorPane is a value-receiver
+		// view function; the model's stored pathInput stays
+		// authoritative, this is just for the visible frame.
+		ti := m.editor.pathInput
+		if inner := w - 6; inner > 10 {
+			ti.Width = inner
+		}
+		body := title + "\n\n" + ti.View() + "\n\n"
 		if m.editor.err != nil {
 			body += lipgloss.NewStyle().Foreground(lipgloss.Color("9")).
 				Render("error: "+m.editor.err.Error()) + "\n\n"
