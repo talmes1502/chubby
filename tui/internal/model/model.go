@@ -34,24 +34,22 @@ const turnsCap = 500
 // Turn / ToolCall / Session live in types.go — see that file for
 // SessionStatus / SessionKind / TurnRole typed-string enums.
 
-// ActivePane identifies which of the two main-view panes (rail vs
-// conversation) currently receives arrow / paging input when compose
-// is empty. Tab toggles between them; Ctrl+Tab still exists as the
-// power-user "cycle focused session directly" shortcut.
+// ActivePane is the K9s/tmux-style mode switch. Each pane has its
+// own keymap; F6 toggles between them. handleKeyConversation and
+// handleKeyRail in this file are the two implementations.
 type ActivePane int
 
 const (
-	// PaneConversation is the default — typing flows straight into
-	// claude's PTY (the visual cursor sits there, so users expect
-	// keystrokes to land there). Pre-default-flip we used PaneRail
-	// and 'k' / 'j' / 'up' / 'down' walked the rail cursor instead
-	// of typing into claude, which surprised users who never pressed
-	// F6 to switch panes. F6 still toggles to PaneRail for
-	// vim-style rail nav when wanted.
+	// PaneConversation is the default — claude owns the keyboard.
+	// Chubby intercepts only F6 (switch pane) and Ctrl+\ (cycle
+	// session); every other keystroke flows to the embedded PTY.
+	// That keeps Tab autocomplete, Shift+Tab permission cycle,
+	// Ctrl+R reverse search, Ctrl+D EOF, and the rest of claude's
+	// keymap working as documented.
 	PaneConversation ActivePane = iota
-	// PaneRail: Up/Down walks the rail cursor, PgUp/PgDn moves it
-	// by 5 rows, Enter focuses the cursored session or toggles a
-	// folder header.
+	// PaneRail: chubby's command mode. Up/Down walks the rail cursor,
+	// Enter focuses or toggles, the full Ctrl-chord palette is live.
+	// Press F6 to leave.
 	PaneRail
 )
 
@@ -376,10 +374,9 @@ type Model struct {
 	// rail (may be a group header or a session). Up/Down walks this;
 	// Tab/Shift+Tab walks m.focused (session-only).
 	railCursor int
-	// activePane decides where compose-empty arrow / paging keys go
-	// (D8). Tab toggles between PaneRail (default) and
-	// PaneConversation. The visual cue is the focused pane's border
-	// color in renderList / renderViewport.
+	// activePane decides which keymap is live (handleKeyConversation
+	// vs handleKeyRail). F6 toggles. The visual cue is the focused
+	// pane's border color in renderList / renderViewport.
 	activePane ActivePane
 
 	// completion tracks @-name autocomplete state in the compose bar.
@@ -1845,11 +1842,20 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+// handleKeyMain is the thin dispatcher. Slash popup is modal and
+// wins over the pane split (its keys are the same in either pane).
+// After that we hand off to the per-pane handler — this keeps the
+// pane-aware rules in one place each instead of scattered `if
+// m.activePane == X` branches across every keymap case.
+//
+// The pane split is the K9s/tmux/screen prefix model: rail is
+// "command mode" (chubby's keymap), conversation is "claude mode"
+// (claude's keymap). F6 toggles between the two. Every chord that
+// would conflict with claude's bindings (Tab autocomplete, Shift+Tab
+// permission cycle, Ctrl+R reverse search, Ctrl+D EOF, Ctrl+T tasks,
+// Esc, etc.) is automatically claude's in the conversation pane —
+// because chubby simply doesn't intercept it there.
 func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Slash popup gets first dibs on navigation/accept/dismiss keys
-	// when it's visible. We only intercept Ctrl+N/Ctrl+P here (which
-	// would otherwise open the spawn modal / respawn) so the popup can
-	// be driven keyboard-only without mouse-only fallbacks.
 	if m.slashPopupVisible() {
 		switch msg.String() {
 		case "up", "ctrl+p":
@@ -1877,17 +1883,53 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+	if m.activePane == PaneConversation {
+		return m.handleKeyConversation(msg)
+	}
+	return m.handleKeyRail(msg)
+}
+
+// handleKeyConversation runs while the conversation pane is active —
+// the user is talking to claude. Claude owns the keyboard. We
+// intercept only the two chubby-essential chords:
+//
+//	F6      → switch to the rail pane (chubby's command mode)
+//	Ctrl+\  → forward-cycle the focused session
+//
+// Everything else flows to the embedded PTY untouched. That means
+// Tab autocompletes claude's slash commands, Shift+Tab cycles
+// claude's permission modes, Ctrl+R is claude's reverse history
+// search, Ctrl+D exits the prompt — the user gets the keymap
+// claude documents, not a chubby override.
+func (m Model) handleKeyConversation(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "f6":
+		m.activePane = PaneRail
+		return m, nil
+	case "ctrl+\\":
+		// Bubble Tea's keyboard reporting can't reliably distinguish
+		// Ctrl+Tab from plain Tab on most terminals (both arrive as
+		// 0x09), so the dedicated forward-cycle chord lives on
+		// Ctrl+\ — distinct, free in claude's keymap, and easy to
+		// reach with the pinky.
+		m.cycleFocusedSession(+1)
+		return m, nil
+	}
+	return m, m.routeKeyToPty(msg)
+}
+
+// handleKeyRail runs while the rail pane is active — chubby's
+// command mode. Every chord here belongs to chubby. Keys with no
+// rail-side meaning (printable letters, function keys, etc.) still
+// fall through to the PTY at the bottom so the rail isn't a black
+// hole when the user types.
+func (m Model) handleKeyRail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
-		// Pane-aware Ctrl+C: in the conversation pane it's claude's
-		// interrupt key (forwarded to the PTY), but in the rail pane
-		// it's the standard "quit the program" gesture every other
-		// TUI implements. Without this branch, rail-Ctrl+C falls
-		// through to the no-op default — visibly broken UX.
-		if m.activePane == PaneRail {
-			return m, tea.Quit
-		}
-		return m, m.routeKeyToPty(msg)
+		// Standard "quit the program" gesture. Conversation-pane
+		// Ctrl+C is claude's SIGINT and is forwarded by
+		// handleKeyConversation's default route.
+		return m, tea.Quit
 	case "tab":
 		// /command autocompletion takes precedence over @name — once the
 		// user has typed a leading "/", they're committed to a slash
@@ -1908,138 +1950,86 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.tryComplete() {
 			return m, nil
 		}
-		// Bare Tab with no autocomplete to consume falls through to
-		// claude's PTY (claude has its own Tab semantics for command
-		// completion etc.). Pane switching now lives on F6 — the vim/
-		// screen/tmux convention for "next window/pane" — so a typed
-		// Tab inside claude isn't intercepted by chubby.
+		// Bare Tab from the rail with no autocomplete to consume falls
+		// through to claude's PTY (claude has its own Tab semantics).
 		return m, m.routeKeyToPty(msg)
 	case "f6":
-		// Toggle the active pane. Replaces the pre-F6 binding on Tab
-		// so users can type Tab into claude without it being eaten
-		// by chubby's pane switcher.
-		if m.activePane == PaneRail {
-			m.activePane = PaneConversation
-		} else {
-			m.activePane = PaneRail
-		}
+		m.activePane = PaneConversation
 		return m, nil
 	case "ctrl+\\":
-		// D8: legacy session-cycling power-user shortcut. Bubble Tea's
-		// keyboard reporting on most terminals can't distinguish
-		// Ctrl+Tab from plain Tab (both arrive as ASCII HT / 0x09), so
-		// the dedicated forward-cycle chord moved to Ctrl+\ which IS
-		// reliably reportable. Shift+Tab continues to cycle in reverse.
+		// Mirror of conversation-pane Ctrl+\ — power-user forward cycle.
 		m.cycleFocusedSession(+1)
 		return m, nil
 	case "shift+tab":
+		// Reverse-cycle is rail-only because Shift+Tab is claude's
+		// permission-mode toggle in the conversation pane.
 		m.cycleFocusedSession(-1)
 		return m, nil
 	case "up", "k":
-		// Compose forwarding fallthrough is below; only intercept these
-		// when the compose bar is empty so the user can still type 'k'.
-		// Rail walks its cursor; conversation pane forwards the key to
-		// the focused session's PTY so claude/its TUI handles its own
-		// scroll/nav semantics.
 		if m.compose.Value() == "" {
-			if m.activePane == PaneRail {
-				m.moveRailCursor(-1)
-			} else {
-				return m, m.routeKeyToPty(msg)
-			}
+			m.moveRailCursor(-1)
 			return m, nil
 		}
 	case "down", "j":
 		if m.compose.Value() == "" {
-			if m.activePane == PaneRail {
-				m.moveRailCursor(+1)
-			} else {
-				return m, m.routeKeyToPty(msg)
-			}
+			m.moveRailCursor(+1)
 			return m, nil
 		}
 	case "pgup":
-		// Ctrl+U intentionally NOT bound here: claude/readline use it
-		// for "kill line" and the user expects it to reach the PTY.
-		// PgUp alone is sufficient for rail half-page nav.
+		// Half-page rail nav. PgUp alone is sufficient — Ctrl+U is
+		// reserved for claude/readline "kill line" in the other pane.
 		if m.compose.Value() == "" {
-			if m.activePane == PaneRail {
-				m.moveRailCursor(-5)
-			} else {
-				return m, m.routeKeyToPty(msg)
-			}
+			m.moveRailCursor(-5)
 			return m, nil
 		}
 	case "pgdown":
-		// Ctrl+D intentionally NOT bound here: claude/shells use it
-		// for EOF/exit and the user expects it to reach the PTY.
-		// PgDn alone is sufficient for rail half-page nav.
+		// Half-page rail nav. PgDn alone is sufficient — Ctrl+D is
+		// reserved for the two-tap release gesture below and for
+		// claude EOF in the other pane.
 		if m.compose.Value() == "" {
-			if m.activePane == PaneRail {
-				m.moveRailCursor(+5)
-			} else {
-				return m, m.routeKeyToPty(msg)
-			}
+			m.moveRailCursor(+5)
 			return m, nil
 		}
 	case "home":
 		if m.compose.Value() == "" {
-			if m.activePane == PaneRail {
-				m.railCursor = 0
-				// Re-find a non-separator row at or after index 0.
-				rows := m.railRows()
-				for i, r := range rows {
-					if r.Kind != RailRowUnfiledSeparator {
+			m.railCursor = 0
+			rows := m.railRows()
+			for i, r := range rows {
+				if r.Kind != RailRowUnfiledSeparator {
+					m.railCursor = i
+					break
+				}
+			}
+			m.focusRailRow()
+			return m, nil
+		}
+	case "end":
+		if m.compose.Value() == "" {
+			rows := m.railRows()
+			if len(rows) > 0 {
+				for i := len(rows) - 1; i >= 0; i-- {
+					if rows[i].Kind != RailRowUnfiledSeparator {
 						m.railCursor = i
 						break
 					}
 				}
 				m.focusRailRow()
-			} else {
-				m.scrollToTop()
-			}
-			return m, nil
-		}
-	case "end":
-		if m.compose.Value() == "" {
-			if m.activePane == PaneRail {
-				rows := m.railRows()
-				if len(rows) > 0 {
-					// Walk back from the last index to find a real row
-					// (skip separators).
-					for i := len(rows) - 1; i >= 0; i-- {
-						if rows[i].Kind != RailRowUnfiledSeparator {
-							m.railCursor = i
-							break
-						}
-					}
-					m.focusRailRow()
-				}
-			} else {
-				m.scrollToBottom()
 			}
 			return m, nil
 		}
 	case "G":
-		// Vim-style jump-to-end. Capital G is unambiguous (compose
-		// would emit lowercase g for normal typing), so it doesn't
-		// fight the textinput when compose is non-empty either, but
-		// we keep the compose-empty gate for parity with the other
-		// scroll keys.
+		// Vim-style jump-to-end. Capital G is unambiguous — compose
+		// emits lowercase g for normal typing.
 		if m.compose.Value() == "" {
-			if m.activePane == PaneRail {
-				rows := m.railRows()
-				if len(rows) > 0 {
-					for i := len(rows) - 1; i >= 0; i-- {
-						if rows[i].Kind != RailRowUnfiledSeparator {
-							m.railCursor = i
-							break
-						}
+			rows := m.railRows()
+			if len(rows) > 0 {
+				for i := len(rows) - 1; i >= 0; i-- {
+					if rows[i].Kind != RailRowUnfiledSeparator {
+						m.railCursor = i
+						break
 					}
-					m.focusRailRow()
 				}
-			} else {
-				m.scrollToBottom()
+				m.focusRailRow()
 			}
 			return m, nil
 		}
@@ -2064,8 +2054,8 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Two-tap release: first press toasts a confirm prompt;
 		// second press within pendingDeleteWindow on the same session
 		// fires release_session. Stale state is invisible to the user
-		// because it expires implicitly — we only check the timestamp
-		// when Ctrl+D fires again.
+		// because it expires implicitly. Conversation-pane Ctrl+D is
+		// claude's EOF and is forwarded by handleKeyConversation.
 		s := m.focusedSession()
 		if s == nil {
 			return m, nil
@@ -2103,28 +2093,21 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeSearch
 		return m, nil
 	case "ctrl+r":
+		// Rename focused session/folder. Conversation-pane Ctrl+R is
+		// claude's reverse history search and is forwarded.
 		return m.enterRenameMode()
 	case "ctrl+f":
-		// New folder modal (Phase A). The plan asked for Ctrl+M but
-		// terminals emit CR for both Ctrl+M and Enter (bubbletea
-		// resolves both to "enter"), so we use Ctrl+F instead — same
-		// "f" mnemonic as "folder" and free in our keymap.
+		// New folder modal. The plan asked for Ctrl+M but terminals
+		// emit CR for both Ctrl+M and Enter (bubbletea resolves both
+		// to "enter"); Ctrl+F shares the "f" mnemonic with "folder".
 		return m.openNewFolderModal()
 	case "ctrl+_":
-		// "Find in pane" — Ctrl+/ on most terminals. Modal over the
-		// focused session's PTY scrollback + visible screen. No-op
-		// when no session is focused or the focused pane has no
-		// scrollback yet.
+		// "Find in pane" — Ctrl+/ on most terminals.
 		return m, m.openPaneSearchModal()
 	case "ctrl+p":
 		// Smart overload (moltty-inspired):
-		//   - focused session is DEAD → respawn it (preserves the
-		//     existing dead-respawn muscle memory).
-		//   - otherwise → open the quick-switcher modal so users
-		//     can fuzzy-find among many sessions without scanning
-		//     the rail. The same key for "operate on the focused
-		//     session" — DEAD sessions are operated on by reviving,
-		//     live ones by switching focus to a different session.
+		//   - focused session is DEAD → respawn it.
+		//   - otherwise → open the quick-switcher modal.
 		s := m.focusedSession()
 		if s != nil && s.Status == StatusDead {
 			folder := m.folders.FolderForSession(s.ID)
@@ -2134,21 +2117,16 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeQuickSwitcher
 		return m, nil
 	case "?":
-		// '?' opens the help overlay only when the rail is active —
-		// otherwise the user can't type a literal '?' into claude's
-		// prompt. Switch to the rail (Tab) and then press '?' to
-		// see help.
-		if m.activePane == PaneRail && !m.railCollapsed {
+		// Help. Rail-only because '?' is a printable letter the user
+		// might type into claude's prompt — F6 first to reach this.
+		if !m.railCollapsed {
 			m.mode = ModeHelp
 			m.helpScroll = 0
 			return m, nil
 		}
 	case ":":
-		// ':' from the rail opens the chubby command palette at the
-		// bottom of the rail — same vim-style gesture as the input's
-		// own ":" prompt prefix. Forwarded to claude's PTY when the
-		// conversation pane is active.
-		if m.activePane == PaneRail && !m.railCollapsed {
+		// vim-style ':' opens the chubby command palette.
+		if !m.railCollapsed {
 			m.mode = ModeRailCommand
 			m.railCmd.Focus()
 			m.railCmdErr = nil
@@ -2159,10 +2137,9 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.history = historyState{}
 		return m, m.loadHubRuns()
 	case "H":
-		// Phase 8d: cross-project history browser. Distinct chord
-		// from Ctrl+H (hub-run history): Shift+H from the rail
-		// opens the broader "every claude session ever" view.
-		if m.activePane == PaneRail && !m.railCollapsed && m.compose.Value() == "" {
+		// Phase 8d: cross-project history browser. Distinct from
+		// Ctrl+H — opens the broader "every claude session ever" view.
+		if !m.railCollapsed && m.compose.Value() == "" {
 			return m, m.openClaudeHistoryModal()
 		}
 	case "ctrl+j":
@@ -2173,10 +2150,8 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		})
 		return m, nil
 	case "/":
-		// Bare "/" is now reserved for typing slash commands into the
-		// compose bar (autocompleted via Tab). Grep transcripts moved to
-		// Ctrl+G to keep the palette reachable without stealing the
-		// slash key from the compose buffer.
+		// Bare "/" reserved for typing slash commands into the compose
+		// bar (autocompleted via Tab). Grep moved to Ctrl+G.
 	case "ctrl+g":
 		if m.compose.Value() == "" {
 			m.mode = ModeGrep
@@ -2189,18 +2164,13 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.copyConversation()
 	case "ctrl+o":
 		// Open the file viewer with a path prompt pre-filled with the
-		// focused session's cwd (with trailing slash) so the user just
-		// types a relative filename. If the focused session has no cwd,
-		// we still open the prompt — the user can paste an absolute
-		// path.
+		// focused session's cwd. If no cwd, the user can paste an
+		// absolute path.
 		return m.openEditorPathPrompt()
 	case "ctrl+]":
 		// Open the most-recent path detected in the conversation.
-		// First refresh recentPaths from the focused pane's live
-		// PTY scrollback so paths the agent just printed (faster
-		// than the JSONL tailer can keep up) are immediately
-		// openable. Falls back to the path prompt when nothing
-		// matchable is on screen.
+		// Refresh recentPaths from live PTY scrollback first so paths
+		// the agent just printed are immediately openable.
 		m.harvestPathsFromFocusedPane()
 		if len(m.editor.recentPaths) == 0 {
 			return m.openEditorPathPrompt()
@@ -2208,22 +2178,22 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		path := m.editor.recentPaths[0]
 		return m, m.loadEditorFile(path)
 	case "ctrl+e":
-		// Toggle editor pane visibility. If nothing's loaded yet,
-		// route to the path prompt so the toggle is never a no-op.
+		// Toggle editor pane visibility. Route to path prompt if
+		// nothing's loaded yet so the toggle is never a no-op.
 		if m.editor.path == "" {
 			return m.openEditorPathPrompt()
 		}
 		m.editor.visible = !m.editor.visible
 		return m, nil
 	case "enter":
-		// Rail-pane Enter (with empty compose):
+		// Rail-pane Enter with empty compose:
 		//   - Folder header → toggle collapse
 		//   - Unfocused session row → focus it
 		//   - Already-focused session row → forward Enter to claude
-		//     so the user can submit prompts without an extra Tab
+		//     so the user can submit prompts without an extra F6
 		//     into PaneConversation. Consuming Enter on the focused
 		//     row caused "I typed but Enter does nothing" reports.
-		if m.compose.Value() == "" && m.activePane == PaneRail {
+		if m.compose.Value() == "" {
 			rows := m.railRows()
 			if m.railCursor >= 0 && m.railCursor < len(rows) {
 				r := rows[m.railCursor]
@@ -2245,36 +2215,15 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		// Conversation-pane Enter with empty compose: forward a bare
-		// "\r" to claude's PTY so trust prompts / Y/N choices /
-		// "press Enter to confirm" widgets work without typing
-		// anything in the compose bar. inject_raw is used (not
-		// plain inject) so this doesn't claim "Claude is now
-		// generating" for a confirmation keystroke.
-		if m.compose.Value() == "" {
-			return m, m.routeKeyToPty(msg)
-		}
 		return m, m.sendComposed()
 	case "shift+enter", "alt+enter":
 		// Forward ESC+CR to claude's PTY so claude inserts a newline
-		// in its OWN input (multiline prompt). Most terminals emit
-		// ESC+\r for Option/Alt+Enter (bubbletea sees this as
-		// "alt+enter"); some emit it for Shift+Enter when the
-		// modifyOtherKeys protocol is on. Both routes here. Pre-pivot
-		// this used to mutate the chubby-side compose bar; that
-		// compose isn't rendered anymore, so the right move is to let
-		// KeyToBytes encode it as 0x1b 0x0d and inject_raw deliver it.
+		// in its OWN input (multiline prompt).
 		return m, m.routeKeyToPty(msg)
 	}
-	// Default: forward the keystroke straight to claude's PTY,
-	// regardless of which pane is "active". The active-pane
-	// distinction matters for arrows / j / k / pgup / pgdown / etc.
-	// (rail-nav vs. PTY-forward), and those keys have explicit cases
-	// above. For everything else — printable letters, Ctrl chords
-	// claude wants, function keys — claude is always the recipient.
-	// Dropping keys when the rail happens to be active is what
-	// caused users to stare at a focused live session and get no
-	// response when they typed.
+	// Default: forward to PTY. The rail isn't a black hole — typed
+	// printable letters still reach claude. Chubby chords above are
+	// pure additions on top of that base.
 	return m, m.routeKeyToPty(msg)
 }
 
@@ -4056,6 +4005,7 @@ func (m Model) wrapWithChrome(body string) string {
 		composeHasText,
 		m.bcast.field,
 		m.attach.confirmDetachN > 0,
+		m.activePane == PaneConversation,
 		m.width,
 	)
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, status)
@@ -4246,16 +4196,33 @@ func (m Model) viewHistory() string {
 const helpBody = `chubby-tui keys
        (↑↓ / PgUp PgDn scroll · Esc / q / Enter to close)
 
-NAVIGATION
-  F6                 switch active pane (rail / conversation)
+PANE MODEL  (K9s/tmux-style)
+  Two panes share the keyboard. F6 toggles which one is "active".
+
+  CONVERSATION pane (default — claude owns the keyboard)
+    Only TWO chubby chords are live:
+      F6       → switch to the rail pane (chubby command mode)
+      Ctrl+\   → cycle focused session forward
+    Everything else flows to claude untouched. So:
+      Tab autocompletes claude's slash commands
+      Shift+Tab cycles claude's permission modes
+      Ctrl+R is claude's reverse history search
+      Ctrl+D exits claude's prompt
+      Ctrl+T toggles tasks
+      Up/Down/PgUp/PgDn/Home/End/Esc/Enter — all claude's
+
+  RAIL pane (chubby command mode)
+    The full keymap below. Press F6 to leave.
+
+NAVIGATION  (rail pane)
   Ctrl+D (twice)     release the focused session and remove from chubby
   Ctrl+\             cycle focused session forward
   Shift+Tab          cycle focused session (reverse)
-  Up/Down/PgUp/PgDn  rail: walk cursor · conversation: scroll
-  Home/End           jump to top/bottom of active pane
+  Up/Down/PgUp/PgDn  walk rail cursor (5 rows for PgUp/PgDn)
+  Home/End           jump to top / bottom of rail
   Space              toggle folder collapse
-  Enter              rail: focus session / toggle folder · already-
-                     focused row → forward Enter to claude
+  Enter              focus session / toggle folder · already-focused
+                     row → forward Enter to claude
 
 QUICK SWITCHER
   Ctrl+P             on a non-DEAD session → fuzzy-find modal

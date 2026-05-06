@@ -28,6 +28,10 @@ func makeMainEditorModel(t *testing.T, cwd string) Model {
 			{ID: "s1", Name: "alpha", Color: "#abcdef", Status: "idle", Cwd: cwd},
 		},
 		focused: 0,
+		// Editor chords (Ctrl+O / Ctrl+E / Ctrl+]) are chubby keymap —
+		// pane-aware refactor (v0.1.4) requires PaneRail; conversation
+		// pane forwards these to claude's PTY.
+		activePane: PaneRail,
 	}
 	return m
 }

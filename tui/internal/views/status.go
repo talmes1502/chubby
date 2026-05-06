@@ -38,17 +38,21 @@ var dimStyle = Dim
 
 // StatusBarText returns the keybinding hint string appropriate for the
 // current mode, with extra context (compose-empty, broadcast field,
-// attach-confirm submode).
+// attach-confirm submode, active pane).
 //
 // composeHasText is only consulted for StatusModeMain.
 // broadcastField is only consulted for StatusModeBroadcast (0,1,2).
 // attachConfirm is only consulted for StatusModeAttach (true while the
 // "Detach N? (y/n)" prompt is up).
+// inConversationPane is only consulted for StatusModeMain. When true,
+// claude owns the keyboard and the status bar shows the small set of
+// chubby chords still live (F6 / Ctrl+\); when false (rail pane) the
+// full chubby chord palette is shown.
 //
 // The returned string is already truncated to width with a trailing
 // ellipsis if needed; pass width<=0 to skip truncation.
-func StatusBarText(mode StatusMode, composeHasText bool, broadcastField int, attachConfirm bool, width int) string {
-	raw := rawStatusBar(mode, composeHasText, broadcastField, attachConfirm)
+func StatusBarText(mode StatusMode, composeHasText bool, broadcastField int, attachConfirm bool, inConversationPane bool, width int) string {
+	raw := rawStatusBar(mode, composeHasText, broadcastField, attachConfirm, inConversationPane)
 	if width > 0 && lipgloss.Width(raw) > width {
 		raw = truncateWithEllipsis(raw, width)
 	}
@@ -57,13 +61,20 @@ func StatusBarText(mode StatusMode, composeHasText bool, broadcastField int, att
 
 // rawStatusBar returns the un-styled, un-truncated status string.
 // Separated so tests can match keywords without dealing with ANSI.
-func rawStatusBar(mode StatusMode, composeHasText bool, broadcastField int, attachConfirm bool) string {
+func rawStatusBar(mode StatusMode, composeHasText bool, broadcastField int, attachConfirm bool, inConversationPane bool) string {
 	switch mode {
 	case StatusModeMain:
 		if composeHasText {
 			return "Enter send · Shift+Enter newline · @name redirect · Tab complete · Esc clear"
 		}
-		return "F6 switch pane · Ctrl+\\ cycle session · Ctrl+D×2 release · /cmd or @name · Ctrl+B broadcast · Ctrl+H history · Ctrl+N new · Ctrl+F new folder · Ctrl+A attach · Ctrl+P respawn · Ctrl+R rename · Ctrl+K search · Ctrl+Y copy · Ctrl+O file · ? help · q quit · Ctrl+J toggle rail"
+		if inConversationPane {
+			// Claude owns the keyboard. Only F6 + Ctrl+\ are live;
+			// everything else (Tab, Shift+Tab, Ctrl+R, Ctrl+D, etc.)
+			// is forwarded to claude. Press F6 to unlock the full
+			// chubby keymap on the rail side.
+			return "claude has keyboard · F6 → rail (chubby chords) · Ctrl+\\ cycle session · Ctrl+C interrupt"
+		}
+		return "F6 → claude · Ctrl+\\ cycle · Ctrl+D×2 release · /cmd or @name · Ctrl+B broadcast · Ctrl+H history · Ctrl+N new · Ctrl+F new folder · Ctrl+A attach · Ctrl+P respawn · Ctrl+R rename · Ctrl+K search · Ctrl+Y copy · Ctrl+O file · ? help · q quit · Ctrl+J toggle rail"
 	case StatusModeBroadcast:
 		switch broadcastField {
 		case 0:

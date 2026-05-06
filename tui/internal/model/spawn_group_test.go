@@ -110,10 +110,11 @@ func TestCtrlP_OnlyFiresOnDeadSession(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			m := Model{
-				sessions: c.sessions,
-				focused:  c.focused,
-				mode:     ModeMain,
-				compose:  views.NewCompose(),
+				sessions:   c.sessions,
+				focused:    c.focused,
+				mode:       ModeMain,
+				compose:    views.NewCompose(),
+				activePane: PaneRail,
 			}
 			_, cmd := m.handleKeyMain(tea.KeyMsg{Type: tea.KeyCtrlP})
 			gotCmd := cmd != nil
@@ -152,11 +153,12 @@ func TestCtrlN_PrefillsFolderFromFocusedSession(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			m := Model{
-				sessions: []Session{c.focused},
-				focused:  0,
-				mode:     ModeMain,
-				compose:  views.NewCompose(),
-				folders:  folders,
+				sessions:   []Session{c.focused},
+				focused:    0,
+				mode:       ModeMain,
+				compose:    views.NewCompose(),
+				folders:    folders,
+				activePane: PaneRail,
 			}
 			out, _ := m.handleKeyMain(tea.KeyMsg{Type: tea.KeyCtrlN})
 			m2 := out.(Model)

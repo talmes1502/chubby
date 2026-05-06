@@ -63,6 +63,7 @@ func TestCtrlJ_TogglesRailCollapsed(t *testing.T) {
 		mode:           ModeMain,
 		compose:        views.NewCompose(),
 		groupCollapsed: map[string]bool{},
+		activePane:     PaneRail,
 	}
 	if m.railCollapsed {
 		t.Fatalf("precondition: railCollapsed should start false")

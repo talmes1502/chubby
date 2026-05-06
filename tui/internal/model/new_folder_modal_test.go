@@ -18,6 +18,9 @@ func TestCtrlF_OpensNewFolderModal(t *testing.T) {
 		mode:           ModeMain,
 		compose:        views.NewCompose(),
 		groupCollapsed: map[string]bool{},
+		// Pane-aware refactor (v0.1.4): chubby chords (Ctrl+F here)
+		// are rail-only; conversation pane forwards to PTY.
+		activePane: PaneRail,
 	}
 	out, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlF})
 	got := out.(Model)
@@ -40,6 +43,9 @@ func TestNewFolder_EnterCreatesFolder(t *testing.T) {
 		mode:           ModeMain,
 		compose:        views.NewCompose(),
 		groupCollapsed: map[string]bool{},
+		// Pane-aware refactor (v0.1.4): chubby chords (Ctrl+F here)
+		// are rail-only; conversation pane forwards to PTY.
+		activePane: PaneRail,
 	}
 	// Open modal.
 	out, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlF})
@@ -79,6 +85,7 @@ func TestNewFolder_DuplicateRejected(t *testing.T) {
 		compose:        views.NewCompose(),
 		groupCollapsed: map[string]bool{},
 		folders:        LoadFolders(),
+		activePane:     PaneRail,
 	}
 	out, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlF})
 	m = out.(Model)
@@ -101,6 +108,9 @@ func TestNewFolder_EscCancels(t *testing.T) {
 		mode:           ModeMain,
 		compose:        views.NewCompose(),
 		groupCollapsed: map[string]bool{},
+		// Pane-aware refactor (v0.1.4): chubby chords (Ctrl+F here)
+		// are rail-only; conversation pane forwards to PTY.
+		activePane: PaneRail,
 	}
 	out, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlF})
 	m = out.(Model)

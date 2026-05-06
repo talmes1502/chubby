@@ -24,6 +24,7 @@ func TestCtrlD_FirstPressJustToasts(t *testing.T) {
 		newSinceScroll: map[string]int{},
 		sessions:       []Session{{ID: "s1", Name: "api", Status: StatusIdle, Kind: KindWrapped}},
 		focused:        0,
+		activePane:     PaneRail,
 	}
 	out, cmd := m.handleKeyMain(tea.KeyMsg{Type: tea.KeyCtrlD})
 	mm := out.(Model)
@@ -50,6 +51,7 @@ func TestCtrlD_SecondPressReleases(t *testing.T) {
 		newSinceScroll: map[string]int{},
 		sessions:       []Session{{ID: "s1", Name: "api", Status: StatusIdle, Kind: KindWrapped}},
 		focused:        0,
+		activePane:     PaneRail,
 	}
 	// Arm the confirm.
 	out, _ := m.handleKeyMain(tea.KeyMsg{Type: tea.KeyCtrlD})
@@ -88,6 +90,7 @@ func TestCtrlD_StaleConfirmReArms(t *testing.T) {
 		pendingDeleteID: "s1",
 		// Pretend the first press was way before the window.
 		pendingDeleteAt: time.Now().Add(-time.Minute),
+		activePane:      PaneRail,
 	}
 	out, cmd := m.handleKeyMain(tea.KeyMsg{Type: tea.KeyCtrlD})
 	if cmd != nil {

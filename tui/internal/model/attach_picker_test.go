@@ -19,6 +19,10 @@ func TestAttachPicker_OpensOnCtrlA(t *testing.T) {
 		conversation:   map[string][]Turn{},
 		historyLoaded:  map[string]bool{},
 		groupCollapsed: map[string]bool{},
+		// Ctrl+A is a chubby chord — pane-aware refactor (v0.1.4)
+		// requires PaneRail to invoke chubby keymap. Conversation
+		// pane forwards Ctrl+A to claude's PTY.
+		activePane: PaneRail,
 	}
 	out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
 	m2 := out.(Model)

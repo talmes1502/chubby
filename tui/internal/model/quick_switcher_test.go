@@ -168,6 +168,7 @@ func TestCtrlP_OpensSwitcherWhenFocusedIsNotDead(t *testing.T) {
 		groupCollapsed: map[string]bool{},
 		scrollOffset:   map[string]int{},
 		newSinceScroll: map[string]int{},
+		activePane:     PaneRail,
 	}
 	out, _ := m.handleKeyMain(tea.KeyMsg{Type: tea.KeyCtrlP})
 	m2 := out.(Model)
