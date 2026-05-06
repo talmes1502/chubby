@@ -19,10 +19,28 @@ set -euo pipefail
 
 REPO_GIT_URL="https://github.com/talmes1502/chubby.git"
 RELEASE_BASE="https://github.com/talmes1502/chubby/releases/download"
-# Pin to a specific version so the prebuilt binary matches whatever
-# the python wheel claims. Override via env if you need a non-default.
-CHUBBY_VERSION="${CHUBBY_VERSION:-0.1.0}"
+RELEASE_API="https://api.github.com/repos/talmes1502/chubby/releases/latest"
 BIN_DIR="${HOME}/.local/bin"
+
+# Resolve the version to install. Order:
+#   1. CHUBBY_VERSION=… in the env  → pin to that tag (e.g. for downgrades)
+#   2. /releases/latest from GitHub  → tracks whatever's been published
+# Without a fallback the script would refuse to run if the GitHub API
+# is unreachable — that's worse for the user than letting them
+# override with the env var.
+if [[ -z "${CHUBBY_VERSION:-}" ]]; then
+    CHUBBY_VERSION=$(
+        curl -fsSL "${RELEASE_API}" 2>/dev/null \
+            | sed -nE 's/.*"tag_name": *"v([^"]+)".*/\1/p' \
+            | head -1
+    )
+fi
+if [[ -z "${CHUBBY_VERSION:-}" ]]; then
+    printf '\033[0;31m✗ could not resolve latest release tag from %s\033[0m\n' \
+        "${RELEASE_API}" >&2
+    printf '\033[0;31m  set CHUBBY_VERSION=x.y.z to install a specific version\033[0m\n' >&2
+    exit 1
+fi
 
 red()   { printf '\033[0;31m%s\033[0m\n' "$*" >&2; }
 green() { printf '\033[0;32m%s\033[0m\n' "$*"; }
