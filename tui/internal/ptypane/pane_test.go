@@ -173,6 +173,59 @@ func TestKeyToBytes_Arrows(t *testing.T) {
 	}
 }
 
+// TestKeyToBytes_ShiftTabIsBackTab: claude's permission-mode toggle
+// is bound to Shift+Tab, which the terminal protocol encodes as
+// "back tab" (CSI Z = ESC [ Z). Pre-fix this returned nil, so a
+// Shift+Tab in chubby's conversation pane was silently dropped.
+func TestKeyToBytes_ShiftTabIsBackTab(t *testing.T) {
+	got := string(KeyToBytes(tea.KeyMsg{Type: tea.KeyShiftTab}))
+	if got != "\x1b[Z" {
+		t.Fatalf("Shift+Tab encoded as %q, want %q (CSI Z back-tab)", got, "\x1b[Z")
+	}
+}
+
+// TestKeyToBytes_FunctionKeys: F1..F12 follow the xterm-modern
+// convention. F1-F4 use SS3 (ESC O P/Q/R/S), F5+ use CSI N~. Without
+// these, function-key presses would silently drop after reaching the
+// PTY router.
+func TestKeyToBytes_FunctionKeys(t *testing.T) {
+	cases := map[tea.KeyType]string{
+		tea.KeyF1:  "\x1bOP",
+		tea.KeyF2:  "\x1bOQ",
+		tea.KeyF3:  "\x1bOR",
+		tea.KeyF4:  "\x1bOS",
+		tea.KeyF5:  "\x1b[15~",
+		tea.KeyF6:  "\x1b[17~",
+		tea.KeyF7:  "\x1b[18~",
+		tea.KeyF8:  "\x1b[19~",
+		tea.KeyF9:  "\x1b[20~",
+		tea.KeyF10: "\x1b[21~",
+		tea.KeyF11: "\x1b[23~",
+		tea.KeyF12: "\x1b[24~",
+	}
+	for kt, want := range cases {
+		got := string(KeyToBytes(tea.KeyMsg{Type: kt}))
+		if got != want {
+			t.Fatalf("F-key %v encoded as %q, want %q", kt, got, want)
+		}
+	}
+}
+
+// TestKeyToBytes_AltRunePrefixesEsc: Alt+letter / Alt+symbol must
+// arrive at claude as ESC + rune so meta-key chords (e.g. Alt+B for
+// word-back in readline) work. Pre-fix the Alt flag was silently
+// stripped.
+func TestKeyToBytes_AltRunePrefixesEsc(t *testing.T) {
+	got := string(KeyToBytes(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune("b"),
+		Alt:   true,
+	}))
+	if got != "\x1bb" {
+		t.Fatalf("Alt+b encoded as %q, want %q (ESC+b)", got, "\x1bb")
+	}
+}
+
 func TestKeyToBytes_BackspaceIsDEL(t *testing.T) {
 	// Modern terminals (and claude's input layer) expect DEL=0x7f
 	// for Backspace, not BS=0x08. macOS's bash-in-Terminal uses 0x7f
@@ -199,10 +252,10 @@ func TestKeyToBytes_CtrlLetters(t *testing.T) {
 }
 
 func TestKeyToBytes_UnsupportedReturnsNil(t *testing.T) {
-	// F-keys aren't covered yet — they should silently return nil
-	// so the caller can decide how to handle (drop / log / pass to
-	// chubby-level handler).
-	if KeyToBytes(tea.KeyMsg{Type: tea.KeyF1}) != nil {
-		t.Fatalf("F1 unexpectedly returned bytes; update test if you've added it")
+	// Sanity that genuinely-unknown key types still drop to nil so
+	// the caller can no-op rather than emit garbage. KeyNull is the
+	// "no key" sentinel — never produced by a real keystroke.
+	if KeyToBytes(tea.KeyMsg{Type: tea.KeyNull}) != nil {
+		t.Fatalf("KeyNull should encode to nil")
 	}
 }

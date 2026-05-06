@@ -240,10 +240,20 @@ func (p *Pane) Size() (w, h int) {
 //   - arrows (CSI A/B/C/D)
 //   - Home/End/PgUp/PgDn/Delete (CSI H/F/5~/6~/3~)
 //   - Ctrl-letter combos (Ctrl+A..Z → bytes 0x01..0x1A)
+//   - Shift+Tab (CSI Z, "back tab" — claude's permission-mode toggle)
+//   - Function keys F1..F12 (xterm-style sequences)
+//   - Alt-modifier on KeyRunes (ESC + rune; standard meta encoding)
 //
-// Keys NOT covered: function keys (F1..F12), Alt-modifier, Shift+Tab.
-// These can be added once a real claude flow demands them.
+// Encoding sources: Shift+Tab is the xterm-defined "back tab"
+// (CSI Z); F-keys follow the xterm modern set (F1-F4 = SS3-PQRS,
+// F5+ = CSI N~). Alt+rune is the meta-prefix convention every
+// readline-based REPL understands.
 func KeyToBytes(msg tea.KeyMsg) []byte {
+	// Alt+rune: ESC + rune bytes. Has to come before the bare-rune
+	// branch below so the meta prefix gets prepended.
+	if msg.Alt && msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+		return append([]byte{0x1b}, []byte(string(msg.Runes))...)
+	}
 	if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
 		return []byte(string(msg.Runes))
 	}
@@ -266,6 +276,11 @@ func KeyToBytes(msg tea.KeyMsg) []byte {
 		return []byte{0x7f}
 	case tea.KeyTab:
 		return []byte{'\t'}
+	case tea.KeyShiftTab:
+		// CSI Z (back tab). What claude reads to toggle permission
+		// modes; without this branch a Shift+Tab in the conversation
+		// pane was silently dropped.
+		return []byte("\x1b[Z")
 	case tea.KeyEsc:
 		return []byte{0x1b}
 	case tea.KeySpace:
@@ -288,6 +303,34 @@ func KeyToBytes(msg tea.KeyMsg) []byte {
 		return []byte("\x1b[6~")
 	case tea.KeyDelete:
 		return []byte("\x1b[3~")
+	case tea.KeyF1:
+		return []byte("\x1bOP")
+	case tea.KeyF2:
+		return []byte("\x1bOQ")
+	case tea.KeyF3:
+		return []byte("\x1bOR")
+	case tea.KeyF4:
+		return []byte("\x1bOS")
+	case tea.KeyF5:
+		return []byte("\x1b[15~")
+	case tea.KeyF6:
+		// Note: chubby intercepts F6 in handleKeyConversation /
+		// handleKeyRail, so this branch is only reached if the user
+		// has remapped F6's intercept away. Encoding included for
+		// completeness.
+		return []byte("\x1b[17~")
+	case tea.KeyF7:
+		return []byte("\x1b[18~")
+	case tea.KeyF8:
+		return []byte("\x1b[19~")
+	case tea.KeyF9:
+		return []byte("\x1b[20~")
+	case tea.KeyF10:
+		return []byte("\x1b[21~")
+	case tea.KeyF11:
+		return []byte("\x1b[23~")
+	case tea.KeyF12:
+		return []byte("\x1b[24~")
 	}
 	if msg.Type >= tea.KeyCtrlA && msg.Type <= tea.KeyCtrlZ {
 		return []byte{byte(msg.Type-tea.KeyCtrlA) + 1}
