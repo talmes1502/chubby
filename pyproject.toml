@@ -19,6 +19,7 @@ dependencies = [
   "aiosqlite>=0.20",
   "pydantic>=2.7",
   "ulid-py>=1.1",
+  "packaging>=24",
 ]
 
 [project.scripts]

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import typer
+from packaging.version import InvalidVersion, Version
 
 from chubby import __version__
 from chubby.daemon import paths
@@ -119,32 +120,17 @@ def latest_release_tag(*, use_cache: bool = True) -> str | None:
 
 
 def is_newer(remote: str, local: str) -> bool:
-    """Compare two PEP 440-ish versions tuple-wise. Treats any non-
-    integer trailing components (``.dev0``, ``+abc123``) as smaller
-    than the bare release tuple — so ``0.1.2.dev0 < 0.1.2`` and the
-    user gets prompted to leave a dev build for the matching tag."""
-
-    def _key(v: str) -> tuple[int, ...]:
-        # Strip PEP 440 local segment (``0.1.2+gabc123`` → ``0.1.2``)
-        # and dev/pre-release suffixes (``0.1.2.dev0`` → ``0.1.2``).
-        # We treat "remote == local-stripped" as "not newer" so a
-        # dev build of the same release tag still prompts, but a
-        # dev build of a strictly later release does not over-prompt.
-        v = v.split("+", 1)[0]
-        for sep in (".dev", ".rc", ".a", ".b", ".pre"):
-            if sep in v:
-                v = v.split(sep, 1)[0]
-                break
-        out: list[int] = []
-        for part in v.split("."):
-            try:
-                out.append(int(part))
-            except ValueError:
-                # Non-integer component — give up the comparison.
-                return tuple(out)
-        return tuple(out)
-
-    return _key(remote) > _key(local)
+    """``remote > local`` per PEP 440. Delegates to ``packaging`` —
+    the same library pip / pipx / setuptools use to order releases —
+    so dev / rc / post / epoch / local-segment all behave correctly
+    (e.g. ``0.1.2.dev0 < 0.1.2``, prompting a dev-build user to
+    install the matching tagged release). Returns ``False`` on any
+    parse failure rather than raising, so a malformed tag from
+    GitHub never blocks ``chubby start``."""
+    try:
+        return Version(remote) > Version(local)
+    except InvalidVersion:
+        return False
 
 
 def prompt_to_update_if_available() -> None:

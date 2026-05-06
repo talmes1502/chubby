@@ -18,30 +18,28 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def test_is_newer_strict_release_tuple_compare() -> None:
+def test_is_newer_release_tuple_compare() -> None:
+    """Sanity that we're using PEP 440 ordering (delegated to
+    ``packaging.version``). We don't re-test ``packaging``'s edge-
+    case matrix — those are its contract — just spot-check the
+    representative cases the prompt cares about."""
+    # Release vs release.
     assert _update_check.is_newer("0.2.0", "0.1.9")
     assert _update_check.is_newer("0.1.10", "0.1.9")
     assert not _update_check.is_newer("0.1.0", "0.1.0")
     assert not _update_check.is_newer("0.1.0", "0.2.0")
-
-
-def test_is_newer_dev_suffix_treated_smaller() -> None:
-    """A dev build of a release should compare as < the release
-    itself, so a user on `0.1.2.dev0` gets prompted to install
-    `0.1.2`. But a dev build of a *future* release isn't smaller
-    than the previous release."""
-    # Same release tuple, dev-suffix is "older" (no — same).
-    # 0.1.2 == 0.1.2.dev0 release-tuple-wise, so neither is newer
-    # than the other; the prompt skips.
-    assert not _update_check.is_newer("0.1.2", "0.1.2.dev0")
-    assert not _update_check.is_newer("0.1.2.dev0", "0.1.2")
-    # 0.1.3 dev is still > 0.1.2.
+    # Dev build of a release is *less than* the release per PEP 440 —
+    # so a user on 0.1.2.dev0 gets prompted to install 0.1.2.
+    assert _update_check.is_newer("0.1.2", "0.1.2.dev0")
+    # And a dev build of a future release is still newer.
     assert _update_check.is_newer("0.1.3.dev0", "0.1.2")
 
 
-def test_is_newer_local_version_segment_stripped() -> None:
-    # `0.1.2+gabc123` is treated as 0.1.2 for comparison.
-    assert not _update_check.is_newer("0.1.2", "0.1.2+gabc123")
+def test_is_newer_returns_false_on_garbage_tag() -> None:
+    """A malformed tag from GitHub must not raise — failure to parse
+    means "no upgrade prompt" rather than crashing ``chubby start``."""
+    assert not _update_check.is_newer("not-a-version", "0.1.0")
+    assert not _update_check.is_newer("0.1.0", "?")
 
 
 def test_latest_release_tag_uses_cache_within_ttl(

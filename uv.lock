@@ -38,6 +38,7 @@ name = "chubby-orchestrator"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
+    { name = "packaging" },
     { name = "ptyprocess" },
     { name = "pydantic" },
     { name = "typer" },
@@ -58,6 +59,7 @@ dev = [
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
+    { name = "packaging", specifier = ">=24" },
     { name = "ptyprocess", specifier = ">=0.7" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2" },
