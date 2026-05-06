@@ -105,3 +105,101 @@ func TestThinkingStatus_StartsAtFlipToThinking(t *testing.T) {
 		t.Fatalf("thinkingStartedAt[s1] should be cleared after flip away from thinking")
 	}
 }
+
+// TestSeenAwaiting_ClearedWhenSessionLeavesAwaitingUser: when a
+// session that was previously awaiting_user transitions back to
+// thinking (or any other state), drop its seen mark so the next
+// entry into awaiting_user re-summons the ⚡ glyph.
+func TestSeenAwaiting_ClearedWhenSessionLeavesAwaitingUser(t *testing.T) {
+	m := New(&rpc.Client{})
+	m.sessions = []Session{{ID: "s1", Name: "alpha"}}
+	m.seenAwaiting = map[string]bool{"s1": true}
+	flip := func(status string) evMsg {
+		return evMsg(rpc.Event{
+			Method: "event",
+			Params: map[string]any{
+				"event_method": "session_status_changed",
+				"event_params": map[string]any{
+					"session_id": "s1",
+					"status":     status,
+				},
+			},
+		})
+	}
+	out, _ := m.Update(flip("thinking"))
+	mm := out.(Model)
+	if _, ok := mm.seenAwaiting["s1"]; ok {
+		t.Fatalf("seenAwaiting[s1] should be cleared on flip away from awaiting_user")
+	}
+}
+
+// TestSeenAwaiting_NotMarkedWhenAwaitingArrivesOnNonFocusedSession:
+// the ⚡ alert is the whole point of the badge — a status change
+// to awaiting_user on a session the user isn't focused on must NOT
+// mark seen, or the user would never see the alert for unread
+// responses.
+func TestSeenAwaiting_NotMarkedWhenAwaitingArrivesOnNonFocusedSession(t *testing.T) {
+	m := New(&rpc.Client{})
+	m.sessions = []Session{
+		{ID: "s1", Name: "alpha"},
+		{ID: "s2", Name: "beta"},
+	}
+	m.focused = 0 // user is on s1
+	flip := func(sid, status string) evMsg {
+		return evMsg(rpc.Event{
+			Method: "event",
+			Params: map[string]any{
+				"event_method": "session_status_changed",
+				"event_params": map[string]any{
+					"session_id": sid,
+					"status":     status,
+				},
+			},
+		})
+	}
+	out, _ := m.Update(flip("s2", "awaiting_user"))
+	mm := out.(Model)
+	if mm.seenAwaiting["s2"] {
+		t.Fatalf("seenAwaiting[s2] must stay unset — user is on s1, not s2")
+	}
+}
+
+// TestSeenAwaiting_MarkedWhenAwaitingArrivesOnFocusedSession: the
+// dual case — claude finished generating in the session the user
+// is already looking at; no ⚡ needed, the response is already
+// on screen.
+func TestSeenAwaiting_MarkedWhenAwaitingArrivesOnFocusedSession(t *testing.T) {
+	m := New(&rpc.Client{})
+	m.sessions = []Session{{ID: "s1", Name: "alpha"}}
+	m.focused = 0
+	out, _ := m.Update(evMsg(rpc.Event{
+		Method: "event",
+		Params: map[string]any{
+			"event_method": "session_status_changed",
+			"event_params": map[string]any{
+				"session_id": "s1",
+				"status":     "awaiting_user",
+			},
+		},
+	}))
+	mm := out.(Model)
+	if !mm.seenAwaiting["s1"] {
+		t.Fatalf("seenAwaiting[s1] should be marked when awaiting arrives on the focused session")
+	}
+}
+
+// TestSetFocused_MarksSessionSeenIfAwaiting: focusing a session
+// that's already awaiting_user marks it seen, so the rail glyph
+// drops back to ○.
+func TestSetFocused_MarksSessionSeenIfAwaiting(t *testing.T) {
+	m := New(&rpc.Client{})
+	m.sessions = []Session{
+		{ID: "s1", Name: "alpha"},
+		{ID: "s2", Name: "beta", Status: StatusAwaitingUser},
+	}
+	m.focused = 0
+	m.setFocused(1) // jump to s2 (awaiting)
+	if !m.seenAwaiting["s2"] {
+		t.Fatalf("setFocused on awaiting_user session should mark seen")
+	}
+}

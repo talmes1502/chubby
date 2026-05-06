@@ -429,6 +429,15 @@ type Model struct {
 	// bottom (scrollOffset[sid] == 0).
 	newSinceScroll map[string]int
 
+	// seenAwaiting tracks per-session whether the user has acknowledged
+	// the current "awaiting_user" state by being focused on the session
+	// (i.e. the conversation pane is rendering its content). The rail's
+	// ⚡ glyph is suppressed for sessions in this set — it should mean
+	// "unread response", not just "claude is idle". Cleared whenever
+	// the session leaves awaiting_user (so the next entry into
+	// awaiting_user starts unseen and re-summons the ⚡).
+	seenAwaiting map[string]bool
+
 	// lastViewportInnerW / lastViewportInnerH cache the last rendered
 	// viewport's inner dimensions (after subtracting the rounded
 	// border). renderViewport sets these as a side-effect; the
@@ -672,6 +681,7 @@ func New(c *rpc.Client) Model {
 		historyLoaded:     map[string]bool{},
 		scrollOffset:      map[string]int{},
 		newSinceScroll:    map[string]int{},
+		seenAwaiting:      map[string]bool{},
 		lastUsage:         map[string]sessionUsage{},
 		thinkingStartedAt:   map[string]time.Time{},
 		generationStartedAt: map[string]time.Time{},
@@ -1154,7 +1164,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case listMsg:
 		m.sessions = []Session(msg)
 		if m.focused >= len(m.sessions) {
-			m.focused = 0
+			m.setFocused(0)
 		}
 		// Seed thinkingStartedAt for any session the snapshot brings
 		// already in `thinking` state — without this, the banner shows
@@ -1184,7 +1194,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.startupFocusName != "" {
 			for i, s := range m.sessions {
 				if s.Name == m.startupFocusName {
-					m.focused = i
+					m.setFocused(i)
 					break
 				}
 			}
@@ -1193,7 +1203,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pendingFocusID != "" {
 			for i, s := range m.sessions {
 				if s.ID == m.pendingFocusID {
-					m.focused = i
+					m.setFocused(i)
 					m.activePane = PaneConversation
 					break
 				}
@@ -1444,7 +1454,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if s := m.focusedSession(); s != nil {
 						focusedSid = s.ID
 					}
-					if sid != focusedSid {
+					if m.seenAwaiting == nil {
+						m.seenAwaiting = map[string]bool{}
+					}
+					if sid == focusedSid {
+						// User is already looking at this session — the
+						// response landed under their nose. No ⚡ alert,
+						// no toast.
+						m.seenAwaiting[sid] = true
+					} else {
+						// New unread response on a non-focused session.
+						// Show the ⚡ glyph (by NOT being in seenAwaiting)
+						// and pop a 5s toast.
+						delete(m.seenAwaiting, sid)
 						for _, s := range m.sessions {
 							if s.ID == sid {
 								m.toasts = append(m.toasts, toast{
@@ -1456,6 +1478,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							}
 						}
 					}
+				} else {
+					// Leaving awaiting_user (back to thinking, or dead) —
+					// drop the seen mark so the next entry into
+					// awaiting_user re-summons the ⚡.
+					delete(m.seenAwaiting, sid)
 				}
 				return m, tea.Batch(m.refreshSessions(), m.listenEvents())
 			case EventSessionAdded, EventSessionRenamed,
@@ -2327,7 +2354,7 @@ func (m Model) handleKeyRail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return m, nil
 				case RailRowSession:
 					if m.focused != r.SessionIdx {
-						m.focused = r.SessionIdx
+						m.setFocused(r.SessionIdx)
 						return m, nil
 					}
 					return m, m.routeKeyToPty(msg)
@@ -2457,7 +2484,7 @@ func (m Model) handleKeyGrep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if sid, _ := r["session_id"].(string); sid != "" {
 				for i, s := range m.sessions {
 					if s.ID == sid {
-						m.focused = i
+						m.setFocused(i)
 						break
 					}
 				}
@@ -2511,7 +2538,7 @@ func (m Model) handleKeySearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 			if !found {
-				m.focused = rows[0].SessionIdx
+				m.setFocused(rows[0].SessionIdx)
 			}
 			m.syncRailCursorToFocus()
 		}
@@ -4050,7 +4077,7 @@ func (m Model) View() string {
 			focusedID = s.ID
 		}
 		searchHeader := m.searchHeaderText()
-		left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h, m.spinnerFrame, railActive, cmdView)
+		left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h, m.spinnerFrame, railActive, cmdView, m.seenAwaiting)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, rightStack, editorCol)
 	case !railVisible && editorVisible:
 		body = lipgloss.JoinHorizontal(lipgloss.Top, rightStack, editorCol)
@@ -4061,7 +4088,7 @@ func (m Model) View() string {
 			focusedID = s.ID
 		}
 		searchHeader := m.searchHeaderText()
-		left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h, m.spinnerFrame, railActive, cmdView)
+		left := renderList(rows, m.railCursor, focusedID, m.groupCollapsed, searchHeader, leftW, h, m.spinnerFrame, railActive, cmdView, m.seenAwaiting)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, rightStack)
 	default:
 		body = rightStack
@@ -4129,9 +4156,14 @@ func (m Model) renderEditorPane(w, h int) string {
 // the chrome stays visible regardless of which modal is active.
 func (m Model) wrapWithChrome(body string) string {
 	composeHasText := m.compose.Value() != ""
+	// Top-bar "N idle ⚡" counts only sessions with an UNREAD response
+	// — sessions the user has already focused on (and thus seen the
+	// response) drop off the count even if their status is still
+	// awaiting_user. Mirrors the rail glyph: ⚡ = needs attention,
+	// ○ = seen-and-idle.
 	idle := 0
 	for _, s := range m.sessions {
-		if s.Status == StatusAwaitingUser {
+		if s.Status == StatusAwaitingUser && !m.seenAwaiting[s.ID] {
 			idle++
 		}
 	}
@@ -4806,6 +4838,31 @@ func (m Model) focusedSession() *Session {
 	return &m.sessions[m.focused]
 }
 
+// setFocused updates m.focused to idx and, if the new focused
+// session is in awaiting_user, marks it as "seen" so the rail's ⚡
+// glyph clears immediately. Centralised because many code paths
+// (rail-row click, F7/F8 cycle, search jump, quick switcher, focus
+// helpers) all flip m.focused; without going through this helper a
+// site that forgot to call markFocusedAwaitingSeen would leave a
+// stale ⚡ on the session the user just focused.
+func (m *Model) setFocused(idx int) {
+	m.focused = idx
+	m.markFocusedAwaitingSeen()
+}
+
+// markFocusedAwaitingSeen sets seenAwaiting[id] for the currently
+// focused session iff it's awaiting_user. No-op otherwise.
+func (m *Model) markFocusedAwaitingSeen() {
+	s := m.focusedSession()
+	if s == nil || s.Status != StatusAwaitingUser {
+		return
+	}
+	if m.seenAwaiting == nil {
+		m.seenAwaiting = map[string]bool{}
+	}
+	m.seenAwaiting[s.ID] = true
+}
+
 // focusedSessionID returns the focused session's id, or "" if there
 // is no focused session. Convenience for the scroll helpers which key
 // every operation by session id.
@@ -4992,7 +5049,7 @@ func (m *Model) focusRailRow() {
 	}
 	r := rows[m.railCursor]
 	if r.Kind == RailRowSession {
-		m.focused = r.SessionIdx
+		m.setFocused(r.SessionIdx)
 	}
 }
 
@@ -5078,7 +5135,7 @@ func (m *Model) cycleFocusedSession(dir int) {
 		// inside a collapsed group). Default to the first visible session.
 		next = 0
 	}
-	m.focused = sessRows[next].SessionIdx
+	m.setFocused(sessRows[next].SessionIdx)
 	m.syncRailCursorToFocus()
 }
 

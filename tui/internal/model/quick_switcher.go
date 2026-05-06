@@ -71,7 +71,7 @@ func (m Model) handleKeyQuickSwitcher(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		matches := m.quickSwitcherMatches(m.quickSwitch.query)
 		if m.quickSwitch.cursor >= 0 && m.quickSwitch.cursor < len(matches) {
-			m.focused = matches[m.quickSwitch.cursor]
+			m.setFocused(matches[m.quickSwitch.cursor])
 		}
 		m.mode = ModeMain
 		m.quickSwitch = quickSwitcherState{}

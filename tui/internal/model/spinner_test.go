@@ -48,19 +48,20 @@ func TestSpinnerTick_StopsWhenNoneThinking(t *testing.T) {
 // TestStatusGlyph_ThinkingAnimates asserts the glyph cycles through
 // the spinner frames so successive renders draw different braille dots.
 func TestStatusGlyph_ThinkingAnimates(t *testing.T) {
-	a := statusGlyph("thinking", 0)
-	b := statusGlyph("thinking", 1)
+	a := statusGlyph("thinking", 0, false)
+	b := statusGlyph("thinking", 1, false)
 	if a == b {
 		t.Fatalf("expected adjacent thinking frames to differ; got %q == %q", a, b)
 	}
 	// Frame index must wrap.
-	wrap := statusGlyph("thinking", len(spinnerRunes))
+	wrap := statusGlyph("thinking", len(spinnerRunes), false)
 	if wrap != a {
 		t.Fatalf("expected wrap-around at frame=len; got %q vs %q", wrap, a)
 	}
 }
 
 // TestStatusGlyph_OtherStatuses returns the documented static glyphs.
+// awaiting_user defaults to ⚡ when seen=false (response unread).
 func TestStatusGlyph_OtherStatuses(t *testing.T) {
 	cases := map[string]string{
 		"idle":          "○",
@@ -69,10 +70,20 @@ func TestStatusGlyph_OtherStatuses(t *testing.T) {
 		"unknown":       "·",
 	}
 	for status, want := range cases {
-		got := statusGlyph(SessionStatus(status), 0)
+		got := statusGlyph(SessionStatus(status), 0, false)
 		if got != want {
-			t.Fatalf("statusGlyph(%q): want %q got %q", status, want, got)
+			t.Fatalf("statusGlyph(%q, seen=false): want %q got %q", status, want, got)
 		}
+	}
+}
+
+// TestStatusGlyph_AwaitingSeenIsCalmDot: an awaiting_user session
+// the user has already focused on switches from ⚡ to ○ — same calm
+// glyph as a regular idle session, since there's no longer any
+// "unread response" to draw attention to.
+func TestStatusGlyph_AwaitingSeenIsCalmDot(t *testing.T) {
+	if got := statusGlyph(StatusAwaitingUser, 0, true); got != "○" {
+		t.Fatalf("statusGlyph(awaiting_user, seen=true) = %q, want ○", got)
 	}
 }
 
@@ -83,7 +94,7 @@ func TestRenderList_ShowsSpinnerForThinkingSession(t *testing.T) {
 	rows := []RailRow{
 		{Kind: RailRowSession, Session: Session{ID: "s1", Name: "alpha", Color: "#fff", Status: "thinking"}},
 	}
-	out := renderList(rows, 0, "s1", map[string]bool{}, "", 40, 10, 0, true, "")
+	out := renderList(rows, 0, "s1", map[string]bool{}, "", 40, 10, 0, true, "", nil)
 	if !strings.Contains(out, string(spinnerRunes[0])) {
 		t.Fatalf("expected spinner frame %q in rail output, got: %q", string(spinnerRunes[0]), out)
 	}

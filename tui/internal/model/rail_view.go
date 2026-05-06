@@ -29,11 +29,18 @@ var spinnerStyle = views.Warn
 // string is already styled (color/bold) — callers should not wrap it
 // in extra Foreground styles for "thinking" or they'll fight the
 // vivid-yellow accent that distinguishes a working session from idle.
-func statusGlyph(status SessionStatus, frame int) string {
+//
+// When the session is awaiting_user, ``seen`` toggles between the
+// attention-grabbing ⚡ (response unread) and the calm ○ (already
+// acknowledged by the user being focused on the session).
+func statusGlyph(status SessionStatus, frame int, seen bool) string {
 	switch status {
 	case StatusThinking:
 		return spinnerStyle.Render(string(spinnerRunes[frame%len(spinnerRunes)]))
 	case StatusAwaitingUser:
+		if seen {
+			return "○"
+		}
 		return "⚡"
 	case StatusDead:
 		return "✕"
@@ -115,7 +122,7 @@ const (
 // rendered just below the "Sessions" title so the user sees the active
 // filter; active toggles the border color so the user sees which pane
 // owns arrow / paging keys (D8).
-func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[string]bool, searchHeader string, w, h, spinnerFrame int, active bool, cmdView string) string {
+func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[string]bool, searchHeader string, w, h, spinnerFrame int, active bool, cmdView string, seenAwaiting map[string]bool) string {
 	var b strings.Builder
 	b.WriteString(views.Bold.Render(" Sessions") + "\n")
 	if searchHeader != "" {
@@ -162,7 +169,7 @@ func renderList(rows []RailRow, cursor int, focusedID string, collapsed map[stri
 				// no extra marker so the column never shifts.
 				nameStyle = nameStyle.Bold(true)
 			}
-			glyph := statusGlyph(s.Status, spinnerFrame)
+			glyph := statusGlyph(s.Status, spinnerFrame, seenAwaiting[s.ID])
 			gitGlyph := branchGlyph(s.GitAhead, s.GitBehind)
 			portsGlyph := portsBadge(s.Ports)
 			line := leftCol(i == cursor) + "   " +
