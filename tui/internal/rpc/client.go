@@ -164,8 +164,22 @@ func (c *Client) Reconnect() error {
 }
 
 func (c *Client) readLoop() {
+	// Capture the current bufio.Reader at start instead of dereferencing
+	// c.br every iteration. Reconnect() swaps c.br when it builds a new
+	// connection; if this loop dereferenced c.br on the next iteration,
+	// the OLD readLoop (still mid-read on the old conn) and the NEW
+	// readLoop (this goroutine, freshly spawned by Reconnect) would
+	// both wind up reading from the SAME bufio.Reader, racing on its
+	// internal state — the "slice bounds out of range [3:0]" panic
+	// inside bufio.Read is exactly that race. Capturing locally makes
+	// each readLoop own its reader for its lifetime: when its conn
+	// closes, readFrame errors, the loop exits, and the next Reconnect
+	// goroutine doesn't share state with this one.
+	c.mu.Lock()
+	br := c.br
+	c.mu.Unlock()
 	for {
-		body, err := readFrame(c.br)
+		body, err := readFrame(br)
 		if err != nil {
 			c.mu.Lock()
 			// Wake any pending callers so they get a context deadline rather than
