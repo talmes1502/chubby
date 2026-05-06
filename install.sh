@@ -89,27 +89,21 @@ if [[ "$PY_MAJOR" -lt 3 ]] || { [[ "$PY_MAJOR" -eq 3 ]] && [[ "$PY_MINOR" -lt 11
 fi
 
 # --- python side: chubby / chubbyd / chubby-claude -------------------------
-# CHUBBY_FORCE=1 wipes the existing pipx venv + binary first so the
-# install starts from a clean slate. Useful when a previous install
-# left bad state (wrong package on PyPI, stale virtualenv, etc.).
-if [[ "${CHUBBY_FORCE:-0}" == "1" ]]; then
-    blue "▸ CHUBBY_FORCE=1 — uninstalling any existing chubby first"
-    pipx uninstall chubby-orchestrator 2>/dev/null || true
-    pipx uninstall chubby 2>/dev/null || true
-    rm -f "${BIN_DIR}/chubby-tui"
-fi
-
+# Always uninstall before install so a re-run is a clean upgrade.
+# pipx upgrade is a no-op for git+URL installs (no version index to
+# diff against), and `pipx install` refuses if the package is
+# already there. The previous CHUBBY_FORCE=1 escape hatch didn't
+# work via `CHUBBY_FORCE=1 curl ... | bash` because the env var
+# doesn't propagate across the pipe — it attached to curl, not
+# bash. Uninstall-then-install is idempotent and matches the user's
+# mental model: "rerun install.sh and I'm on the latest."
 blue "▸ installing Python CLI via pipx (from ${REPO_GIT_URL})"
-if pipx list --short 2>/dev/null | grep -q '^chubby-orchestrator '; then
-    # `pipx upgrade` only refreshes from a versioned index — for a
-    # git+URL install it's a no-op, so reinstall to actually pull
-    # latest main. CHUBBY_FORCE=1 above already uninstalled, so this
-    # branch is for "I just want the latest main" upgrades.
-    pipx uninstall chubby-orchestrator >/dev/null 2>&1 || true
-    pipx install --quiet "git+${REPO_GIT_URL}"
-else
-    pipx install --quiet "git+${REPO_GIT_URL}"
-fi
+pipx uninstall chubby-orchestrator >/dev/null 2>&1 || true
+# Legacy install-name (ours used to be just "chubby" before the
+# PyPI-collision rename). Sweep it too so two stale venvs don't
+# linger.
+pipx uninstall chubby >/dev/null 2>&1 || true
+pipx install --quiet "git+${REPO_GIT_URL}"
 
 # --- go side: prebuilt chubby-tui binary -----------------------------------
 asset="chubby-tui_${CHUBBY_VERSION}_${os}_${arch}.tar.gz"

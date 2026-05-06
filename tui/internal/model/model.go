@@ -41,13 +41,18 @@ const turnsCap = 500
 type ActivePane int
 
 const (
-	// PaneRail is the default — Up/Down walks the rail cursor,
-	// PgUp/PgDn moves it by 5 rows, Enter focuses the cursored
-	// session or toggles a folder header.
-	PaneRail ActivePane = iota
-	// PaneConversation routes arrow / paging keys to the per-session
-	// scroll helpers.
-	PaneConversation
+	// PaneConversation is the default — typing flows straight into
+	// claude's PTY (the visual cursor sits there, so users expect
+	// keystrokes to land there). Pre-default-flip we used PaneRail
+	// and 'k' / 'j' / 'up' / 'down' walked the rail cursor instead
+	// of typing into claude, which surprised users who never pressed
+	// F6 to switch panes. F6 still toggles to PaneRail for
+	// vim-style rail nav when wanted.
+	PaneConversation ActivePane = iota
+	// PaneRail: Up/Down walks the rail cursor, PgUp/PgDn moves it
+	// by 5 rows, Enter focuses the cursored session or toggles a
+	// folder header.
+	PaneRail
 )
 
 // Mode controls which modal pane is on top of the main two-pane layout.

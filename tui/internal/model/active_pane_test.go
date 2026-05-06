@@ -21,19 +21,19 @@ func TestF6_TogglesActivePane(t *testing.T) {
 		scrollOffset:   map[string]int{},
 		newSinceScroll: map[string]int{},
 	}
-	if m.activePane != PaneRail {
-		t.Fatalf("default activePane should be PaneRail, got %v", m.activePane)
+	if m.activePane != PaneConversation {
+		t.Fatalf("default activePane should be PaneConversation (typing → claude); got %v", m.activePane)
 	}
 	f6 := tea.KeyMsg{Type: tea.KeyF6}
 	out, _ := m.handleKeyMain(f6)
 	m = out.(Model)
-	if m.activePane != PaneConversation {
-		t.Fatalf("after first F6 expected PaneConversation, got %v", m.activePane)
+	if m.activePane != PaneRail {
+		t.Fatalf("after first F6 expected PaneRail, got %v", m.activePane)
 	}
 	out, _ = m.handleKeyMain(f6)
 	m = out.(Model)
-	if m.activePane != PaneRail {
-		t.Fatalf("after second F6 expected PaneRail, got %v", m.activePane)
+	if m.activePane != PaneConversation {
+		t.Fatalf("after second F6 expected PaneConversation, got %v", m.activePane)
 	}
 }
 
