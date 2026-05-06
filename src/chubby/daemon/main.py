@@ -839,10 +839,26 @@ def _build_registry(
         """
         p = ReleaseSessionParams.model_validate(params)
         s = await reg.get(p.id)
+        # If the session was just spawned, claude_session_id may not be
+        # bound yet — the wrapper sets it after claude writes its first
+        # JSONL line, which usually lands within ~1s but can take longer
+        # on a cold start. Poll briefly so a user typing :detach right
+        # after spawning isn't told to "wait and retry by hand". The
+        # wait is bounded so a session whose claude crashed before
+        # binding still surfaces the error rather than hanging.
+        if not s.claude_session_id:
+            for _ in range(50):  # 50 × 100ms = 5s max wait
+                await asyncio.sleep(0.1)
+                s = await reg.get(p.id)
+                if s.claude_session_id:
+                    break
         if not s.claude_session_id:
             raise ChubError(
                 ErrorCode.INVALID_PAYLOAD,
-                "session has no bound claude session id yet — wait a moment and retry",
+                "session has no bound claude session id yet — claude may "
+                "still be starting (or it failed to launch). Try again in "
+                "a moment, or use Ctrl+D twice to release without spawning "
+                "an external claude.",
             )
         result = ReleaseSessionResult(
             claude_session_id=s.claude_session_id,
@@ -985,10 +1001,21 @@ def _build_registry(
                 ErrorCode.INVALID_PAYLOAD,
                 "/refresh-claude only applies to wrapped or spawned sessions",
             )
+        # Same wait-for-bind as release_session: a /refresh-claude
+        # immediately after spawn is a reasonable thing to do, and
+        # asking the user to "wait and retry" by hand is bad UX when
+        # the daemon can wait for them.
+        if s.claude_session_id is None:
+            for _ in range(50):
+                await asyncio.sleep(0.1)
+                s = await reg.get(p.id)
+                if s.claude_session_id is not None:
+                    break
         if s.claude_session_id is None:
             raise ChubError(
                 ErrorCode.INVALID_PAYLOAD,
-                "session has no bound claude session id yet; wait a moment and retry",
+                "session has no bound claude session id yet — claude may "
+                "still be starting. Try again in a moment.",
             )
         write = reg._wrapper_writers.get(p.id)
         if write is None:
