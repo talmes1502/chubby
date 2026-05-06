@@ -66,8 +66,12 @@ release:
   github:
     owner: talmes1502
     name: chubby
-  # Draft so a human eyes the auto-generated notes before flipping
-  # the release public. Tag-pushing -rcN auto-marks prerelease.
-  draft: true
+  # Publish directly so the on-startup update prompt and ``chubby
+  # update`` in users' shells see the new release as soon as the
+  # workflow finishes — no manual "publish draft" step. To stage
+  # a release without making it visible, tag a prerelease form
+  # like ``v0.1.3-rc1`` and ``prerelease: auto`` will mark it as
+  # such (most consumers' update logic skips prereleases).
+  draft: false
   prerelease: auto
   name_template: 'v{{ .Version }}'
