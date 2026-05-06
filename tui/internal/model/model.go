@@ -560,6 +560,19 @@ type historyRunSessionsMsg struct {
 	preview  string
 }
 type toastTickMsg struct{}
+
+// deferredEscMsg is the late-delivery vehicle for an Esc that we
+// withheld from claude's PTY because claude was THINKING when it
+// arrived. If escEscWindow elapses without a second Esc landing
+// (which would have triggered the pane-toggle and discarded this
+// one), we deliver the original Esc to claude — letting solo-Esc
+// keep its "cancel generation" semantics, just with the window's
+// worth of latency. The scheduledAt field lets the reducer detect
+// "a second Esc came after me, drop me" by comparing against the
+// model's lastEscAt.
+type deferredEscMsg struct {
+	scheduledAt time.Time
+}
 type reconnectAttemptMsg struct{}
 type reconnectedMsg struct{}
 type spawnDoneMsg struct{ id string }
@@ -1539,6 +1552,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.toasts = kept
 		return m, toastTick()
+	case deferredEscMsg:
+		// Tick from a withheld first-Esc (claude-thinking branch in
+		// handleKeyConversation / handleKeyRail). Deliver only if no
+		// later Esc landed after this one was scheduled — a second
+		// Esc updates lastEscAt to its own timestamp (or zeros it on
+		// pane switch), so a non-matching lastEscAt means the chord
+		// already happened or another Esc is now in flight; drop.
+		if m.lastEscAt.Equal(msg.scheduledAt) {
+			m.lastEscAt = time.Time{}
+			return m, m.routeKeyToPty(tea.KeyMsg{Type: tea.KeyEsc})
+		}
+		return m, nil
 	case spinnerTickMsg:
 		m.spinnerFrame++
 		// Only re-tick while at least one session is thinking; idle
@@ -1949,16 +1974,30 @@ func (m Model) handleKeyConversation(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		now := time.Now()
 		if !m.lastEscAt.IsZero() && now.Sub(m.lastEscAt) <= escEscWindow {
-			// Second Esc in the window → switch pane. Don't deliver
-			// this one to claude (the first already cancelled there;
-			// claude doesn't need a second cancel).
+			// Second Esc in the window → switch pane. The first Esc
+			// is either already gone (claude was idle, delivered
+			// immediately) or was buffered by the deferredEscMsg
+			// path; either way, don't deliver THIS one to claude.
 			m.lastEscAt = time.Time{}
 			m.activePane = PaneRail
 			return m, nil
 		}
-		// First Esc: deliver to claude AND start the window. If a
-		// second comes within escEscWindow, the branch above fires.
 		m.lastEscAt = now
+		// If claude is thinking, withhold delivery of this first Esc
+		// until escEscWindow elapses. Without this, a user who pressed
+		// Esc-Esc to switch panes would see claude's generation
+		// cancelled by the first Esc before chubby could recognize
+		// the chord. If no second Esc arrives, deferredEscMsg fires
+		// and delivers the original Esc to claude.
+		if s := m.focusedSession(); s != nil && s.Status == StatusThinking {
+			scheduledAt := now
+			return m, tea.Tick(escEscWindow, func(time.Time) tea.Msg {
+				return deferredEscMsg{scheduledAt: scheduledAt}
+			})
+		}
+		// Idle claude: deliver immediately. A first Esc here doesn't
+		// lose generation state, and the "second Esc in window"
+		// branch above still recognises the chord either way.
 		return m, m.routeKeyToPty(msg)
 	case "f6":
 		// Kept as an alias for muscle memory and as an escape hatch
@@ -2012,10 +2051,10 @@ func (m Model) handleKeyRail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// through to claude's PTY (claude has its own Tab semantics).
 		return m, m.routeKeyToPty(msg)
 	case "esc":
-		// Esc-Esc symmetry with the conversation pane: a deliberate
-		// double-tap flips back. First Esc still goes to claude (its
-		// PTY is still attached even from the rail), so a stray Esc
-		// doesn't change panes by itself.
+		// Esc-Esc symmetry with the conversation pane. If claude is
+		// thinking, the first Esc is buffered (see handleKeyConversation)
+		// so accidentally double-tapping while in the rail doesn't
+		// cancel generation either.
 		now := time.Now()
 		if !m.lastEscAt.IsZero() && now.Sub(m.lastEscAt) <= escEscWindow {
 			m.lastEscAt = time.Time{}
@@ -2023,6 +2062,12 @@ func (m Model) handleKeyRail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.lastEscAt = now
+		if s := m.focusedSession(); s != nil && s.Status == StatusThinking {
+			scheduledAt := now
+			return m, tea.Tick(escEscWindow, func(time.Time) tea.Msg {
+				return deferredEscMsg{scheduledAt: scheduledAt}
+			})
+		}
 		return m, m.routeKeyToPty(msg)
 	case "f6":
 		m.activePane = PaneConversation
