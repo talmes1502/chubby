@@ -62,5 +62,18 @@ class SubscriptionHub:
             )
             try:
                 await s.write(payload)
-            except (ConnectionResetError, BrokenPipeError):
+            except OSError:
+                # Defensive net for the close-vs-broadcast race
+                # window: connection closes → server.serve's
+                # finally fires on_close callbacks (which include
+                # the subscribe_events unsubscribe) → between the
+                # connection close and that cleanup, an in-flight
+                # broadcast may already be iterating a stale sub
+                # snapshot. Catching ENOTCONN / EPIPE / ECONNRESET
+                # via the OSError parent lets the broadcast complete
+                # for the healthy subs and drops the dead one. The
+                # primary defense is subscribe_events registering
+                # ctx.on_close — without that, this catch was firing
+                # on every register_wrapped because subscribers
+                # leaked forever.
                 await self.unsubscribe(s.sub_id)

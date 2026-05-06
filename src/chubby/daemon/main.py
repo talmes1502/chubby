@@ -1048,6 +1048,22 @@ def _build_registry(
 
     async def subscribe_events(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:
         sub_id = await subs.subscribe(ctx.write)
+        # Auto-unsubscribe when the underlying connection closes.
+        # Without this, the subscription's `write` closure (bound to
+        # this connection's frame writer) outlives the connection
+        # itself — the hub keeps the entry, but the writer's socket
+        # is dead. The next broadcast hits OSError ENOTCONN ("Socket
+        # is not connected") on the stale write, which an unrelated
+        # handler (register_wrapped → session_added → broadcast)
+        # would surface as INTERNAL — killing wrappers mid-spawn for
+        # reasons completely unconnected to their own work. Mirrors
+        # the pattern register_wrapped uses (ctx.on_close →
+        # on_wrapper_disconnect).
+
+        async def _unsub_on_disconnect() -> None:
+            await subs.unsubscribe(sub_id)
+
+        ctx.on_close(_unsub_on_disconnect)
         return {"subscription_id": sub_id}
 
     async def unsubscribe(params: dict[str, Any], ctx: CallContext) -> dict[str, Any]:

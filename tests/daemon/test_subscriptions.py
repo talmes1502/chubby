@@ -72,3 +72,55 @@ async def test_broken_pipe_auto_unsubscribes() -> None:
     await hub.broadcast("session_added", {})
     # subsequent broadcasts are no-ops because the sub was removed.
     assert sid not in hub._subs
+
+
+async def test_enotconn_auto_unsubscribes() -> None:
+    """ENOTCONN (Errno 57, "Socket is not connected") on a sub's
+    transport must NOT crash the broadcast — drop the sub and carry
+    on. Pre-fix this raised through register_wrapped, which the
+    daemon then surfaced as INTERNAL, killing a freshly-spawning
+    wrapper before claude could even register."""
+    import errno
+
+    hub = SubscriptionHub()
+    raised = False
+
+    async def writer(p: bytes) -> None:
+        nonlocal raised
+        raised = True
+        # Plain OSError(ENOTCONN) — what asyncio raises when you
+        # try to write to a unix socket whose peer-side has gone
+        # into a half-open state.
+        raise OSError(errno.ENOTCONN, "Socket is not connected")
+
+    sid = await hub.subscribe(writer)
+    # Must not raise.
+    await hub.broadcast("session_added", {})
+    assert raised, "writer should have been called once"
+    assert sid not in hub._subs, "broken sub must be unsubscribed"
+
+
+async def test_one_broken_sub_does_not_block_others() -> None:
+    """A broken sub at the front of the iteration must not stop
+    later subs from receiving the broadcast."""
+    import errno
+
+    hub = SubscriptionHub()
+    bad_seen = 0
+    good: list[bytes] = []
+
+    async def bad(p: bytes) -> None:
+        nonlocal bad_seen
+        bad_seen += 1
+        raise OSError(errno.ENOTCONN, "Socket is not connected")
+
+    async def healthy(p: bytes) -> None:
+        good.append(p)
+
+    bad_sid = await hub.subscribe(bad)
+    good_sid = await hub.subscribe(healthy)
+    await hub.broadcast("session_added", {})
+    assert bad_seen == 1
+    assert len(good) == 1, "healthy sub must still receive"
+    assert bad_sid not in hub._subs
+    assert good_sid in hub._subs
