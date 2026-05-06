@@ -49,6 +49,13 @@ class Registry:
         self._flush_tasks: dict[str, asyncio.Task[None]] = {}
         self._notify_tasks: set[asyncio.Task[None]] = set()
         self._tmux_stops: dict[str, asyncio.Event] = {}
+        # Per-session "claude_session_id is bound" event. Lazily
+        # created by wait_for_claude_binding; set by
+        # set_claude_session_id. Replaces the prior 100ms polling
+        # loop in release_session / refresh_claude_session — callers
+        # block on the event and wake the instant binding lands
+        # instead of paying ~50ms average latency on a polling tick.
+        self._bind_events: dict[str, asyncio.Event] = {}
 
     # _pty_ring_cap bounds memory per session — claude's tighter
     # outputs (200-300 bytes per turn) mean 64 KB easily holds a
@@ -288,16 +295,25 @@ class Registry:
         """Bind a Claude transcript session id to a chubby session.
 
         Used by ``watch_for_transcript`` once it has discovered the
-        JSONL file for a wrapped/spawned session. Persists the new id
-        and broadcasts ``session_id_resolved`` so the TUI can take
-        whatever action it wants on resolution.
+        JSONL file for a wrapped/spawned session. Persists the new id,
+        broadcasts ``session_id_resolved``, and wakes any RPC handler
+        that's awaiting the binding (release_session,
+        refresh_claude_session) via the per-session bind event.
         """
         async with self._lock:
             s = self._by_id.get(session_id)
             if s is None:
                 raise ChubError(ErrorCode.SESSION_NOT_FOUND, f"no session with id {session_id}")
             s.claude_session_id = claude_session_id
+            ev = self._bind_events.get(session_id)
         await self._persist(s)
+        # Wake awaiters AFTER persisting so a handler that's racing
+        # the bind reads the same state we just committed (a future
+        # reg.get returns the persisted Session). Setting outside
+        # the lock is fine — Event.set is atomic and waiters re-fetch
+        # via reg.get() under the lock anyway.
+        if ev is not None:
+            ev.set()
         await self._emit(
             {
                 "event": "session_id_resolved",
@@ -305,6 +321,41 @@ class Registry:
                 "claude_session_id": claude_session_id,
             }
         )
+
+    async def wait_for_claude_binding(self, session_id: str, timeout: float) -> bool:
+        """Block until ``claude_session_id`` is bound on ``session_id``,
+        or ``timeout`` seconds elapse. Returns True on success, False
+        on timeout. Returns True immediately if already bound.
+
+        Replaces the polling loop in release_session /
+        refresh_claude_session. Event-driven: ``set_claude_session_id``
+        fires the per-session asyncio.Event and the awaiter wakes
+        within microseconds instead of up to 100ms.
+
+        Cleans up the event after waking so the dict doesn't grow
+        unbounded across many spawn/release cycles.
+        """
+        async with self._lock:
+            s = self._by_id.get(session_id)
+            if s is None:
+                raise ChubError(ErrorCode.SESSION_NOT_FOUND, f"no session with id {session_id}")
+            if s.claude_session_id:
+                return True
+            ev = self._bind_events.get(session_id)
+            if ev is None:
+                ev = asyncio.Event()
+                self._bind_events[session_id] = ev
+        try:
+            await asyncio.wait_for(ev.wait(), timeout=timeout)
+        except TimeoutError:
+            return False
+        finally:
+            # Drop the event from the registry once we're done with
+            # it. set_claude_session_id only fires once per session,
+            # so no future awaiter needs this entry.
+            async with self._lock:
+                self._bind_events.pop(session_id, None)
+        return True
 
     async def update_status(self, session_id: str, status: SessionStatus) -> None:
         async with self._lock:
