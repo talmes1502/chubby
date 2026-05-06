@@ -63,7 +63,7 @@ func rawStatusBar(mode StatusMode, composeHasText bool, broadcastField int, atta
 		if composeHasText {
 			return "Enter send · Shift+Enter newline · @name redirect · Tab complete · Esc clear"
 		}
-		return "Tab switch pane · Ctrl+\\ cycle session · /cmd or @name · Ctrl+B broadcast · Ctrl+H history · Ctrl+N new · Ctrl+F new folder · Ctrl+A attach · Ctrl+P respawn · Ctrl+R rename · Ctrl+K search · Ctrl+Y copy · Ctrl+O file · ? help · q quit · Ctrl+J toggle rail"
+		return "F6 switch pane · Ctrl+\\ cycle session · Ctrl+D×2 release · /cmd or @name · Ctrl+B broadcast · Ctrl+H history · Ctrl+N new · Ctrl+F new folder · Ctrl+A attach · Ctrl+P respawn · Ctrl+R rename · Ctrl+K search · Ctrl+Y copy · Ctrl+O file · ? help · q quit · Ctrl+J toggle rail"
 	case StatusModeBroadcast:
 		switch broadcastField {
 		case 0:

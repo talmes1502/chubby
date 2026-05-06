@@ -8,10 +8,10 @@ import (
 	"github.com/talmes1502/chubby/tui/internal/views"
 )
 
-// TestTab_TogglesActivePane: with no compose text and no autocomplete
-// to consume, Tab toggles activePane between PaneRail and
-// PaneConversation.
-func TestTab_TogglesActivePane(t *testing.T) {
+// TestF6_TogglesActivePane: F6 (the new pane-switch key — Tab no
+// longer eats the keystroke) toggles activePane between PaneRail
+// and PaneConversation.
+func TestF6_TogglesActivePane(t *testing.T) {
 	m := Model{
 		mode:           ModeMain,
 		compose:        views.NewCompose(),
@@ -24,16 +24,16 @@ func TestTab_TogglesActivePane(t *testing.T) {
 	if m.activePane != PaneRail {
 		t.Fatalf("default activePane should be PaneRail, got %v", m.activePane)
 	}
-	tab := tea.KeyMsg{Type: tea.KeyTab}
-	out, _ := m.handleKeyMain(tab)
+	f6 := tea.KeyMsg{Type: tea.KeyF6}
+	out, _ := m.handleKeyMain(f6)
 	m = out.(Model)
 	if m.activePane != PaneConversation {
-		t.Fatalf("after first Tab expected PaneConversation, got %v", m.activePane)
+		t.Fatalf("after first F6 expected PaneConversation, got %v", m.activePane)
 	}
-	out, _ = m.handleKeyMain(tab)
+	out, _ = m.handleKeyMain(f6)
 	m = out.(Model)
 	if m.activePane != PaneRail {
-		t.Fatalf("after second Tab expected PaneRail, got %v", m.activePane)
+		t.Fatalf("after second F6 expected PaneRail, got %v", m.activePane)
 	}
 }
 

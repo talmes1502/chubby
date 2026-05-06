@@ -19,4 +19,7 @@ def test_help_lists_commands() -> None:
 def test_tui_help_works() -> None:
     result = runner.invoke(app, ["tui", "--help"])
     assert result.exit_code == 0
-    assert "force-download" in result.stdout
+    # --force-download was retired when we dropped the auto-download
+    # path; just verify the command's options are listed.
+    assert "--focus" in result.stdout
+    assert "--detached" in result.stdout

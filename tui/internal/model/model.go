@@ -474,7 +474,29 @@ type Model struct {
 	// /detach no longer uses it (see doChubDetach for the new
 	// release-session semantics).
 	startupFocusName string
+
+	// pendingFocusID, when non-empty, is the session id we want to
+	// focus on the next listMsg. Set by spawnDoneMsg so a freshly
+	// spawned session lands focused (otherwise the user has to find
+	// the new row manually). Cleared after one listMsg so a later
+	// refresh doesn't re-snap focus away from wherever the user has
+	// since moved it.
+	pendingFocusID string
+
+	// Two-tap Ctrl+D delete confirmation. First press sets
+	// pendingDeleteID to the focused session's id and stamps
+	// pendingDeleteAt; a second press within the window fires
+	// release_session. Single-press alone is a no-op (with a toast)
+	// so a stray Ctrl+D doesn't nuke a real session by accident.
+	pendingDeleteID string
+	pendingDeleteAt time.Time
 }
+
+// pendingDeleteWindow is how long the user has to confirm a Ctrl+D
+// release. Short enough that a stale prompt doesn't survive the user
+// drifting back to typing, long enough that a deliberate double-tap
+// reaches it.
+const pendingDeleteWindow = 3 * time.Second
 
 // sessionUsage holds the running token totals + rolling samples for
 // one session. samples is bounded at 10 entries — enough to span the
@@ -524,7 +546,7 @@ type historyRunSessionsMsg struct {
 type toastTickMsg struct{}
 type reconnectAttemptMsg struct{}
 type reconnectedMsg struct{}
-type spawnDoneMsg struct{}
+type spawnDoneMsg struct{ id string }
 type spawnFailedMsg struct{ err error }
 
 // spawnRecentCwdsLoadedMsg lands when the spawn modal's first Ctrl+P
@@ -1139,6 +1161,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.startupFocusName = ""
 		}
+		if m.pendingFocusID != "" {
+			for i, s := range m.sessions {
+				if s.ID == m.pendingFocusID {
+					m.focused = i
+					m.activePane = PaneConversation
+					break
+				}
+			}
+			m.pendingFocusID = ""
+		}
 		m.syncRailCursorToFocus()
 		// First time we see each session, lazily load its prior transcript
 		// from the daemon so the viewport stays populated across `chubby down`
@@ -1534,6 +1566,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.refreshSessions()
 	case spawnDoneMsg:
 		m.mode = ModeMain
+		// Pin focus on the new session — resolved on the next listMsg
+		// (the daemon's spawn_session response carries the id but
+		// m.sessions doesn't have the new row until refreshSessions
+		// returns).
+		m.pendingFocusID = msg.id
 		// doSpawn writes the new session's folder assignment to disk
 		// via SaveFolders, but the in-memory m.folders is stale until
 		// reloaded. Without this reload, BuildRailRows falls back to
@@ -1866,9 +1903,16 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.tryComplete() {
 			return m, nil
 		}
-		// D8: bare Tab with no autocomplete to consume now toggles the
-		// active pane. Power users who want the legacy "cycle focused
-		// session directly" behavior have Ctrl+Tab / Shift+Tab.
+		// Bare Tab with no autocomplete to consume falls through to
+		// claude's PTY (claude has its own Tab semantics for command
+		// completion etc.). Pane switching now lives on F6 — the vim/
+		// screen/tmux convention for "next window/pane" — so a typed
+		// Tab inside claude isn't intercepted by chubby.
+		return m, m.routeKeyToPty(msg)
+	case "f6":
+		// Toggle the active pane. Replaces the pre-F6 binding on Tab
+		// so users can type Tab into claude without it being eaten
+		// by chubby's pane switcher.
 		if m.activePane == PaneRail {
 			m.activePane = PaneConversation
 		} else {
@@ -2011,6 +2055,29 @@ func (m Model) handleKeyMain(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+	case "ctrl+d":
+		// Two-tap release: first press toasts a confirm prompt;
+		// second press within pendingDeleteWindow on the same session
+		// fires release_session. Stale state is invisible to the user
+		// because it expires implicitly — we only check the timestamp
+		// when Ctrl+D fires again.
+		s := m.focusedSession()
+		if s == nil {
+			return m, nil
+		}
+		now := time.Now()
+		if m.pendingDeleteID == s.ID && now.Sub(m.pendingDeleteAt) <= pendingDeleteWindow {
+			m.pendingDeleteID = ""
+			return m, m.doDeleteFocusedSession(s.ID, s.Name)
+		}
+		m.pendingDeleteID = s.ID
+		m.pendingDeleteAt = now
+		m.toasts = append(m.toasts, toast{
+			sessionName: fmt.Sprintf("Ctrl+D again to release %q", s.Name),
+			color:       "11", // bright yellow — caution
+			expiresAt:   now.Add(pendingDeleteWindow),
+		})
+		return m, nil
 	case "ctrl+a":
 		m.attach = attachState{
 			selected: map[int]bool{},
@@ -2638,6 +2705,36 @@ func (m Model) spawnCwdRecentNext() tea.Cmd {
 // see the new session id, which only the spawn RPC's reply carries —
 // piping it back through a bare spawnDoneMsg would force every caller
 // to know about folders.
+// doDeleteFocusedSession fires release_session on the daemon, the
+// same RPC the rail-palette ``:detach`` and CLI ``chubby release``
+// use. release_session runs the session's teardown scripts, kills
+// the wrapper, removes any chubby-owned worktree, and drops the
+// session from the in-memory registry. The on-disk JSONL transcript
+// is untouched, so the conversation stays resumable via
+// ``claude --resume <id>`` outside chubby.
+//
+// Falls back to detach_session when the session has no bound claude
+// id yet (release_session refuses those because its result tuple
+// requires the id).
+func (m Model) doDeleteFocusedSession(sid, name string) tea.Cmd {
+	c := m.client
+	return func() tea.Msg {
+		if _, err := c.Call(context.Background(), "release_session",
+			map[string]any{"id": sid}); err != nil {
+			// release_session refuses sessions without a bound claude
+			// id; fall through to detach_session which marks DEAD
+			// without needing the id.
+			if _, err2 := c.Call(context.Background(), "detach_session",
+				map[string]any{"id": sid}); err2 != nil {
+				return composeFailedMsg{
+					fmt.Errorf("release %s: %w", name, err2),
+				}
+			}
+		}
+		return chubCommandDoneMsg{toast: fmt.Sprintf("released %s", name)}
+	}
+}
+
 func (m Model) doSpawn(name, cwd string, tags []string, folder string, branch string) tea.Cmd {
 	c := m.client
 	if tags == nil {
@@ -2660,23 +2757,24 @@ func (m Model) doSpawn(name, cwd string, tags []string, folder string, branch st
 		if err != nil {
 			return spawnFailedMsg{err}
 		}
-		if folder == "" {
-			return spawnDoneMsg{}
-		}
-		// Best-effort folder assignment. We don't fail the spawn on an
-		// assignment error — the session is already created and the
-		// user can /movetofolder it later.
+		// Always parse the returned id so the spawnDoneMsg handler
+		// can pin focus on the new session — folder assignment is
+		// secondary and only runs when a folder was requested.
 		var r struct {
 			Session struct {
 				ID string `json:"id"`
 			} `json:"session"`
 		}
-		if err := json.Unmarshal(raw, &r); err == nil && r.Session.ID != "" {
+		_ = json.Unmarshal(raw, &r)
+		if folder != "" && r.Session.ID != "" {
+			// Best-effort folder assignment. We don't fail the spawn
+			// on an assignment error — the session is already created
+			// and the user can /movetofolder it later.
 			st := LoadFolders()
 			st.Assign(folder, r.Session.ID)
 			_ = SaveFolders(st)
 		}
-		return spawnDoneMsg{}
+		return spawnDoneMsg{id: r.Session.ID}
 	}
 }
 
@@ -4144,7 +4242,8 @@ const helpBody = `chubby-tui keys
        (↑↓ / PgUp PgDn scroll · Esc / q / Enter to close)
 
 NAVIGATION
-  Tab                switch active pane (rail / conversation)
+  F6                 switch active pane (rail / conversation)
+  Ctrl+D (twice)     release the focused session and remove from chubby
   Ctrl+\             cycle focused session forward
   Shift+Tab          cycle focused session (reverse)
   Up/Down/PgUp/PgDn  rail: walk cursor · conversation: scroll
