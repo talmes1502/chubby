@@ -1643,6 +1643,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 		return m, m.refreshSessions()
+	case foldersChangedMsg:
+		// Off-band folders.json edit (currently doDeleteFolder; the
+		// /movetofolder/etc. paths use chubCommandDoneMsg + LoadFolders).
+		// Patch in-memory state so the rail re-renders without going
+		// through chubCommandDoneMsg's refresh round-trip.
+		m.folders = msg.state
+		if msg.toast != "" {
+			m.toasts = append(m.toasts, toast{
+				sessionName: msg.toast,
+				color:       "10",
+				expiresAt:   time.Now().Add(2 * time.Second),
+			})
+		}
+		return m, nil
 	case composeFailedMsg:
 		m.err = msg.err
 		return m, nil
@@ -2198,27 +2212,60 @@ func (m Model) handleKeyRail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "ctrl+d":
-		// Two-tap release: first press toasts a confirm prompt;
-		// second press within pendingDeleteWindow on the same session
-		// fires release_session. Stale state is invisible to the user
-		// because it expires implicitly. Conversation-pane Ctrl+D is
-		// claude's EOF and is forwarded by handleKeyConversation.
-		s := m.focusedSession()
-		if s == nil {
+		// Two-tap release. Acts on the CURSORED row, not the focused
+		// session — so the user can navigate to a dead session row,
+		// or to a folder header, and delete THAT specific thing
+		// instead of the conversation pane's current focus. Three
+		// targets:
+		//   - RailRowSession (live or dead) → release_session
+		//     (CLI's chubby release fallback path handles the
+		//     no-claude-id and dead cases too).
+		//   - RailRowFolder              → delete the folder; sessions
+		//     inside become unfiled. Folder data is TUI-side state
+		//     in folders.json; no daemon RPC.
+		//   - Anything else (separator)  → no-op.
+		// First press toasts a yellow confirm; second press within
+		// pendingDeleteWindow on the same target fires the action.
+		// Conversation-pane Ctrl+D is claude's EOF and is forwarded
+		// by handleKeyConversation, so we never reach here in that
+		// mode.
+		rows := m.railRows()
+		if m.railCursor < 0 || m.railCursor >= len(rows) {
 			return m, nil
 		}
+		r := rows[m.railCursor]
 		now := time.Now()
-		if m.pendingDeleteID == s.ID && now.Sub(m.pendingDeleteAt) <= pendingDeleteWindow {
-			m.pendingDeleteID = ""
-			return m, m.doDeleteFocusedSession(s.ID, s.Name)
+		switch r.Kind {
+		case RailRowSession:
+			s := r.Session
+			pendingKey := "session:" + s.ID
+			if m.pendingDeleteID == pendingKey && now.Sub(m.pendingDeleteAt) <= pendingDeleteWindow {
+				m.pendingDeleteID = ""
+				return m, m.doDeleteFocusedSession(s.ID, s.Name)
+			}
+			m.pendingDeleteID = pendingKey
+			m.pendingDeleteAt = now
+			m.toasts = append(m.toasts, toast{
+				sessionName: fmt.Sprintf("Ctrl+D again to release %q", s.Name),
+				color:       "11",
+				expiresAt:   now.Add(pendingDeleteWindow),
+			})
+			return m, nil
+		case RailRowFolder:
+			pendingKey := "folder:" + r.GroupName
+			if m.pendingDeleteID == pendingKey && now.Sub(m.pendingDeleteAt) <= pendingDeleteWindow {
+				m.pendingDeleteID = ""
+				return m, m.doDeleteFolder(r.GroupName)
+			}
+			m.pendingDeleteID = pendingKey
+			m.pendingDeleteAt = now
+			m.toasts = append(m.toasts, toast{
+				sessionName: fmt.Sprintf("Ctrl+D again to delete folder %q (sessions become unfiled)", r.GroupName),
+				color:       "11",
+				expiresAt:   now.Add(pendingDeleteWindow),
+			})
+			return m, nil
 		}
-		m.pendingDeleteID = s.ID
-		m.pendingDeleteAt = now
-		m.toasts = append(m.toasts, toast{
-			sessionName: fmt.Sprintf("Ctrl+D again to release %q", s.Name),
-			color:       "11", // bright yellow — caution
-			expiresAt:   now.Add(pendingDeleteWindow),
-		})
 		return m, nil
 	case "ctrl+a":
 		m.attach = attachState{
@@ -2834,6 +2881,33 @@ func (m Model) doDeleteFocusedSession(sid, name string) tea.Cmd {
 		}
 		return chubCommandDoneMsg{toast: fmt.Sprintf("released %s", name)}
 	}
+}
+
+// doDeleteFolder removes a folder from TUI-side state. Sessions
+// previously inside become unfiled — the daemon doesn't know about
+// folders, so no RPC is needed; we just edit folders.json. Returns
+// a chubCommandDoneMsg toast on success, composeFailedMsg on a disk
+// error (rare; only if folders.json is read-only or full).
+func (m Model) doDeleteFolder(name string) tea.Cmd {
+	return func() tea.Msg {
+		st := LoadFolders()
+		if err := st.DeleteFolder(name); err != nil {
+			return composeFailedMsg{fmt.Errorf("delete folder %q: %w", name, err)}
+		}
+		if err := SaveFolders(st); err != nil {
+			return composeFailedMsg{fmt.Errorf("save folders.json: %w", err)}
+		}
+		return foldersChangedMsg{state: st, toast: fmt.Sprintf("deleted folder %q", name)}
+	}
+}
+
+// foldersChangedMsg signals that folders.json changed off-band (e.g.
+// via doDeleteFolder). The reducer applies the new state and pops a
+// toast. Distinct from chubCommandDoneMsg because we need to also
+// patch m.folders to refresh the rail rendering.
+type foldersChangedMsg struct {
+	state FoldersState
+	toast string
 }
 
 func (m Model) doSpawn(name, cwd string, tags []string, folder string, branch string) tea.Cmd {
@@ -4389,7 +4463,14 @@ PANE MODEL  (K9s/tmux-style)
     The full keymap below. Press Esc-Esc or F6 to leave.
 
 NAVIGATION  (rail pane)
-  Ctrl+D (twice)     release the focused session and remove from chubby
+  Ctrl+D (twice)     delete the row under the cursor:
+                       · session row → release_session (works on
+                         dead "session ended" rows too — falls back
+                         to detach when no claude id)
+                       · folder header → delete folder; sessions
+                         inside become unfiled, claude keeps running
+                     First press toasts a yellow confirm; second
+                     press within 3s fires the action.
   F8 / Ctrl+\        cycle focused session forward
   F7 / Shift+Tab     cycle focused session reverse
   Up/Down/PgUp/PgDn  walk rail cursor (5 rows for PgUp/PgDn)

@@ -240,6 +240,23 @@ func (s *FoldersState) CreateFolder(name string) error {
 	return nil
 }
 
+// DeleteFolder removes a folder entirely. Sessions previously
+// assigned to it become unfiled (the rail re-renders them under
+// the "unfiled" separator). The session rows themselves are
+// untouched — claude keeps running. Returns an error only if the
+// folder doesn't exist; deleting an empty folder is a no-op-with-
+// removal, identical to deleting a populated one.
+func (s *FoldersState) DeleteFolder(name string) error {
+	if s.Folders == nil {
+		return fmt.Errorf("folder %q does not exist", name)
+	}
+	if _, ok := s.Folders[name]; !ok {
+		return fmt.Errorf("folder %q does not exist", name)
+	}
+	delete(s.Folders, name)
+	return nil
+}
+
 // AllFolderNames returns folder names sorted alphabetically (case-
 // insensitive). Used by the rail builder to render folders in a stable
 // order.

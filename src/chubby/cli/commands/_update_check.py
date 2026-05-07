@@ -2,19 +2,28 @@
 
 Pulls the latest release tag from GitHub's releases/latest API,
 compares it to the currently-installed ``__version__``, and (when
-called from ``chubby start``) prompts the user to upgrade. Cached for
-24h on disk so we don't hit GitHub on every start.
+called from ``chubby start``) auto-installs the new version then
+re-execs the originating command so the user lands inside the
+newer chubby with no extra typing. Cached for 24h on disk so we
+don't hit GitHub on every start.
 
-Side-effect-free: never modifies anything, only reads (or, in
-``run_update_now``, exec's the official install.sh). Failure modes
-(no network, GitHub down, malformed JSON) all degrade silently — a
-broken update check should never block ``chubby start``.
+Side-effect-free for the read paths (``latest_release_tag`` etc).
+``run_update_now`` and ``auto_update_and_relaunch`` invoke
+install.sh — the former exec's bash and never returns; the latter
+runs install.sh as a subprocess and then re-execs chubby with the
+caller's argv so the start flow continues seamlessly.
+
+Failure modes (no network, GitHub down, malformed JSON, install.sh
+exit) all degrade silently — a broken update check must never
+block ``chubby start``.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 import urllib.request
@@ -133,22 +142,62 @@ def is_newer(remote: str, local: str) -> bool:
         return False
 
 
-def prompt_to_update_if_available() -> None:
-    """``chubby start`` calls this. If a newer release exists, ask
-    once; on yes, exec install.sh and never return. On no / cache hit
-    / no network: stay silent."""
-    tag = latest_release_tag()
+def auto_update_and_relaunch() -> None:
+    """``chubby start`` calls this BEFORE bringing the daemon up.
+
+    If a newer release exists, run install.sh inline (subprocess,
+    not exec — we want to come back), and on success re-exec the
+    user's chubby command with their original argv so the start
+    flow continues inside the new version. The user types `chubby
+    start` once, sees ``upgrading...`` for ~30 s, then the TUI
+    opens — no second invocation needed.
+
+    Skipped (returns silently) when:
+      * ``CHUBBY_NO_AUTO_UPDATE=1`` is in the env (escape hatch);
+      * stdin is not a TTY (pipx-run / CI: don't surprise scripts
+        with an unsolicited 30-second download);
+      * GitHub is unreachable / cache says no newer version;
+      * install.sh exits non-zero (we keep the old version
+        running and surface the failure).
+
+    Bypasses the 24h cache so a release tagged 30 s ago is picked
+    up instead of being shadowed by yesterday's "no update" cache
+    entry.
+    """
+    if os.environ.get("CHUBBY_NO_AUTO_UPDATE"):
+        return
+    if not sys.stdin.isatty():
+        # Non-interactive: don't autonomously download a new binary
+        # over a script's connection. Tell them once.
+        tag = latest_release_tag()
+        if tag and is_newer(tag, __version__):
+            typer.echo(
+                f"chubby v{tag} is available (you have v{__version__}). "
+                f"Run 'chubby update' to upgrade."
+            )
+        return
+    tag = latest_release_tag(use_cache=False)
     if not tag or not is_newer(tag, __version__):
         return
-    typer.echo(f"chubby v{tag} is available (you have v{__version__}).")
-    if not sys.stdin.isatty():
-        # Non-interactive (pipx run, CI, etc.) — never prompt; just
-        # mention the upgrade and move on.
-        typer.echo("  run 'chubby update' to upgrade")
+    typer.echo(f"chubby v{tag} is available — auto-updating from v{__version__}...")
+    proc = subprocess.run(
+        ["bash", "-c", f'curl -fsSL "{_INSTALL_URL}" | bash'],
+        env={**os.environ, "CHUBBY_FORCE": "1"},
+    )
+    if proc.returncode != 0:
+        typer.echo(
+            f"  ✗ auto-update failed (exit {proc.returncode}); "
+            f"continuing with v{__version__}",
+            err=True,
+        )
         return
-    answer = typer.prompt("Update now? [y/N]", default="N", show_default=False).strip().lower()
-    if answer in ("y", "yes"):
-        run_update_now()
+    typer.echo(f"✓ updated to v{tag} — relaunching chubby...")
+    # Re-exec the new chubby binary with the user's original argv
+    # (everything past argv[0]). install.sh just refreshed the
+    # ~/.local/bin/chubby symlink to the new pipx venv, so PATH
+    # lookup gets the upgraded entry-point.
+    chubby_bin = shutil.which("chubby") or sys.argv[0]
+    os.execvp(chubby_bin, [chubby_bin, *sys.argv[1:]])
 
 
 def run_update_now() -> None:

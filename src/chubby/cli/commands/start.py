@@ -131,6 +131,14 @@ def run(
         False, "--no-tui", help="Don't launch the TUI; just bootstrap and exit."
     ),
 ) -> None:
+    # Auto-update FIRST, before the daemon is brought up — install.sh
+    # uninstalls and reinstalls the pipx venv, which would otherwise
+    # tear down a freshly-spawned daemon mid-start. On success this
+    # re-execs chubby with the same argv and never returns.
+    from chubby.cli.commands import _update_check
+
+    _update_check.auto_update_and_relaunch()
+
     async def go() -> tuple[int, bool, int]:
         pid, started = await _ensure_daemon()
         attached = 0
@@ -141,13 +149,6 @@ def run(
     pid, started, attached = asyncio.run(go())
     verb = "started" if started else "running"
     typer.echo(f"daemon {verb} (pid {pid})")
-
-    # Best-effort: ask GitHub if a newer release is out, prompt the
-    # user, exec install.sh on yes. Cached for 24h so this is a no-op
-    # most starts. Failures are silent.
-    from chubby.cli.commands import _update_check
-
-    _update_check.prompt_to_update_if_available()
 
     if not no_hooks:
         from chubby.cli.commands import install_hooks

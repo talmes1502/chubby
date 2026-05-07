@@ -31,7 +31,10 @@ func TestCtrlD_FirstPressJustToasts(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("first Ctrl+D should not dispatch an RPC; got %T", cmd())
 	}
-	if mm.pendingDeleteID != "s1" {
+	// pendingDeleteID is now namespaced ("session:" / "folder:")
+	// so a folder pending doesn't collide with a session pending of
+	// the same id.
+	if mm.pendingDeleteID != "session:s1" {
 		t.Fatalf("first Ctrl+D should arm the confirm; pendingDeleteID = %q", mm.pendingDeleteID)
 	}
 	if len(mm.toasts) == 0 {
@@ -87,7 +90,7 @@ func TestCtrlD_StaleConfirmReArms(t *testing.T) {
 		newSinceScroll:  map[string]int{},
 		sessions:        []Session{{ID: "s1", Name: "api", Status: StatusIdle, Kind: KindWrapped}},
 		focused:         0,
-		pendingDeleteID: "s1",
+		pendingDeleteID: "session:s1",
 		// Pretend the first press was way before the window.
 		pendingDeleteAt: time.Now().Add(-time.Minute),
 		activePane:      PaneRail,
@@ -97,7 +100,56 @@ func TestCtrlD_StaleConfirmReArms(t *testing.T) {
 		t.Fatalf("Ctrl+D after a stale confirm should re-arm, not release")
 	}
 	mm := out.(Model)
-	if mm.pendingDeleteID != "s1" || time.Since(mm.pendingDeleteAt) > time.Second {
+	if mm.pendingDeleteID != "session:s1" || time.Since(mm.pendingDeleteAt) > time.Second {
 		t.Fatalf("stale confirm should re-arm with a fresh timestamp")
+	}
+}
+
+// TestCtrlD_DeletesFolderTwoTap: Ctrl+D twice on a folder header
+// row deletes the folder. Sessions inside become unfiled — the
+// session rows themselves are untouched.
+func TestCtrlD_DeletesFolderTwoTap(t *testing.T) {
+	withTempChubbyHome(t)
+	folders := FoldersState{Folders: map[string][]string{}}
+	folders.Assign("priority", "s1")
+	if err := SaveFolders(folders); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+	m := Model{
+		mode:           ModeMain,
+		compose:        views.NewCompose(),
+		groupCollapsed: map[string]bool{},
+		sessions:       []Session{{ID: "s1", Name: "api", Status: StatusIdle, Kind: KindWrapped}},
+		folders:        LoadFolders(),
+		focused:        0,
+		railCursor:     0, // folder header is row 0 when one folder + one session
+		activePane:     PaneRail,
+	}
+	// Sanity that cursor lands on the folder header.
+	rows := m.railRows()
+	if len(rows) == 0 || rows[m.railCursor].Kind != RailRowFolder {
+		t.Fatalf("test setup: cursor should be on a folder header, got %v", rows[m.railCursor].Kind)
+	}
+	// First press: arms only.
+	out, _ := m.handleKeyMain(tea.KeyMsg{Type: tea.KeyCtrlD})
+	m = out.(Model)
+	if m.pendingDeleteID != "folder:priority" {
+		t.Fatalf("first Ctrl+D should arm folder confirm; got %q", m.pendingDeleteID)
+	}
+	// Second press: dispatches delete.
+	out, cmd := m.handleKeyMain(tea.KeyMsg{Type: tea.KeyCtrlD})
+	if cmd == nil {
+		t.Fatalf("second Ctrl+D should dispatch folder delete")
+	}
+	// Run the cmd and feed the result back.
+	msg := cmd()
+	out2, _ := out.(Model).Update(msg)
+	mm := out2.(Model)
+	if _, exists := mm.folders.Folders["priority"]; exists {
+		t.Fatalf("folder should be gone from in-memory state; got %v", mm.folders.Folders)
+	}
+	on := LoadFolders()
+	if _, exists := on.Folders["priority"]; exists {
+		t.Fatalf("folder should be gone from disk; got %v", on.Folders)
 	}
 }
