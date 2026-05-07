@@ -2389,12 +2389,16 @@ func (m Model) handleKeyRail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		// Rail-pane Enter with empty compose:
-		//   - Folder header → toggle collapse
-		//   - Unfocused session row → focus it
-		//   - Already-focused session row → forward Enter to claude
-		//     so the user can submit prompts without an extra F6
-		//     into PaneConversation. Consuming Enter on the focused
-		//     row caused "I typed but Enter does nothing" reports.
+		//   - Folder header → toggle collapse.
+		//   - Session row → focus it AND switch to the conversation
+		//     pane. "Enter to enter the session" is the standard
+		//     rail-list convention (k9s/lf/ranger/vim's :buffer pick
+		//     all do the same). Pre-fix, Enter on the focused row
+		//     forwarded a CR to claude — convenient for one-tap
+		//     Y/N confirms but unintuitive: the user expected to
+		//     navigate INTO the session, not submit a stray newline
+		//     from the rail. They can still confirm Y/N prompts by
+		//     pressing Enter once they're in the conversation pane.
 		if m.compose.Value() == "" {
 			rows := m.railRows()
 			if m.railCursor >= 0 && m.railCursor < len(rows) {
@@ -2408,11 +2412,9 @@ func (m Model) handleKeyRail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					})
 					return m, nil
 				case RailRowSession:
-					if m.focused != r.SessionIdx {
-						m.setFocused(r.SessionIdx)
-						return m, nil
-					}
-					return m, m.routeKeyToPty(msg)
+					m.setFocused(r.SessionIdx)
+					m.activePane = PaneConversation
+					return m, nil
 				}
 			}
 			return m, nil
@@ -4484,8 +4486,9 @@ NAVIGATION  (rail pane)
   Up/Down/PgUp/PgDn  walk rail cursor (5 rows for PgUp/PgDn)
   Home/End           jump to top / bottom of rail
   Space              toggle folder collapse
-  Enter              focus session / toggle folder · already-focused
-                     row → forward Enter to claude
+  Enter              session row → focus + switch to conversation
+                     pane ("enter to enter the session"). Folder
+                     header → toggle collapse.
 
 QUICK SWITCHER
   Ctrl+P             on a non-DEAD session → fuzzy-find modal
