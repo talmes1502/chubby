@@ -55,6 +55,7 @@ func main() {
 	// Note: no tea.WithMouseCellMotion() — mouse capture would block the
 	// terminal's native text-selection (and copy/paste). We don't have any
 	// mouse handlers, so dropping the option restores normal selection.
+	model.BinaryVersion = Version
 	p := tea.NewProgram(model.New(c), tea.WithAltScreen())
 	final, err := p.Run()
 	if err != nil {

@@ -31,6 +31,14 @@ import (
 // oldest entries so the model stays bounded for long sessions.
 const turnsCap = 500
 
+// BinaryVersion is set by main() at startup to the chubby-tui
+// binary's ldflags-injected version string. Rendered in the help
+// overlay header so users can see at a glance which version they're
+// looking at — matters for "is this the bug-fix release I just
+// updated to?" sanity checks. Defaulted to a dev sentinel so unit
+// tests that don't bother setting it still have a non-empty value.
+var BinaryVersion = "0.0.0+dev"
+
 // Turn / ToolCall / Session live in types.go — see that file for
 // SessionStatus / SessionKind / TurnRole typed-string enums.
 
@@ -4623,7 +4631,19 @@ func (m Model) viewHelp() string {
 	if innerW < 40 {
 		innerW = 40
 	}
-	lines := strings.Split(helpBody, "\n")
+	// Inject the running binary's version into the first line of the
+	// help body so the user can see "is this v0.1.15 with the dead-
+	// session-delete fix?" at a glance. helpBody starts with the
+	// "chubby-tui keys" header, which we replace with a versioned
+	// variant. Done at render-time (not as a const) because the
+	// version is set via ldflags and only known at runtime.
+	versioned := strings.Replace(
+		helpBody,
+		"chubby-tui keys",
+		fmt.Sprintf("chubby-tui keys  ·  v%s", BinaryVersion),
+		1,
+	)
+	lines := strings.Split(versioned, "\n")
 	maxScroll := len(lines) - innerH
 	if maxScroll < 0 {
 		maxScroll = 0

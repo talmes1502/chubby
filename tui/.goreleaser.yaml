@@ -54,6 +54,24 @@ snapshot:
 
 changelog:
   sort: asc
+  # Group conventional-commit messages by type so the GitHub release
+  # body reads as a real changelog instead of a flat list of shas.
+  # The previous default-grouped output was just "<sha> <subject>"
+  # per line, which is useless for someone landing on the release
+  # page wondering "what's new". Buckets here mirror the conventional-
+  # commits taxonomy chubby's commits actually use.
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+?\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+?\))??!?:.+$'
+      order: 1
+    - title: Refactors
+      regexp: '^.*?refactor(\(.+?\))??!?:.+$'
+      order: 2
+    - title: Other
+      order: 999
   filters:
     exclude:
       - '^docs:'
@@ -75,3 +93,23 @@ release:
   draft: false
   prerelease: auto
   name_template: 'v{{ .Version }}'
+  # Header / footer wrap the auto-generated changelog. Header
+  # explains how to install or upgrade so a friend who lands on the
+  # release page from a shared link doesn't need to dig through the
+  # README; footer points at the install script for the curl-pipe
+  # crowd.
+  header: |
+    ## Install or upgrade
+
+    ```
+    curl -fsSL https://raw.githubusercontent.com/talmes1502/chubby/main/install.sh | bash
+    ```
+
+    Already on chubby? Either run `chubby update` or just `chubby start` —
+    the auto-update flow (v0.1.15+) will fetch this version on next launch.
+
+    ## What's new
+  footer: |
+    ---
+    [install.sh source](https://github.com/talmes1502/chubby/blob/main/install.sh) ·
+    [previous release](https://github.com/talmes1502/chubby/releases)
